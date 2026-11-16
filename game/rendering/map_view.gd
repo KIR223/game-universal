@@ -169,7 +169,9 @@ func _draw() -> void:
 		draw_rect(rect, col)
 		if a["id"] == selected_army:
 			draw_rect(rect.grow(3.0), Color("ffe08a"), false, 1.5)
-		draw_string(font, pos + Vector2(0, 19), str(a["strength"] / 100), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
+		if a["supply"] < 30:
+			draw_rect(rect.grow(2.5), Color("e04a3a"), false, 1.5)
+		draw_string(font, pos + Vector2(0, 19), "%d·%d" % [a["div"].size(), a["strength"] / 100], HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
 		# movement arrow
 		if not a["path"].is_empty():
 			var pts := PackedVector2Array([provs[p]["center"] * CELL])

@@ -26,7 +26,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -263,21 +263,29 @@ func _build_hud() -> void:
 	_side = PanelContainer.new()
 	_side.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
 	_side.offset_top = 64
-	_side.offset_bottom = -190
+	_side.offset_bottom = -180
 	_side.custom_minimum_size = Vector2(320, 0)
 	_side.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	root.add_child(_side)
 	var sv := VBoxContainer.new()
 	sv.add_theme_constant_override("separation", 8)
 	_side.add_child(sv)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sv.add_child(scroll)
+	var inner := VBoxContainer.new()
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_theme_constant_override("separation", 8)
+	scroll.add_child(inner)
 	_info = RichTextLabel.new()
 	_info.bbcode_enabled = true
 	_info.fit_content = true
-	_info.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	sv.add_child(_info)
+	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_child(_info)
 	_actions = VBoxContainer.new()
 	_actions.add_theme_constant_override("separation", 6)
-	sv.add_child(_actions)
+	inner.add_child(_actions)
 
 	var log_panel := PanelContainer.new()
 	log_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -381,9 +389,9 @@ func _refresh_top() -> void:
 	if _top_label == null:
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
+	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Люди: %d   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
 		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.fleets_of(player).size(), c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
+		sim.armies_of(player).size(), sim.fleets_of(player).size(), c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
 	for i in _speed_buttons.size():
 		_speed_buttons[i].disabled = i == speed_idx
 
@@ -435,7 +443,10 @@ func _refresh_info() -> void:
 		t += "\n[b]Армии:[/b]\n"
 		for a in here:
 			var mark := " ◀" if a["id"] == map.selected_army else ""
-			t += "#%d  [color=%s]%s[/color]  сила %d%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], a["strength"], mark]
+			t += "#%d  [color=%s]%s[/color]  %s  сила %d  снабж. %d%%%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), a["strength"], a["supply"], mark]
+			if a["gen"] >= 0:
+				var gg: Dictionary = sim._general(a["owner"], a["gen"])
+				t += "   генерал %s (ур. %d)\n" % [gg["name"], gg["skill"]]
 	_info.text = t
 
 	# actions
@@ -448,7 +459,21 @@ func _refresh_info() -> void:
 				map.queue_redraw()
 				_refresh_info())
 			_actions.add_child(b)
+	if map.selected_army >= 0:
+		_army_tools(sim.army_by_id(map.selected_army), here)
 	if o == player and pid == sim.countries[player]["capital"]:
+		for ut in sim.unit_defs:
+			var u: Dictionary = sim.unit_defs[ut]
+			var tb := Button.new()
+			tb.text = "Обучить: %s (%d $, %d стали, %d чел.)" % [u["name"], u["cost"], u["steel"], u["manpower"]]
+			var target_army := map.selected_army if (map.selected_army >= 0 and not sim.army_by_id(map.selected_army).is_empty() and sim.army_by_id(map.selected_army)["prov"] == pid) else -1
+			tb.pressed.connect(func():
+				var rt := sim.apply_command({"type": "train_division", "country": player, "unit": ut, "army": target_army})
+				if not rt["ok"]:
+					_log.append_text("[color=#d9a05a]%s[/color]\n" % _reason(rt["reason"]))
+				map.queue_redraw()
+				_refresh_all())
+			_actions.add_child(tb)
 		var rb := Button.new()
 		rb.text = "Набрать армию (%d)" % Simulation.ARMY_COST
 		rb.disabled = sim.countries[player]["treasury"] < Simulation.ARMY_COST
@@ -643,3 +668,16 @@ func _eco_refresh() -> void:
 
 func _reason(key: String) -> String:
 	return REASONS.get(key, key)
+
+
+func _army_tools(a: Dictionary, here: Array) -> void:
+	if a.is_empty() or a["owner"] != player:
+		return
+	if a["div"].size() > 1:
+		_cmd_button("Отделить дивизию", {"type": "split_army", "country": player, "army": a["id"], "count": 1})
+	for b in here:
+		if b["owner"] == player and b["id"] != a["id"]:
+			_cmd_button("Влить армию #%d" % b["id"], {"type": "merge_armies", "country": player, "army": a["id"], "other": b["id"]})
+	for g in sim.countries[player]["generals"]:
+		if g["id"] != a["gen"]:
+			_cmd_button("Генерал: %s (ур. %d)%s" % [g["name"], g["skill"], " — занят" if g["army"] >= 0 else ""], {"type": "assign_general", "country": player, "army": a["id"], "general": g["id"]})

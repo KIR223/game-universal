@@ -34,6 +34,20 @@ for need in ("food", "oil", "steel", "iron", "coal"):
     if need not in ids:
         errors.append(f"missing required resource {need}")
 
+units = json.loads((root / "data/units.json").read_text(encoding="utf-8"))
+terrains = {"plains", "forest", "hills", "mountain", "desert"}
+for u in units["units"]:
+    for k in ("id", "name", "cost", "steel", "manpower", "hp", "atk", "def", "oil", "terrain"):
+        if k not in u:
+            errors.append(f"unit {u.get('id')}: missing {k}")
+    if set(u.get("terrain", {})) != terrains:
+        errors.append(f"unit {u.get('id')}: terrain table must cover {sorted(terrains)}")
+if "infantry" not in {u["id"] for u in units["units"]}:
+    errors.append("units.json must define infantry")
+gen = json.loads((root / "data/generals.json").read_text(encoding="utf-8"))
+if not gen.get("first") or not gen.get("last"):
+    errors.append("generals.json: need first and last name lists")
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units["units"])} units)")
