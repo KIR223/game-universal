@@ -1417,3 +1417,27 @@ func test_war_flow_via_commands() -> void:
 			loaded.tick_day()
 		check(loaded.checksum() == sim.checksum(), "loaded game continues identically for 20 more days")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/wartest.sav"))
+
+
+## Cross-platform determinism: golden checksums recorded on Windows. CI runs this on Linux, macOS and Windows, so any
+## divergence in floats, hashing or RNG between platforms (a Windows <-> macOS multiplayer desync) fails here first.
+## If simulation rules change on purpose, regenerate: run the test, copy the printed values.
+const GOLDEN_IDLE_30 := 2965233151
+const GOLDEN_WAR_40 := 3973190776
+
+
+func test_cross_platform_golden_checksums() -> void:
+	var idle := _earth()
+	for i in 30:
+		idle.tick_day()
+	var probe := _earth()
+	var f := _find_border(probe)
+	var target := -1
+	for q in probe.provinces()[f["cell"]]["land_neighbors"]:
+		if probe.owner[q] == f["b"]:
+			target = q
+			break
+	var war := _war_run(f["a"], f["b"], target, 40)
+	print("  golden idle30=", idle.checksum(), " war40=", war.checksum())
+	check(idle.checksum() == GOLDEN_IDLE_30, "idle world after 30 days matches the golden checksum on every platform")
+	check(war.checksum() == GOLDEN_WAR_40, "war after 40 days matches the golden checksum on every platform")
