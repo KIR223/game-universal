@@ -26,7 +26,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -44,6 +44,11 @@ var _tech: PanelContainer
 var _tech_buttons := {}
 var _tech_queue_box: VBoxContainer
 var _pending_air := ""
+var _pol: PanelContainer
+var _pol_body: VBoxContainer
+var _event_panel: PanelContainer
+var _event_uid := -1
+var _pol_day := -1
 var _eco: PanelContainer
 var _eco_dyn: VBoxContainer
 var _t_res := 0
@@ -97,7 +102,7 @@ func _make_theme() -> Theme:
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
 	t.set_color("font_color", "Label", Color("e8e2d0"))
 	t.set_font_size("font_size", "Label", 15)
-	t.set_font_size("font_size", "Button", 15)
+	t.set_font_size("font_size", "Button", 14)
 	t.set_font_size("normal_font_size", "RichTextLabel", 14)
 	t.set_color("default_color", "RichTextLabel", Color("d8d2c0"))
 	return t
@@ -249,25 +254,31 @@ func _build_hud() -> void:
 	_top = PanelContainer.new()
 	_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	root.add_child(_top)
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 14)
-	_top.add_child(hb)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	_top.add_child(vb)
 	_top_label = Label.new()
-	_top_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb.add_child(_top_label)
+	vb.add_child(_top_label)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 6)
+	vb.add_child(hb)
 	for i in SPEEDS.size():
 		var b := Button.new()
-		b.text = "⏸" if i == 0 else "▶".repeat(i)
+		b.text = "⏸" if i == 0 else "▶".repeat(mini(i, 3)) + ("+" if i == 4 else "")
 		b.pressed.connect(_set_speed.bind(i))
 		hb.add_child(b)
 		_speed_buttons.append(b)
 	var mode := Button.new()
-	mode.text = "Карта: политика"
+	mode.text = "Карта"
 	mode.pressed.connect(func():
 		map.map_mode = "terrain" if map.map_mode == "political" else "political"
-		mode.text = "Карта: рельеф" if map.map_mode == "terrain" else "Карта: политика"
+		mode.text = "Рельеф" if map.map_mode == "terrain" else "Карта"
 		map.repaint_all())
 	hb.add_child(mode)
+	var polb := Button.new()
+	polb.text = "Политика"
+	polb.pressed.connect(_toggle_pol)
+	hb.add_child(polb)
 	var tech := Button.new()
 	tech.text = "Технологии"
 	tech.pressed.connect(_toggle_tech)
@@ -287,7 +298,7 @@ func _build_hud() -> void:
 
 	_side = PanelContainer.new()
 	_side.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	_side.offset_top = 64
+	_side.offset_top = 96
 	_side.offset_bottom = -180
 	_side.custom_minimum_size = Vector2(320, 0)
 	_side.grow_horizontal = Control.GROW_DIRECTION_BEGIN
@@ -332,7 +343,7 @@ func _process(delta: float) -> void:
 	if sim == null or player < 0:
 		return
 	var rate: float = SPEEDS[speed_idx]
-	if rate <= 0.0:
+	if rate <= 0.0 or (_event_panel != null and is_instance_valid(_event_panel)):
 		return
 	accum += delta * rate
 	var stepped := false
@@ -425,6 +436,9 @@ func _refresh_all() -> void:
 		_eco_refresh()
 	if _tech != null and is_instance_valid(_tech):
 		_tech_refresh()
+	if _pol != null and is_instance_valid(_pol) and sim.day != _pol_day and sim.day % 5 == 0:
+		_pol_refresh()
+	_check_events()
 	while log_seen < sim.log_lines.size():
 		_log.append_text(sim.log_lines[log_seen] + "\n")
 		log_seen += 1
@@ -434,9 +448,10 @@ func _refresh_top() -> void:
 	if _top_label == null:
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   Авиа: %d   |   Люди: %d   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
+	_top_label.text = "%s | %s | $%d (%+d) | Арм %d  Флот %d  Авиа %d | Стаб %d%%  Влияние %d | Люди %d  Сталь %d  Нефть %d  Еда %d | Войн %d" % [
 		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.wings_of(player).size(), c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
+		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.wings_of(player).size(), c["stability"], c["pp"],
+		c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
 	for i in _speed_buttons.size():
 		_speed_buttons[i].disabled = i == speed_idx
 
@@ -616,7 +631,7 @@ func _toggle_eco() -> void:
 	_eco = PanelContainer.new()
 	_eco.theme = _theme
 	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_eco.position = Vector2(12, 62)
+	_eco.position = Vector2(12, 96)
 	_eco.custom_minimum_size = Vector2(520, 0)
 	ui.add_child(_eco)
 	var v := VBoxContainer.new()
@@ -783,7 +798,7 @@ func _toggle_tech() -> void:
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_tech.position = Vector2(12, 62)
+	_tech.position = Vector2(12, 96)
 	_tech.custom_minimum_size = Vector2(900, 560)
 	ui.add_child(_tech)
 	var v := VBoxContainer.new()
@@ -913,3 +928,221 @@ func _air_tools(w: Dictionary) -> void:
 		_refresh_info())
 	_actions.add_child(rb)
 	_cmd_button("Отбой (ожидание)", {"type": "air_mission", "country": player, "wing": w["id"], "mission": "idle", "target": -1})
+
+
+# ---------------------------------------------------------------- politics UI
+
+func _effect_text(ef: Dictionary) -> String:
+	var v: int = int(ef.get("value", 0))
+	match ef["type"]:
+		"stability": return "%+d стабильность" % v
+		"war_support": return "%+d поддержка войны" % v
+		"treasury": return "%+d $" % v
+		"treasury_pct": return "%+d%% казны" % v
+		"stock": return "%+d %s" % [v, _res_name(ef["res"]).to_lower()]
+		"manpower": return "%+d людей" % v
+		"pp": return "%+d влияния" % v
+		"popularity": return "%+d%% партии «%s»" % [v, sim.ideo_defs[ef["ideology"]]["name"]]
+		"popularity_ruling": return "%+d%% правящей партии" % v
+		"modifier": return "%+d%% %s на %d дн." % [v, EFFECT_NAMES.get(ef["key"], ef["key"]), int(ef["days"])]
+		"tech_progress": return "+%d очков исследования" % v
+		"army_exp": return "+%d опыта армиям" % v
+	return ef["type"]
+
+
+func _effects_list(effects: Array) -> String:
+	var parts: Array[String] = []
+	for ef in effects:
+		parts.append(_effect_text(ef))
+	return ", ".join(parts)
+
+
+func _check_events() -> void:
+	if _event_panel != null and is_instance_valid(_event_panel):
+		return
+	var pend: Array = sim.countries[player]["pending"]
+	if pend.is_empty():
+		return
+	speed_idx = 0
+	_refresh_top()
+	var p: Dictionary = pend[0]
+	var e := sim.event_def(p["event"])
+	_event_uid = p["uid"]
+	_event_panel = PanelContainer.new()
+	_event_panel.theme = _theme
+	_event_panel.set_anchors_preset(Control.PRESET_CENTER)
+	_event_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_event_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_event_panel.custom_minimum_size = Vector2(560, 0)
+	ui.add_child(_event_panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	_event_panel.add_child(v)
+	var t := Label.new()
+	t.text = e["title"]
+	t.add_theme_font_size_override("font_size", 22)
+	t.add_theme_color_override("font_color", Color("e0c070"))
+	v.add_child(t)
+	var d := Label.new()
+	d.text = e["desc"]
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(d)
+	for i in e["options"].size():
+		var o: Dictionary = e["options"][i]
+		var b := Button.new()
+		b.text = "%s\n(%s)" % [o["text"], _effects_list(o["effects"])]
+		b.pressed.connect(func():
+			var uid := _event_uid
+			sim.apply_command({"type": "event_choice", "country": player, "uid": uid, "option": i})
+			_event_panel.queue_free()
+			_event_panel = null
+			_refresh_all())
+		v.add_child(b)
+
+
+func _toggle_pol() -> void:
+	if _pol != null and is_instance_valid(_pol):
+		_pol.queue_free()
+		_pol = null
+		return
+	_pol = PanelContainer.new()
+	_pol.theme = _theme
+	_pol.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_pol.position = Vector2(12, 96)
+	_pol.custom_minimum_size = Vector2(760, 560)
+	ui.add_child(_pol)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_pol.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
+	var h := Label.new()
+	h.text = "Политика"
+	h.add_theme_font_size_override("font_size", 20)
+	h.add_theme_color_override("font_color", Color("e0c070"))
+	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(h)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(_toggle_pol)
+	head.add_child(close)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(scroll)
+	_pol_body = VBoxContainer.new()
+	_pol_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_pol_body.add_theme_constant_override("separation", 6)
+	scroll.add_child(_pol_body)
+	_pol_refresh()
+
+
+func _bar(label: String, value: int, color: Color) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	var l := Label.new()
+	l.text = label
+	l.custom_minimum_size = Vector2(230, 0)
+	row.add_child(l)
+	var b := ProgressBar.new()
+	b.max_value = 100
+	b.value = value
+	b.custom_minimum_size = Vector2(300, 18)
+	b.show_percentage = false
+	b.add_theme_stylebox_override("fill", _flat(color))
+	row.add_child(b)
+	var n := Label.new()
+	n.text = " %d%%" % value
+	row.add_child(n)
+	return row
+
+
+func _flat(color: Color) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = color
+	sb.set_corner_radius_all(3)
+	return sb
+
+
+func _pol_refresh() -> void:
+	_pol_day = sim.day
+	for ch in _pol_body.get_children():
+		ch.queue_free()
+	var c: Dictionary = sim.countries[player]
+	var ideo: Dictionary = sim.ideo_defs[c["ideology"]]
+	var hl := Label.new()
+	hl.text = "Правительство: %s   |   Политическое влияние: %d (+1/день)" % [ideo["name"], c["pp"]]
+	hl.add_theme_color_override("font_color", Color(ideo["color"]))
+	_pol_body.add_child(hl)
+	var sc := Color("8ac58a") if c["stability"] >= 50 else (Color("d9a05a") if c["stability"] >= 25 else Color("d96a5a"))
+	_pol_body.add_child(_bar("Стабильность (цель %d%%)" % sim._stability_target(c), c["stability"], sc))
+	_pol_body.add_child(_bar("Поддержка войны (цель %d%%)" % sim._war_support_target(c), c["war_support"], Color("c9a23c")))
+	var pl := Label.new()
+	pl.text = "Партии"
+	pl.add_theme_color_override("font_color", Color("e0c070"))
+	_pol_body.add_child(pl)
+	for i in sim.ideo_order:
+		_pol_body.add_child(_bar(sim.ideo_defs[i]["name"] + (" (у власти)" if i == c["ideology"] else ""), c["party_pop"][i], Color(sim.ideo_defs[i]["color"])))
+	if ideo["elections"]:
+		var next_el := 100 + 40 * player
+		while next_el < sim.day:
+			next_el += 365
+		var el := Label.new()
+		el.text = "Следующие выборы: через %d дн." % (next_el - sim.day)
+		_pol_body.add_child(el)
+	var ll := Label.new()
+	ll.text = "Законы"
+	ll.add_theme_color_override("font_color", Color("e0c070"))
+	_pol_body.add_child(ll)
+	for cat in sim.law_defs:
+		var row := HBoxContainer.new()
+		var cl := Label.new()
+		cl.text = sim.law_defs[cat]["name"] + ":"
+		cl.custom_minimum_size = Vector2(110, 0)
+		row.add_child(cl)
+		for o in sim.law_defs[cat]["options"]:
+			var b := Button.new()
+			var current: bool = c["laws"][cat] == o["id"]
+			b.text = ("● " if current else "") + o["name"] + ("" if current or o["cost"] == 0 else " (%d)" % o["cost"])
+			b.disabled = current or c["pp"] < o["cost"]
+			b.tooltip_text = _effects_list([{"type": "stability", "value": o.get("stability", 0)}, {"type": "war_support", "value": o.get("war_support", 0)}]) + (", " + ", ".join(_mod_texts(o["mods"])) if not o["mods"].is_empty() else "")
+			var cat_id: String = cat
+			var law_id: String = o["id"]
+			b.pressed.connect(func():
+				_pol_cmd({"type": "set_law", "country": player, "category": cat_id, "law": law_id}))
+			row.add_child(b)
+		_pol_body.add_child(row)
+	var dl := Label.new()
+	dl.text = "Национальные решения"
+	dl.add_theme_color_override("font_color", Color("e0c070"))
+	_pol_body.add_child(dl)
+	for dd in sim.decision_defs:
+		var err := sim._decision_error(c, dd)
+		var b := Button.new()
+		var cost: Dictionary = dd["cost"]
+		var cost_txt := "%d влияния" % cost.get("pp", 0)
+		if cost.get("treasury", 0) > 0:
+			cost_txt += ", %d $" % cost["treasury"]
+		b.text = "%s  [%s]" % [dd["name"], cost_txt]
+		b.disabled = err != ""
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		var left: int = int(dd["cooldown"]) - (sim.day - c["done"].get(dd["id"], -99999))
+		b.tooltip_text = "%s\nЭффект: %s%s" % [dd["desc"], _effects_list(dd["effects"]), ("\nМожно повторить через %d дн." % left) if err == "on cooldown" else ""]
+		var did: String = dd["id"]
+		b.pressed.connect(func():
+			_pol_cmd({"type": "decision", "country": player, "id": did}))
+		_pol_body.add_child(b)
+
+
+func _mod_texts(mods: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	for k in mods:
+		out.append("%+d%% %s" % [mods[k], EFFECT_NAMES.get(k, k)])
+	return out
+
+
+func _pol_cmd(cmd: Dictionary) -> void:
+	var r := sim.apply_command(cmd)
+	if not r["ok"]:
+		_log.append_text("[color=#d9a05a]Отказ: %s[/color]\n" % _reason(r["reason"]))
+	_pol_refresh()
+	_refresh_top()

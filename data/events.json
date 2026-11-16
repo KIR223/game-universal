@@ -1,0 +1,663 @@
+{
+ "schema_version": 1,
+ "events": [
+  {
+   "id": "strike",
+   "title": "Всеобщая забастовка",
+   "desc": "Рабочие крупных заводов бросили станки и требуют повышения оплаты и сокращения рабочего дня.",
+   "chance": 0.012,
+   "cooldown": 120,
+   "once": false,
+   "conditions": [
+    {
+     "type": "stability_below",
+     "value": 45
+    }
+   ],
+   "options": [
+    {
+     "text": "Уступить требованиям",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -60
+      },
+      {
+       "type": "stability",
+       "value": 8
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Подавить силой",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -6
+      },
+      {
+       "type": "pp",
+       "value": 15
+      }
+     ],
+     "ai": 1
+    },
+    {
+     "text": "Игнорировать",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -3
+      },
+      {
+       "type": "modifier",
+       "key": "income_pct",
+       "value": -10,
+       "days": 45
+      }
+     ],
+     "ai": 2
+    }
+   ]
+  },
+  {
+   "id": "harvest_failure",
+   "title": "Неурожай",
+   "desc": "Засуха уничтожила значительную часть урожая. Склады пустеют, цены растут.",
+   "chance": 0.004,
+   "cooldown": 200,
+   "once": false,
+   "conditions": [
+    {
+     "type": "min_day",
+     "value": 30
+    }
+   ],
+   "options": [
+    {
+     "text": "Закупить зерно за рубежом",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -80
+      },
+      {
+       "type": "stock",
+       "res": "food",
+       "value": 60
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Ввести нормирование",
+     "effects": [
+      {
+       "type": "stock",
+       "res": "food",
+       "value": 20
+      },
+      {
+       "type": "stability",
+       "value": -4
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "industrial_boom",
+   "title": "Промышленный рекорд",
+   "desc": "Заводы страны выпустили рекордный объём продукции. Директора просят разрешения реинвестировать прибыль.",
+   "chance": 0.004,
+   "cooldown": 200,
+   "once": false,
+   "conditions": [
+    {
+     "type": "stability_above",
+     "value": 55
+    }
+   ],
+   "options": [
+    {
+     "text": "Реинвестировать прибыль",
+     "effects": [
+      {
+       "type": "modifier",
+       "key": "steel_pct",
+       "value": 10,
+       "days": 90
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Выплатить премии рабочим",
+     "effects": [
+      {
+       "type": "stability",
+       "value": 6
+      },
+      {
+       "type": "treasury",
+       "value": -40
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "breakthrough",
+   "title": "Научный прорыв",
+   "desc": "Группа инженеров предложила решение, способное ускорить текущие исследования.",
+   "chance": 0.004,
+   "cooldown": 150,
+   "once": false,
+   "conditions": [
+    {
+     "type": "min_day",
+     "value": 50
+    },
+    {
+     "type": "treasury_above",
+     "value": 150
+    }
+   ],
+   "options": [
+    {
+     "text": "Финансировать разработку",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -100
+      },
+      {
+       "type": "tech_progress",
+       "value": 150
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Опубликовать результаты",
+     "effects": [
+      {
+       "type": "pp",
+       "value": 30
+      },
+      {
+       "type": "stability",
+       "value": 2
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "market_crash",
+   "title": "Биржевой кризис",
+   "desc": "Обвал на бирже грозит банковской системе. Правительство должно решить, спасать ли банки.",
+   "chance": 0.003,
+   "cooldown": 365,
+   "once": false,
+   "conditions": [
+    {
+     "type": "treasury_above",
+     "value": 300
+    }
+   ],
+   "options": [
+    {
+     "text": "Вливания в банки",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -150
+      },
+      {
+       "type": "stability",
+       "value": 2
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Пусть рынок решит",
+     "effects": [
+      {
+       "type": "treasury_pct",
+       "value": -25
+      },
+      {
+       "type": "modifier",
+       "key": "income_pct",
+       "value": -8,
+       "days": 90
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "student_protests",
+   "title": "Студенческие протесты",
+   "desc": "В столице проходят многотысячные студенческие демонстрации против режима.",
+   "chance": 0.006,
+   "cooldown": 150,
+   "once": false,
+   "conditions": [
+    {
+     "type": "stability_below",
+     "value": 60
+    },
+    {
+     "type": "not_ideology",
+     "value": "democracy"
+    }
+   ],
+   "options": [
+    {
+     "text": "Начать реформы",
+     "effects": [
+      {
+       "type": "popularity",
+       "ideology": "democracy",
+       "value": 4
+      },
+      {
+       "type": "stability",
+       "value": 4
+      },
+      {
+       "type": "pp",
+       "value": -20
+      }
+     ],
+     "ai": 2
+    },
+    {
+     "text": "Разогнать демонстрации",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -3
+      },
+      {
+       "type": "pp",
+       "value": 20
+      }
+     ],
+     "ai": 2
+    }
+   ]
+  },
+  {
+   "id": "victory_parade",
+   "title": "Военный парад",
+   "desc": "Командование предлагает провести парад, чтобы поднять дух нации.",
+   "chance": 0.006,
+   "cooldown": 180,
+   "once": false,
+   "conditions": [
+    {
+     "type": "war_support_below",
+     "value": 45
+    },
+    {
+     "type": "treasury_above",
+     "value": 200
+    }
+   ],
+   "options": [
+    {
+     "text": "Провести парад",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -60
+      },
+      {
+       "type": "war_support",
+       "value": 10
+      },
+      {
+       "type": "stability",
+       "value": 3
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Отказаться",
+     "effects": [
+      {
+       "type": "pp",
+       "value": 10
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "diplomatic_incident",
+   "title": "Дипломатический инцидент",
+   "desc": "Иностранный посол публично оскорбил правительство. Общество ждёт ответа.",
+   "chance": 0.003,
+   "cooldown": 200,
+   "once": false,
+   "conditions": [
+    {
+     "type": "not_at_war"
+    }
+   ],
+   "options": [
+    {
+     "text": "Принести извинения",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -3
+      },
+      {
+       "type": "pp",
+       "value": -15
+      }
+     ],
+     "ai": 1
+    },
+    {
+     "text": "Жёсткий ответ",
+     "effects": [
+      {
+       "type": "war_support",
+       "value": 8
+      },
+      {
+       "type": "stability",
+       "value": 2
+      }
+     ],
+     "ai": 3
+    }
+   ]
+  },
+  {
+   "id": "new_deposit",
+   "title": "Открытие месторождения",
+   "desc": "Геологи обнаружили богатые залежи нефти.",
+   "chance": 0.003,
+   "cooldown": 400,
+   "once": false,
+   "conditions": [
+    {
+     "type": "min_day",
+     "value": 60
+    }
+   ],
+   "options": [
+    {
+     "text": "Развернуть добычу",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -90
+      },
+      {
+       "type": "modifier",
+       "key": "oil_pct",
+       "value": 15,
+       "days": 200
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Продать лицензии иностранцам",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": 120
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "army_discontent",
+   "title": "Недовольство в армии",
+   "desc": "В войсках растёт недовольство из-за потерь и плохого снабжения.",
+   "chance": 0.01,
+   "cooldown": 150,
+   "once": false,
+   "conditions": [
+    {
+     "type": "at_war"
+    },
+    {
+     "type": "stability_below",
+     "value": 50
+    }
+   ],
+   "options": [
+    {
+     "text": "Повысить жалование",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -80
+      },
+      {
+       "type": "army_exp",
+       "value": 5
+      },
+      {
+       "type": "stability",
+       "value": 3
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Расформировать недовольных",
+     "effects": [
+      {
+       "type": "manpower",
+       "value": -20
+      },
+      {
+       "type": "stability",
+       "value": -2
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "refugees",
+   "title": "Беженцы",
+   "desc": "Тысячи беженцев пересекли границу, спасаясь от боёв.",
+   "chance": 0.004,
+   "cooldown": 200,
+   "once": false,
+   "conditions": [
+    {
+     "type": "at_war"
+    }
+   ],
+   "options": [
+    {
+     "text": "Принять беженцев",
+     "effects": [
+      {
+       "type": "manpower",
+       "value": 25
+      },
+      {
+       "type": "stock",
+       "res": "food",
+       "value": -30
+      },
+      {
+       "type": "stability",
+       "value": -3
+      }
+     ],
+     "ai": 2
+    },
+    {
+     "text": "Закрыть границы",
+     "effects": [
+      {
+       "type": "war_support",
+       "value": 3
+      },
+      {
+       "type": "stability",
+       "value": -1
+      }
+     ],
+     "ai": 2
+    }
+   ]
+  },
+  {
+   "id": "veterans",
+   "title": "Ветераны требуют льгот",
+   "desc": "Союз ветеранов требует пенсий и земли.",
+   "chance": 0.004,
+   "cooldown": 250,
+   "once": false,
+   "conditions": [
+    {
+     "type": "not_at_war"
+    },
+    {
+     "type": "min_day",
+     "value": 200
+    }
+   ],
+   "options": [
+    {
+     "text": "Выделить льготы",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -50
+      },
+      {
+       "type": "stability",
+       "value": 5
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Отказать",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -4
+      },
+      {
+       "type": "war_support",
+       "value": -3
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "cooperation_offer",
+   "title": "Предложение научного сотрудничества",
+   "desc": "Иностранные учёные предлагают совместную программу.",
+   "chance": 0.004,
+   "cooldown": 300,
+   "once": false,
+   "conditions": [
+    {
+     "type": "has_tech",
+     "value": "ind1"
+    }
+   ],
+   "options": [
+    {
+     "text": "Принять",
+     "effects": [
+      {
+       "type": "treasury",
+       "value": -60
+      },
+      {
+       "type": "tech_progress",
+       "value": 100
+      }
+     ],
+     "ai": 3
+    },
+    {
+     "text": "Отказаться",
+     "effects": [
+      {
+       "type": "pp",
+       "value": 10
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  },
+  {
+   "id": "scandal",
+   "title": "Коррупционный скандал",
+   "desc": "Газеты опубликовали материалы о хищениях в правительстве.",
+   "chance": 0.004,
+   "cooldown": 200,
+   "once": false,
+   "conditions": [
+    {
+     "type": "stability_below",
+     "value": 70
+    }
+   ],
+   "options": [
+    {
+     "text": "Провести расследование",
+     "effects": [
+      {
+       "type": "pp",
+       "value": -25
+      },
+      {
+       "type": "stability",
+       "value": 6
+      }
+     ],
+     "ai": 2
+    },
+    {
+     "text": "Замять скандал",
+     "effects": [
+      {
+       "type": "stability",
+       "value": -6
+      },
+      {
+       "type": "treasury",
+       "value": 40
+      }
+     ],
+     "ai": 1
+    }
+   ]
+  }
+ ]
+}

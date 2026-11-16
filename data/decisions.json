@@ -1,0 +1,288 @@
+{
+ "schema_version": 1,
+ "decisions": [
+  {
+   "id": "propaganda",
+   "name": "Пропагандистская кампания",
+   "desc": "Государственные СМИ восхваляют успехи правительства.",
+   "cost": {
+    "pp": 40,
+    "treasury": 60
+   },
+   "effects": [
+    {
+     "type": "stability",
+     "value": 8
+    }
+   ],
+   "cooldown": 90,
+   "requires": [],
+   "ai": 2,
+   "ai_conditions": [
+    {
+     "type": "stability_below",
+     "value": 45
+    }
+   ]
+  },
+  {
+   "id": "mobilize_reserves",
+   "name": "Призыв резервистов",
+   "desc": "Резервисты призываются в армию.",
+   "cost": {
+    "pp": 30
+   },
+   "effects": [
+    {
+     "type": "manpower",
+     "value": 60
+    },
+    {
+     "type": "stability",
+     "value": -2
+    }
+   ],
+   "cooldown": 120,
+   "requires": [],
+   "ai": 2,
+   "ai_conditions": [
+    {
+     "type": "at_war"
+    }
+   ]
+  },
+  {
+   "id": "industrial_drive",
+   "name": "Курс на индустриализацию",
+   "desc": "Государственные инвестиции в тяжёлую промышленность.",
+   "cost": {
+    "pp": 80,
+    "treasury": 250
+   },
+   "effects": [
+    {
+     "type": "modifier",
+     "key": "steel_pct",
+     "value": 12,
+     "days": 365
+    }
+   ],
+   "cooldown": 365,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "treasury_above",
+     "value": 600
+    }
+   ]
+  },
+  {
+   "id": "farm_subsidies",
+   "name": "Субсидии фермерам",
+   "desc": "Дотации аграриям повышают урожайность.",
+   "cost": {
+    "pp": 30,
+    "treasury": 80
+   },
+   "effects": [
+    {
+     "type": "modifier",
+     "key": "food_pct",
+     "value": 15,
+     "days": 180
+    }
+   ],
+   "cooldown": 200,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "short",
+     "value": "food"
+    }
+   ]
+  },
+  {
+   "id": "army_reform",
+   "name": "Реформа армии",
+   "desc": "Новая подготовка командного состава и тактика.",
+   "cost": {
+    "pp": 70,
+    "treasury": 150
+   },
+   "effects": [
+    {
+     "type": "army_exp",
+     "value": 10
+    }
+   ],
+   "cooldown": 300,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "at_war"
+    }
+   ]
+  },
+  {
+   "id": "emergency",
+   "name": "Чрезвычайное положение",
+   "desc": "Временные меры для удержания порядка.",
+   "cost": {
+    "pp": 60
+   },
+   "effects": [
+    {
+     "type": "stability",
+     "value": 15
+    },
+    {
+     "type": "modifier",
+     "key": "income_pct",
+     "value": -5,
+     "days": 90
+    }
+   ],
+   "cooldown": 200,
+   "requires": [
+    {
+     "type": "stability_below",
+     "value": 30
+    }
+   ],
+   "ai": 3,
+   "ai_conditions": [
+    {
+     "type": "stability_below",
+     "value": 25
+    }
+   ]
+  },
+  {
+   "id": "festival",
+   "name": "Всенародный праздник",
+   "desc": "Государственный праздник сплачивает нацию.",
+   "cost": {
+    "pp": 25,
+    "treasury": 50
+   },
+   "effects": [
+    {
+     "type": "stability",
+     "value": 5
+    },
+    {
+     "type": "war_support",
+     "value": 5
+    }
+   ],
+   "cooldown": 150,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "stability_below",
+     "value": 60
+    }
+   ]
+  },
+  {
+   "id": "research_program",
+   "name": "Научная программа",
+   "desc": "Государственное финансирование науки.",
+   "cost": {
+    "pp": 50,
+    "treasury": 120
+   },
+   "effects": [
+    {
+     "type": "tech_progress",
+     "value": 120
+    }
+   ],
+   "cooldown": 150,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "treasury_above",
+     "value": 400
+    }
+   ]
+  },
+  {
+   "id": "oil_survey",
+   "name": "Разведка недр",
+   "desc": "Геологическая разведка новых месторождений.",
+   "cost": {
+    "pp": 40,
+    "treasury": 100
+   },
+   "effects": [
+    {
+     "type": "modifier",
+     "key": "oil_pct",
+     "value": 10,
+     "days": 240
+    }
+   ],
+   "cooldown": 300,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "short",
+     "value": "oil"
+    }
+   ]
+  },
+  {
+   "id": "liberal_reforms",
+   "name": "Либеральные реформы",
+   "desc": "Расширение гражданских свобод.",
+   "cost": {
+    "pp": 60
+   },
+   "effects": [
+    {
+     "type": "popularity",
+     "ideology": "democracy",
+     "value": 8
+    },
+    {
+     "type": "stability",
+     "value": 3
+    }
+   ],
+   "cooldown": 365,
+   "requires": [],
+   "ai": 0,
+   "ai_conditions": []
+  },
+  {
+   "id": "consolidate",
+   "name": "Укрепление режима",
+   "desc": "Опора на нынешнюю власть.",
+   "cost": {
+    "pp": 60
+   },
+   "effects": [
+    {
+     "type": "popularity_ruling",
+     "value": 8
+    }
+   ],
+   "cooldown": 365,
+   "requires": [],
+   "ai": 1,
+   "ai_conditions": [
+    {
+     "type": "stability_below",
+     "value": 55
+    }
+   ]
+  }
+ ]
+}

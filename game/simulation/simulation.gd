@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 6
+const SAVE_VERSION := 7
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -20,6 +20,7 @@ const MAX_GENERALS := 8
 const MAX_QUEUE := 8
 const BASE_SLOTS := 2
 const WING_SIZE := 50
+const PP_CAP := 300
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -50,6 +51,13 @@ var damage := PackedInt32Array()  # per-province bombing damage 0..100
 var air_defs: Dictionary = {}
 var air_sup: Dictionary = {}  # derived daily: province -> {country: fighter share}
 var air_cas: Dictionary = {}  # derived daily: province -> {country: close-air-support strength}
+var ideo_defs: Dictionary = {}
+var ideo_order: Array = []
+var law_defs: Dictionary = {}
+var law_defaults: Dictionary = {}
+var event_defs: Array = []
+var decision_defs: Array = []
+var next_event_uid := 1
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -65,6 +73,7 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	unit_defs = load_unit_defs()
 	name_pool = load_name_pool()
 	_load_techs()
+	_load_politics()
 	air_defs = load_air_defs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
@@ -74,14 +83,8 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	countries.clear()
 	for i in caps.size():
 		var d: Dictionary = country_defs[i]
-		countries.append({
-			"id": i, "tag": d["tag"], "name": d["name"], "color": d["color"],
-			"capital": caps[i], "treasury": 120, "income": 0, "upkeep": 0,
-			"ai": true, "alive": true, "last_peace": -100,
-			"stock": _start_stock(), "prod": _zero_res(), "cons": _zero_res(), "short": [],
-			"manpower": 200, "generals": [],
-			"techs": [], "queue": [], "progress": {}, "mods": {}, "industry": 0,
-		})
+		_new_country(d["tag"], d["name"], d["color"], caps[i])
+		_init_politics(i)
 		_spawn_army(i, caps[i])
 		_spawn_army(i, caps[i])
 		for _g in 3:
@@ -137,14 +140,6 @@ func _load_techs() -> void:
 
 func mod(cid: int, key: String) -> int:
 	return countries[cid]["mods"].get(key, 0)
-
-
-func _recalc_mods(cid: int) -> void:
-	var m := {}
-	for id in countries[cid]["techs"]:
-		for k in tech_defs[id]["effects"]:
-			m[k] = m.get(k, 0) + int(tech_defs[id]["effects"][k])
-	countries[cid]["mods"] = m
 
 
 func tech_reqs_met(cid: int, id: String) -> bool:
@@ -517,6 +512,456 @@ func _ai_air(cid: int) -> void:
 					_set_mission(cid, w, "idle", -1)
 
 
+# ---------------------------------------------------------------- politics
+
+func _new_country(tag: String, cname: String, color: String, capital: int) -> Dictionary:
+	var c := {
+		"id": countries.size(), "tag": tag, "name": cname, "color": color,
+		"capital": capital, "treasury": 120, "income": 0, "upkeep": 0,
+		"ai": true, "alive": true, "last_peace": -100,
+		"stock": _start_stock(), "prod": _zero_res(), "cons": _zero_res(), "short": [],
+		"manpower": 200, "generals": [],
+		"techs": [], "queue": [], "progress": {}, "mods": {}, "industry": 0,
+		"ideology": "", "party_pop": {}, "stability": 50, "war_support": 40, "pp": 50,
+		"laws": law_defaults.duplicate(), "done": {}, "timed": [], "crisis": 0,
+		"ev_seen": {}, "pending": [],
+	}
+	countries.append(c)
+	return c
+
+
+func _load_politics() -> void:
+	ideo_defs = {}
+	ideo_order = []
+	law_defs = {}
+	law_defaults = {}
+	event_defs = []
+	decision_defs = []
+	var f := FileAccess.open("res://data/politics.json", FileAccess.READ)
+	if f != null:
+		var parsed: Variant = JSON.parse_string(f.get_as_text())
+		if typeof(parsed) == TYPE_DICTIONARY:
+			for i in parsed["ideologies"]:
+				ideo_defs[i["id"]] = i
+				ideo_order.append(i["id"])
+			law_defs = parsed["laws"]
+			law_defaults = parsed["defaults"]
+	var f2 := FileAccess.open("res://data/events.json", FileAccess.READ)
+	if f2 != null:
+		var p2: Variant = JSON.parse_string(f2.get_as_text())
+		if typeof(p2) == TYPE_DICTIONARY:
+			event_defs = p2["events"]
+	var f3 := FileAccess.open("res://data/decisions.json", FileAccess.READ)
+	if f3 != null:
+		var p3: Variant = JSON.parse_string(f3.get_as_text())
+		if typeof(p3) == TYPE_DICTIONARY:
+			decision_defs = p3["decisions"]
+
+
+func _init_politics(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var ruling: String = ideo_order[rng.randi_range(0, ideo_order.size() - 1)]
+	c["ideology"] = ruling
+	var ruling_pop := 45 + rng.randi_range(0, 15)
+	var others: Array = ideo_order.filter(func(i): return i != ruling)
+	var rem := 100 - ruling_pop
+	var pop := {ruling: ruling_pop}
+	for i in others.size():
+		var left: int = others.size() - 1 - i
+		var v: int = rem if left == 0 else rng.randi_range(1, maxi(1, rem - left))
+		pop[others[i]] = v
+		rem -= v
+	c["party_pop"] = pop
+	c["stability"] = _stability_target(c)
+	c["war_support"] = _war_support_target(c)
+	_recalc_mods(cid)
+
+
+func law_option(category: String, id: String) -> Dictionary:
+	for o in law_defs[category]["options"]:
+		if o["id"] == id:
+			return o
+	return {}
+
+
+func top_opposition(c: Dictionary) -> String:
+	var best := ""
+	var bv := -1
+	for i in ideo_order:
+		if i != c["ideology"] and c["party_pop"][i] > bv:
+			bv = c["party_pop"][i]
+			best = i
+	return best
+
+
+func _stability_target(c: Dictionary) -> int:
+	var t: int = ideo_defs[c["ideology"]]["stability_base"]
+	for cat in law_defs:
+		t += law_option(cat, c["laws"][cat]).get("stability", 0)
+	if c["short"].has("food"):
+		t -= 10
+	if c["short"].has("oil"):
+		t -= 4
+	if c["treasury"] <= 0:
+		t -= 8
+	var weariness := 0
+	for e in enemies_of(c["id"]):
+		weariness += (day - _war_start(c["id"], e)) / 15
+	t -= mini(weariness, 15)
+	return clampi(t, 0, 100)
+
+
+func _war_support_target(c: Dictionary) -> int:
+	var t := 40
+	if not enemies_of(c["id"]).is_empty():
+		t += 15
+	for cat in law_defs:
+		t += law_option(cat, c["laws"][cat]).get("war_support", 0)
+	var age := 0
+	for e in enemies_of(c["id"]):
+		age = maxi(age, day - _war_start(c["id"], e))
+	t -= mini(age / 12, 20)
+	return clampi(t, 0, 100)
+
+
+## Rebuild all modifiers: technologies + ideology + laws + timed effects + stability/war support.
+func _recalc_mods(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var m := {}
+	for id in c["techs"]:
+		for k in tech_defs[id]["effects"]:
+			m[k] = m.get(k, 0) + int(tech_defs[id]["effects"][k])
+	var add := func(d: Dictionary):
+		for k in d:
+			m[k] = m.get(k, 0) + int(d[k])
+	if c["ideology"] != "":
+		add.call(ideo_defs[c["ideology"]]["mods"])
+		for cat in law_defs:
+			add.call(law_option(cat, c["laws"][cat]).get("mods", {}))
+	for t in c["timed"]:
+		m[t["key"]] = m.get(t["key"], 0) + int(t["value"])
+	var stab: int = c["stability"]
+	if stab < 50:
+		m["income_pct"] = m.get("income_pct", 0) - (50 - stab) / 3
+	elif stab > 75:
+		m["income_pct"] = m.get("income_pct", 0) + 3
+	if stab < 25:
+		m["atk_pct"] = m.get("atk_pct", 0) - 5
+	if c["war_support"] < 30:
+		m["atk_pct"] = m.get("atk_pct", 0) - 3
+	elif c["war_support"] >= 70:
+		m["atk_pct"] = m.get("atk_pct", 0) + 3
+	c["mods"] = m
+
+
+func _cond_ok(c: Dictionary, cond: Dictionary) -> bool:
+	var v: Variant = cond.get("value", 0)
+	match cond["type"]:
+		"min_day": return day >= int(v)
+		"stability_below": return c["stability"] < int(v)
+		"stability_above": return c["stability"] > int(v)
+		"war_support_below": return c["war_support"] < int(v)
+		"war_support_above": return c["war_support"] > int(v)
+		"at_war": return not enemies_of(c["id"]).is_empty()
+		"not_at_war": return enemies_of(c["id"]).is_empty()
+		"ideology": return c["ideology"] == v
+		"not_ideology": return c["ideology"] != v
+		"has_tech": return c["techs"].has(v)
+		"treasury_above": return c["treasury"] > int(v)
+		"treasury_below": return c["treasury"] < int(v)
+		"short": return c["short"].has(v)
+		"provinces_min": return country_provinces(c["id"]).size() >= int(v)
+	return false
+
+
+func _conds_ok(c: Dictionary, conds: Array) -> bool:
+	for cd in conds:
+		if not _cond_ok(c, cd):
+			return false
+	return true
+
+
+func _shift_popularity(c: Dictionary, ideo: String, delta: int) -> void:
+	var pop: Dictionary = c["party_pop"]
+	var new_v := clampi(pop[ideo] + delta, 0, 95)
+	var d: int = new_v - pop[ideo]
+	pop[ideo] = new_v
+	var guard := 0
+	while d != 0 and guard < 200:
+		guard += 1
+		var pick := ""
+		for i in ideo_order:
+			if i == ideo:
+				continue
+			if d > 0 and pop[i] > 0 and (pick == "" or pop[i] > pop[pick]):
+				pick = i
+			elif d < 0 and pop[i] < 95 and (pick == "" or pop[i] < pop[pick]):
+				pick = i
+		if pick == "":
+			break
+		if d > 0:
+			pop[pick] -= 1
+			d -= 1
+		else:
+			pop[pick] += 1
+			d += 1
+
+
+func _apply_effect(c: Dictionary, ef: Dictionary) -> void:
+	var v: int = int(ef.get("value", 0))
+	match ef["type"]:
+		"stability": c["stability"] = clampi(c["stability"] + v, 0, 100)
+		"war_support": c["war_support"] = clampi(c["war_support"] + v, 0, 100)
+		"treasury": c["treasury"] = maxi(0, c["treasury"] + v)
+		"treasury_pct": c["treasury"] = maxi(0, c["treasury"] + c["treasury"] * v / 100)
+		"stock": c["stock"][ef["res"]] = clampi(c["stock"][ef["res"]] + v, 0, STOCK_CAP)
+		"manpower": c["manpower"] = maxi(0, c["manpower"] + v)
+		"pp": c["pp"] = clampi(c["pp"] + v, 0, PP_CAP)
+		"popularity": _shift_popularity(c, ef["ideology"], v)
+		"popularity_ruling": _shift_popularity(c, c["ideology"], v)
+		"modifier": c["timed"].append({"key": ef["key"], "value": v, "until": day + int(ef["days"])})
+		"tech_progress":
+			var done := false
+			for id in c["queue"]:
+				if tech_reqs_met(c["id"], id):
+					c["progress"][id] = c["progress"].get(id, 0) + v
+					done = true
+					break
+			if not done:
+				c["pp"] = clampi(c["pp"] + v / 5, 0, PP_CAP)
+		"army_exp":
+			for a in armies:
+				if a["owner"] == c["id"]:
+					for d in a["div"]:
+						d["exp"] = mini(d["exp"] + v, 50)
+
+
+func event_def(id: String) -> Dictionary:
+	for e in event_defs:
+		if e["id"] == id:
+			return e
+	return {}
+
+
+func _fire_event(c: Dictionary, e: Dictionary) -> void:
+	c["ev_seen"][e["id"]] = day
+	if c["ai"]:
+		var total := 0
+		for o in e["options"]:
+			total += int(o["ai"])
+		var r := rng.randi_range(0, maxi(total, 1) - 1)
+		for o in e["options"]:
+			r -= int(o["ai"])
+			if r < 0:
+				for ef in o["effects"]:
+					_apply_effect(c, ef)
+				return
+	else:
+		c["pending"].append({"uid": next_event_uid, "event": e["id"], "day": day})
+		next_event_uid += 1
+		_log("%s: событие — %s" % [date_string(), e["title"]])
+
+
+func _resolve_event(c: Dictionary, uid: int, option: int) -> Dictionary:
+	for p in c["pending"]:
+		if p["uid"] == uid:
+			var e := event_def(p["event"])
+			if option < 0 or option >= e["options"].size():
+				return _fail("invalid option")
+			for ef in e["options"][option]["effects"]:
+				_apply_effect(c, ef)
+			c["pending"].erase(p)
+			return {"ok": true}
+	return _fail("no such event")
+
+
+func _events(c: Dictionary) -> void:
+	for e in event_defs:
+		if e["once"] and c["ev_seen"].has(e["id"]):
+			continue
+		if day - c["ev_seen"].get(e["id"], -99999) < int(e["cooldown"]):
+			continue
+		if not _conds_ok(c, e["conditions"]):
+			continue
+		if rng.randf() >= float(e["chance"]):
+			continue
+		_fire_event(c, e)
+
+
+func _change_government(c: Dictionary, new_ideo: String, why: String) -> void:
+	_log("%s: %s — смена власти (%s): %s" % [date_string(), c["name"], why, ideo_defs[new_ideo]["name"]])
+	c["ideology"] = new_ideo
+	c["stability"] = clampi((c["stability"] + 50) / 2 if why == "выборы" else 40, 0, 100)
+	if why != "выборы":
+		for a in armies:
+			if a["owner"] == c["id"]:
+				_hurt(a, a["strength"] / 10)
+
+
+func _politics() -> void:
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		c["pp"] = mini(c["pp"] + 1, PP_CAP)
+		var live: Array = c["timed"].filter(func(t): return t["until"] > day)
+		c["timed"] = live
+		if day % 2 == 0:
+			var tg := _stability_target(c)
+			c["stability"] += signi(tg - c["stability"])
+			var wt := _war_support_target(c)
+			c["war_support"] += signi(wt - c["war_support"])
+		if day % 5 == 0:
+			if c["stability"] < 45:
+				var opp := top_opposition(c)
+				_shift_popularity(c, c["ideology"], -1)
+				_shift_popularity(c, opp, 1)
+			elif c["stability"] > 65:
+				_shift_popularity(c, c["ideology"], 1)
+		# elections / coups
+		var ideo: Dictionary = ideo_defs[c["ideology"]]
+		if ideo["elections"] and day >= 100 and (day - 100 - 40 * cid) % 365 == 0:
+			var winner: String = c["ideology"]
+			for i in ideo_order:
+				if c["party_pop"][i] > c["party_pop"][winner]:
+					winner = i
+			if winner != c["ideology"]:
+				_change_government(c, winner, "выборы")
+			else:
+				c["stability"] = mini(100, c["stability"] + 3)
+		elif not ideo["elections"] and c["stability"] < 20 and day % 10 == 0 and rng.randf() < 0.3:
+			_change_government(c, top_opposition(c), "переворот")
+		if c["stability"] < 10:
+			c["crisis"] += 1
+		else:
+			c["crisis"] = 0
+		if c["crisis"] >= 20:
+			c["crisis"] = 0
+			if country_provinces(cid).size() >= 6:
+				_civil_war(cid)
+			else:
+				_change_government(c, top_opposition(c), "революция")
+		# unanswered events resolve themselves
+		for p in c["pending"].duplicate():
+			if day - p["day"] > 20:
+				_resolve_event(c, p["uid"], 0)
+		_recalc_mods(cid)
+		_events(c)
+
+
+func _civil_war(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var provs := provinces()
+	var own := country_provinces(cid)
+	var dist := {c["capital"]: 0}
+	var queue: Array[int] = [c["capital"]]
+	while not queue.is_empty():
+		var cur: int = queue.pop_front()
+		for q in provs[cur]["land_neighbors"]:
+			if owner[q] == cid and not dist.has(q):
+				dist[q] = dist[cur] + 1
+				queue.append(q)
+	own.sort_custom(func(a, b): return dist.get(a, 99) > dist.get(b, 99) or (dist.get(a, 99) == dist.get(b, 99) and a < b))
+	var n := maxi(3, own.size() * 2 / 5)
+	var rebel_ps: Array = own.slice(0, n)
+	var cap: int = rebel_ps[0]
+	for p in rebel_ps:
+		if provs[p]["pop"] > provs[cap]["pop"]:
+			cap = p
+	var color := "#" + Color.from_hsv(rng.randf(), 0.5, 0.8).to_html(false)
+	var rc := _new_country("RB%d" % countries.size(), "Повстанцы (%s)" % c["name"], color, cap)
+	var rid: int = rc["id"]
+	var opp := top_opposition(c)
+	rc["ideology"] = opp
+	rc["party_pop"] = {}
+	for i in ideo_order:
+		rc["party_pop"][i] = 10 if i != opp else 100 - 10 * (ideo_order.size() - 1)
+	rc["techs"] = c["techs"].duplicate()
+	rc["treasury"] = c["treasury"] * 35 / 100
+	c["treasury"] -= rc["treasury"]
+	rc["stability"] = 40
+	rc["war_support"] = 55
+	for p in rebel_ps:
+		owner[p] = rid
+		dirty_provinces.append(p)
+	for a in armies:
+		if a["owner"] == cid and rebel_ps.has(a["prov"]):
+			_set_general(a, -1)
+			a["owner"] = rid
+	for w in wings:
+		if w["owner"] == cid and rebel_ps.has(w["base"]):
+			w["owner"] = rid
+	_spawn_army(rid, cap)
+	_spawn_army(rid, cap)
+	for _g in 2:
+		_new_general(rid)
+	var mine := armies_of(rid)
+	for k in mini(2, mine.size()):
+		_set_general(mine[k], rc["generals"][k]["id"])
+	rc["stock"]["steel"] = 100
+	wars.append({"a": rid, "b": cid, "start": day})
+	c["stability"] = 35
+	_recalc_mods(rid)
+	_recalc_mods(cid)
+	_log("%s: гражданская война в государстве %s — образованы %s" % [date_string(), c["name"], rc["name"]])
+
+
+func _ai_politics(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var at_war_now := not enemies_of(cid).is_empty()
+	# laws
+	var want_econ: String = "war" if at_war_now else ("partial" if c["stability"] > 55 else "civilian")
+	var want_cons: String = "extended" if at_war_now else "limited"
+	for pair in [["economy", want_econ], ["conscription", want_cons]]:
+		var cat: String = pair[0]
+		if c["laws"][cat] != pair[1] and c["pp"] >= int(law_option(cat, pair[1]).get("cost", 0)) + 40:
+			_set_law(c, cat, pair[1])
+			break
+	# one decision per call
+	for dd in decision_defs:
+		if dd["ai"] <= 0 or not _conds_ok(c, dd["ai_conditions"]):
+			continue
+		if _decision_error(c, dd) == "":
+			_run_decision(c, dd)
+			break
+
+
+func _set_law(c: Dictionary, cat: String, id: String) -> void:
+	c["pp"] -= int(law_option(cat, id).get("cost", 0))
+	c["laws"][cat] = id
+	_recalc_mods(c["id"])
+
+
+func decision_def(id: String) -> Dictionary:
+	for d in decision_defs:
+		if d["id"] == id:
+			return d
+	return {}
+
+
+func _decision_error(c: Dictionary, dd: Dictionary) -> String:
+	if day - c["done"].get(dd["id"], -99999) < int(dd["cooldown"]):
+		return "on cooldown"
+	if not _conds_ok(c, dd["requires"]):
+		return "requirements not met"
+	var cost: Dictionary = dd["cost"]
+	if c["pp"] < cost.get("pp", 0):
+		return "not enough influence"
+	if c["treasury"] < cost.get("treasury", 0):
+		return "not enough funds"
+	return ""
+
+
+func _run_decision(c: Dictionary, dd: Dictionary) -> void:
+	var cost: Dictionary = dd["cost"]
+	c["pp"] -= int(cost.get("pp", 0))
+	c["treasury"] -= int(cost.get("treasury", 0))
+	for ef in dd["effects"]:
+		_apply_effect(c, ef)
+	c["done"][dd["id"]] = day
+	_log("%s: %s — %s" % [date_string(), c["name"], dd["name"]])
+
+
 static func load_unit_defs() -> Dictionary:
 	var out := {}
 	var f := FileAccess.open("res://data/units.json", FileAccess.READ)
@@ -769,6 +1214,28 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			c["manpower"] -= 2 * unit_defs["infantry"]["manpower"]
 			_spawn_army(cid, c["capital"])
 			return {"ok": true}
+		"set_law":
+			var cat: String = cmd.get("category", "")
+			var lid: String = cmd.get("law", "")
+			if not law_defs.has(cat) or law_option(cat, lid).is_empty():
+				return _fail("invalid law")
+			if countries[cid]["laws"][cat] == lid:
+				return _fail("already in force")
+			if countries[cid]["pp"] < int(law_option(cat, lid).get("cost", 0)):
+				return _fail("not enough influence")
+			_set_law(countries[cid], cat, lid)
+			return {"ok": true}
+		"decision":
+			var dd := decision_def(cmd.get("id", ""))
+			if dd.is_empty():
+				return _fail("invalid decision")
+			var err := _decision_error(countries[cid], dd)
+			if err != "":
+				return _fail(err)
+			_run_decision(countries[cid], dd)
+			return {"ok": true}
+		"event_choice":
+			return _resolve_event(countries[cid], cmd.get("uid", -1), cmd.get("option", -1))
 		"build_wing":
 			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
 		"air_mission":
@@ -989,6 +1456,7 @@ func tick_day() -> void:
 	_economy()
 	_trade()
 	_resources()
+	_politics()
 	_research()
 	_move_armies()
 	_move_fleets()
@@ -1304,6 +1772,8 @@ func _occupation() -> void:
 
 func _capital_fell(loser: int, winner: int) -> void:
 	_log("%s: пала столица %s" % [date_string(), countries[loser]["name"]])
+	countries[loser]["stability"] = maxi(0, countries[loser]["stability"] - 20)
+	countries[loser]["war_support"] = maxi(0, countries[loser]["war_support"] - 10)
 	var rest := country_provinces(loser)
 	if not rest.is_empty():
 		countries[loser]["capital"] = rest[0]
@@ -1775,6 +2245,8 @@ func _ai() -> void:
 		_ai_generals(cid)
 		_ai_air(cid)
 		if day % 10 == 0:
+			_ai_politics(cid)
+		if day % 10 == 0:
 			_ai_research(cid)
 		if day % 10 == 0:
 			_ai_merge(cid)
@@ -1866,7 +2338,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "next_general_id": next_general_id, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -1891,6 +2363,8 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
+	sim.next_event_uid = d["next_event_uid"]
+	sim._load_politics()
 	sim.wings = d["wings"]
 	sim.next_wing_id = d["next_wing_id"]
 	sim.damage = d["damage"]
@@ -1898,8 +2372,6 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
-	for c in sim.countries:
-		sim._recalc_mods(c["id"])
 	return sim
 
 

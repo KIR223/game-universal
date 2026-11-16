@@ -1,0 +1,126 @@
+{
+ "schema_version": 1,
+ "ideologies": [
+  {
+   "id": "democracy",
+   "name": "Демократия",
+   "color": "#5da0e6",
+   "stability_base": 55,
+   "mods": {
+    "income_pct": 3,
+    "research_pct": 5
+   },
+   "elections": true
+  },
+  {
+   "id": "monarchy",
+   "name": "Монархия",
+   "color": "#d6b04c",
+   "stability_base": 58,
+   "mods": {
+    "manpower_pct": 3,
+    "def_pct": 3
+   },
+   "elections": false
+  },
+  {
+   "id": "communism",
+   "name": "Коммунизм",
+   "color": "#c9443a",
+   "stability_base": 50,
+   "mods": {
+    "steel_pct": 8,
+    "upkeep_pct": -3
+   },
+   "elections": false
+  },
+  {
+   "id": "autocracy",
+   "name": "Автократия",
+   "color": "#7a7f8a",
+   "stability_base": 45,
+   "mods": {
+    "atk_pct": 3,
+    "manpower_pct": 5
+   },
+   "elections": false
+  }
+ ],
+ "laws": {
+  "conscription": {
+   "name": "Призыв",
+   "options": [
+    {
+     "id": "volunteer",
+     "name": "Добровольцы",
+     "cost": 0,
+     "mods": {
+      "manpower_pct": -20
+     },
+     "stability": 3,
+     "war_support": -5
+    },
+    {
+     "id": "limited",
+     "name": "Ограниченный призыв",
+     "cost": 50,
+     "mods": {},
+     "stability": 0,
+     "war_support": 0
+    },
+    {
+     "id": "extended",
+     "name": "Расширенный призыв",
+     "cost": 100,
+     "mods": {
+      "manpower_pct": 30
+     },
+     "stability": -5,
+     "war_support": 5
+    }
+   ]
+  },
+  "economy": {
+   "name": "Экономика",
+   "options": [
+    {
+     "id": "civilian",
+     "name": "Гражданская экономика",
+     "cost": 0,
+     "mods": {
+      "income_pct": 8,
+      "steel_pct": -10
+     },
+     "stability": 2,
+     "war_support": -3
+    },
+    {
+     "id": "partial",
+     "name": "Частичная мобилизация",
+     "cost": 80,
+     "mods": {
+      "steel_pct": 10
+     },
+     "stability": -1,
+     "war_support": 2
+    },
+    {
+     "id": "war",
+     "name": "Военная экономика",
+     "cost": 150,
+     "mods": {
+      "steel_pct": 25,
+      "income_pct": -8,
+      "upkeep_pct": -10
+     },
+     "stability": -6,
+     "war_support": 6
+    }
+   ]
+  }
+ },
+ "defaults": {
+  "conscription": "limited",
+  "economy": "civilian"
+ }
+}
