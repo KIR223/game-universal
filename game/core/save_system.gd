@@ -19,6 +19,10 @@ static func load_slot(slot: String = "quick") -> Simulation:
 		return null
 	var f := FileAccess.open(path, FileAccess.READ)
 	var d: Variant = str_to_var(f.get_as_text())
-	if typeof(d) != TYPE_DICTIONARY or d.get("version", -1) != Simulation.SAVE_VERSION:
+	if typeof(d) != TYPE_DICTIONARY or d.get("version", -1) < Simulation.MIN_SAVE_VERSION or d.get("version", -1) > Simulation.SAVE_VERSION:
 		return null
-	return Simulation.from_dict(d, Simulation.load_country_defs())
+	var sim := Simulation.from_dict(d, Simulation.load_country_defs())
+	if sim.load_error != "":
+		push_warning("save not loaded: " + sim.load_error)
+		return null
+	return sim

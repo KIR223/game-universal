@@ -890,7 +890,8 @@ func test_scenarios_builtin() -> void:
 		var sim := Simulation.new()
 		var problems := sim.setup_scenario(scn)
 		check(problems.is_empty(), "scenario %s loads cleanly %s" % [scn.get("id"), str(problems)])
-		check(sim.countries.size() == scn["countries"].size(), "%s: country count" % scn.get("id"))
+		if scn.get("world", "procedural") != "earth":
+			check(sim.countries.size() == scn["countries"].size(), "%s: country count" % scn.get("id"))
 		for c in sim.countries:
 			check(not sim.country_provinces(c["id"]).is_empty(), "%s: %s owns land" % [scn.get("id"), c["tag"]])
 		for i in 30:
@@ -1065,3 +1066,297 @@ func test_scenario_editor_logic() -> void:
 	check(ed.sim.countries.size() == n0, "country removed")
 	ed.queue_free()
 	map.queue_free()
+
+
+# ================================================================ real-world map
+
+func _earth() -> Simulation:
+	var sim := Simulation.new()
+	var probs := sim.setup_scenario(ScenarioLoader.read_file("res://game/scenarios/modern_world.json"))
+	check(probs.is_empty(), "modern_world loads %s" % str(probs))
+	return sim
+
+
+func test_earth_dataset_integrity() -> void:
+	var man := EarthWorld.manifest()
+	check(man.has("world_hash") and man["files"].size() >= 10, "manifest present")
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	var names: Array = man["files"].keys()
+	names.sort()
+	for fn in names:
+		var d: String = FileAccess.get_sha256("res://data/world/" + fn)
+		check(d == man["files"][fn]["sha256"], "sha256 of " + fn)
+		ctx.update((fn + d).to_utf8_buffer())
+	check(ctx.finish().hex_encode() == man["world_hash"], "world_hash matches the files (platform independent)")
+	var w := EarthWorld.load_world()
+	check(w["world_hash"] == man["world_hash"], "loader reports the manifest hash")
+	check(w["provinces"].size() == int(man["counts"]["cells_land"]) + int(man["counts"]["cells_sea"]), "cell count matches the manifest")
+
+
+func test_earth_cells_geometry() -> void:
+	var w := EarthWorld.load_world()
+	var provs: Array = w["provinces"]
+	var nl: int = w["land_count"]
+	var w_px: int = w["w"]
+	var h_px: int = w["h"]
+	var bad := 0
+	for i in provs.size():
+		var p: Dictionary = provs[i]
+		if p["id"] != i or p["land"] != (i < nl) or p["cell_count"] <= 0 or p["area"] <= 0:
+			bad += 1
+		var c: Vector2 = p["center"]
+		if c.x < 0 or c.y < 0 or c.x >= w_px or c.y >= h_px:
+			bad += 1
+	check(bad == 0, "ids unique & sequential (land first), geometry sane (%d bad)" % bad)
+	var asym := 0
+	for p in provs:
+		for q in p["neighbors"]:
+			if q == p["id"] or not provs[q]["neighbors"].has(p["id"]):
+				asym += 1
+		for q in p["land_neighbors"]:
+			if not provs[q]["land"]:
+				asym += 1
+	check(asym == 0, "adjacency symmetric, no self links, land_neighbors are land (%d bad)" % asym)
+	# raster <-> cell lists agree (sampled)
+	var mism := 0
+	for c in range(0, provs.size(), 5):
+		for px in w["prov_cells"][c]:
+			if w["cell_prov"][px] != c:
+				mism += 1
+	check(mism == 0, "raster agrees with per-cell pixel lists (%d bad)" % mism)
+	# cells nest inside administrative regions, regions inside one country
+	var nest := 0
+	var area_sum := 0.0
+	for i in nl:
+		var p: Dictionary = provs[i]
+		var r: int = p["region"]
+		if r <= 0 or r > w["regions"].size() or w["regions"][r - 1]["country"] != p["country"]:
+			nest += 1
+		area_sum += p["area"]
+	check(nest == 0, "every land cell belongs to a region of the same country (%d bad)" % nest)
+	check(area_sum > 1.2e8 and area_sum < 1.7e8, "land area plausible: %.0f million km2" % (area_sum / 1e6))
+	# reality checks
+	var paris := EarthWorld.cell_at_lonlat(w, 2.35, 48.85)
+	check(provs[paris]["land"] and w["countries"][provs[paris]["country"]]["name"] == "France", "Paris is in France")
+	var sydney := EarthWorld.cell_at_lonlat(w, 151.2, -33.87)
+	check(provs[sydney]["land"] and w["countries"][provs[sydney]["country"]]["name"] == "Australia", "Sydney is in Australia")
+	check(not provs[EarthWorld.cell_at_lonlat(w, -30.0, 30.0)]["land"], "mid-Atlantic is sea")
+	check(provs[EarthWorld.cell_at_lonlat(w, 27.6, 62.8)]["terrain"] != "desert", "Finland is not a desert")
+	check(provs[EarthWorld.cell_at_lonlat(w, 10.0, 24.0)]["terrain"] == "desert", "Sahara is desert")
+
+
+func test_earth_settlements_and_search() -> void:
+	var man := EarthWorld.manifest()
+	var count := EarthWorld.settlement_count()
+	check(count == int(man["counts"]["settlements"]), "settlements loaded (%d)" % count)
+	var w := EarthWorld.load_world()
+	var bad := 0
+	for i in count:
+		if EarthWorld.S_CELL[i] < 0 or EarthWorld.S_CELL[i] >= w["land_count"] or EarthWorld.S_POP[i] < 0 or EarthWorld.S_NAME[i] == "":
+			bad += 1
+	var sorted_ok := true
+	for i in range(1, mini(count, 5000)):
+		if EarthWorld.S_POP[i] > EarthWorld.S_POP[i - 1]:
+			sorted_ok = false
+	check(sorted_ok, "settlement ids are ordered by population")
+	check(bad == 0, "every settlement sits in a land cell (%d bad)" % bad)
+	var res := EarthWorld.search("moscow")
+	check(not res.is_empty() and res[0]["pop"] > 10000000, "search 'moscow' finds the big city first")
+	var ru := EarthWorld.search("Париж")
+	check(not ru.is_empty() and ru[0]["name"] == "Paris", "Russian name search finds Paris")
+	check(EarthWorld.search("zzzzqqqq").is_empty(), "unknown name finds nothing")
+	check(EarthWorld.search("a").is_empty(), "too-short queries are ignored")
+	var cap_count := 0
+	for i in count:
+		cap_count += EarthWorld.S_CAP[i]
+	check(cap_count >= 150, "capitals flagged (%d)" % cap_count)
+
+
+func test_earth_scenario_setup() -> void:
+	var sim := _earth()
+	check(sim.countries.size() >= 190, "real countries created (%d)" % sim.countries.size())
+	check(sim.is_earth_world() and sim.provinces().size() > 14000, "real-world cells in use")
+	var bad := 0
+	for c in sim.countries:
+		if sim.cells_of(c["id"]).is_empty() or sim.owner[c["capital"]] != c["id"]:
+			bad += 1
+	check(bad == 0, "every country owns land and holds its capital (%d bad)" % bad)
+	check(sim.owner == sim.legal, "at the start control equals recognised ownership")
+	var usa := -1
+	for c in sim.countries:
+		if c["name"] == "США":
+			usa = c["id"]
+	check(usa >= 0 and sim.cells_of(usa).size() > 500, "USA is large with Russian name")
+	var tot := 0
+	for c in sim.countries:
+		tot += sim.armies_of(c["id"]).size()
+	check(tot > 150, "starting armies exist (%d)" % tot)
+	# two sims are independent although they share the dataset
+	var s2 := _earth()
+	s2.set_deposits(0, {"oil": 9})
+	check(sim.provinces()[0]["deposits"].get("oil", 0) != 9 or sim.provinces()[0]["deposits"].get("oil", 0) == EarthWorld.load_world()["provinces"][0]["deposits"].get("oil", 0), "deposit edits do not leak between simulations")
+
+
+func _find_border(sim: Simulation) -> Dictionary:
+	for c in sim.countries:
+		var a: int = c["id"]
+		for p in sim.cells_of(a):
+			if sim.region_cells(sim.region_of(p)).size() < 3 or p == c["capital"]:
+				continue
+			for q in sim.provinces()[p]["land_neighbors"]:
+				var b: int = sim.owner[q]
+				if b >= 0 and b != a:
+					return {"a": a, "b": b, "cell": p, "region": sim.region_of(p)}
+	return {}
+
+
+func test_partial_capture_of_one_cell() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	check(not f.is_empty(), "found a border region with several cells")
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var cell: int = f["cell"]
+	var region: int = f["region"]
+	var cells: Array = sim.region_cells(region)
+	var before: Dictionary = sim.region_control(region)
+	check(before.size() == 1 and before.has(a), "region starts fully controlled by its owner")
+	# war + an attacker army standing in ONE cell
+	sim.wars.append({"a": b, "b": a, "start": 0})
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+	sim._add_army(b, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[cell] == b, "the occupied cell changes controller")
+	var untouched := 0
+	for q in cells:
+		if q != cell and sim.owner[q] == a:
+			untouched += 1
+	check(untouched == cells.size() - 1, "ONE captured cell does NOT hand over the other cells of the region (%d of %d kept)" % [untouched, cells.size() - 1])
+	var after: Dictionary = sim.region_control(region)
+	check(after.size() == 2 and after[b] == 1 and after[a] == cells.size() - 1, "region is now contested by two states")
+	var legal_after: Dictionary = sim.region_legal(region)
+	check(legal_after.size() == 1 and legal_after.has(a), "recognised (legal) ownership is unchanged by occupation")
+	# the front line moved: the new cell is on b's front, a's front now touches it
+	check(sim.front_cells(b, a).has(cell), "captured cell is on the attacker's front")
+	var front_a := sim.front_cells(a, b)
+	var touches := false
+	for q in front_a:
+		if sim.provinces()[q]["land_neighbors"].has(cell):
+			touches = true
+	check(touches, "defender's front now borders the captured cell")
+	# march on: capture a neighbouring cell too; the region stays partially held
+	var nxt := -1
+	for q in sim.provinces()[cell]["land_neighbors"]:
+		if sim.owner[q] == a and cells.has(q):
+			nxt = q
+			break
+	if nxt >= 0:
+		sim.armies = sim.armies.filter(func(x): return x["prov"] != nxt)
+		sim._add_army(b, nxt, [sim._make_div("infantry")])
+		sim._occupation()
+		check(sim.owner[nxt] == b, "front advances cell by cell")
+		var held := 0
+		for q in cells:
+			if sim.owner[q] == a:
+				held += 1
+		check(held == cells.size() - 2, "the remaining cells still belong to the defender")
+	# counter-attack: the defender retakes a cell
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+	sim._add_army(a, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[cell] == a, "counter-attack restores control of the cell")
+
+
+func test_encirclement_and_supply() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var p: int = f["cell"]
+	sim.armies = sim.armies.filter(func(x): return x["owner"] != a or x["prov"] != p)
+	sim._add_army(a, p, [sim._make_div("infantry")])
+	var army: Dictionary = sim.armies_of(a).filter(func(x): return x["prov"] == p)[0]
+	sim.day = (3 - a % 3) % 3
+	sim._supply()
+	check(army["supply"] > 0, "connected army is supplied (%d%%)" % army["supply"])
+	check(not sim.cut_off_cells(a).has(p), "connected cell is not cut off")
+	# surround p with enemy-held cells at war
+	sim.wars.append({"a": a, "b": b, "start": 0})
+	var ring: Array = sim.provinces()[p]["land_neighbors"].duplicate()
+	for q in ring:
+		sim.set_owner(q, b)
+	sim.day = (3 - a % 3) % 3
+	sim._supply()
+	check(army["supply"] == 0, "encircled army loses all supply")
+	check(sim.cut_off_cells(a).has(p), "encircled cell is reported as cut off")
+	# relieve: give the neighbours back and supply returns
+	for q in ring:
+		sim.set_owner(q, a)
+	sim.day = (3 - a % 3) % 3
+	sim._supply()
+	check(army["supply"] > 0, "supply is restored when the ring is broken")
+
+
+func test_settlement_control() -> void:
+	var sim := _earth()
+	var big: Dictionary = EarthWorld.search("Hamburg")[0]
+	var cell: int = big["cell"]
+	var owner0: int = sim.owner[cell]
+	var s0 := sim.settlement_status(big)
+	check(s0["controller"] == owner0 and not s0["contested"], "city starts under its owner's control")
+	var enemy := 0 if owner0 != 0 else 1
+	sim.wars.append({"a": enemy, "b": owner0, "start": 0})
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)  # no defenders in this cell
+	sim._add_army(enemy, cell, [sim._make_div("infantry")])
+	check(sim.settlement_status(big)["contested"], "enemy army in the cell contests the city")
+	sim._occupation()
+	var s1 := sim.settlement_status(big)
+	check(s1["controller"] == enemy and s1["legal"] == owner0, "city control changes but legal ownership stays")
+	check(EarthWorld.settlement_count() > 0, "settlement list available")
+
+
+func test_earth_save_load_and_migration() -> void:
+	var sim := _earth()
+	for i in 12:
+		sim.tick_day()
+	var d := sim.to_dict()
+	check(d["world_kind"] == "earth" and d["world_hash"] == EarthWorld.manifest()["world_hash"], "save records dataset identity")
+	var r := Simulation.from_dict(str_to_var(var_to_str(d)), Simulation.load_country_defs())
+	check(r.load_error == "" and r.checksum() == sim.checksum(), "earth save/load preserves state")
+	check(r.legal == sim.legal and r.cells_of(0) == sim.cells_of(0), "ownership caches rebuilt after load")
+	for i in 8:
+		sim.tick_day()
+		r.tick_day()
+	check(sim.checksum() == r.checksum(), "loaded earth game continues identically")
+	var bad: Dictionary = str_to_var(var_to_str(d))
+	bad["world_hash"] = "deadbeef"
+	check(Simulation.from_dict(bad, Simulation.load_country_defs()).load_error != "", "save from a different dataset is refused, not silently loaded")
+	# migration: a v10 (procedural) save has no legal ownership / world kind
+	var old := _make(42)
+	for i in 5:
+		old.tick_day()
+	var od := old.to_dict()
+	od["version"] = 10
+	for k in ["world_kind", "world_hash", "legal", "ai_war_chance"]:
+		od.erase(k)
+	var m := Simulation.from_dict(str_to_var(var_to_str(od)), Simulation.load_country_defs())
+	check(m.load_error == "" and m.legal == m.owner and m.world.get("kind", "procedural") != "earth", "v10 saves migrate (legal := owner)")
+	check(m.checksum() == old.checksum(), "migrated save keeps its state")
+
+
+func test_earth_determinism_and_performance() -> void:
+	var t0 := Time.get_ticks_msec()
+	var a := _earth()
+	var setup_ms := Time.get_ticks_msec() - t0
+	check(setup_ms < 6000, "scenario setup is fast enough (%d ms)" % setup_ms)
+	var b := _earth()
+	var t1 := Time.get_ticks_msec()
+	for i in 40:
+		a.tick_day()
+	var per_day := float(Time.get_ticks_msec() - t1) / 40.0
+	for i in 40:
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "real-world simulation is deterministic")
+	check(per_day < 400.0, "a day costs %.0f ms (budget 400)" % per_day)
+	print("  earth: setup %d ms, %.0f ms/day, %d countries, %d wars" % [setup_ms, per_day, a.countries.size(), a.wars.size()])

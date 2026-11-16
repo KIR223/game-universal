@@ -1,5 +1,6 @@
 {
  "scenarios": [
+  "modern_world.json",
   "world_order.json",
   "cold_blocs.json",
   "chaos.json"
