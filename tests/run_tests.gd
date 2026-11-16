@@ -264,3 +264,135 @@ func test_resources_and_trade() -> void:
 		s2.apply_command({"type": "propose_trade", "country": 0, "target": nb[0], "res": "food", "amount": 2})
 		s2.apply_command({"type": "declare_war", "country": 0, "target": nb[0]})
 		check(s2.trades.is_empty(), "war cancels trade deals")
+
+
+func test_divisions_generals_supply() -> void:
+	var sim := _make(42)
+	check(sim.unit_defs.size() == 3, "unit defs loaded")
+	var c: Dictionary = sim.countries[0]
+	var a: Dictionary = sim.armies_of(0)[0]
+	check(a["div"].size() == 2 and a["strength"] == 1000, "starting army = 2 infantry (1000 hp)")
+	check(a["gen"] >= 0, "starting army has a general")
+	check(c["generals"].size() == 3, "3 generals at start")
+	# training
+	c["treasury"] = 5000
+	c["stock"]["steel"] = 500
+	var mp0: int = c["manpower"]
+	var r := sim.apply_command({"type": "train_division", "country": 0, "unit": "armor", "army": a["id"]})
+	check(r["ok"] and a["div"].size() == 3 and c["manpower"] < mp0, "train armor into army")
+	check(a["strength"] == 1600, "strength = sum of division hp")
+	c["manpower"] = 0
+	check(not sim.apply_command({"type": "train_division", "country": 0, "unit": "infantry"})["ok"], "training needs manpower")
+	c["manpower"] = 500
+	# split / merge
+	var n_before := sim.armies.size()
+	check(sim.apply_command({"type": "split_army", "country": 0, "army": a["id"], "count": 1})["ok"], "split army")
+	check(sim.armies.size() == n_before + 1 and a["div"].size() == 2, "split creates a new army")
+	var other: Dictionary = sim.armies[sim.armies.size() - 1]
+	check(sim.apply_command({"type": "merge_armies", "country": 0, "army": a["id"], "other": other["id"]})["ok"], "merge back")
+	check(a["div"].size() == 3 and sim.armies.size() == n_before, "merge restores size")
+	# generals
+	var g: Dictionary = c["generals"][2]
+	check(sim.apply_command({"type": "assign_general", "country": 0, "army": a["id"], "general": g["id"]})["ok"], "assign general")
+	check(g["army"] == a["id"] and a["gen"] == g["id"], "general bound to army")
+	# combat power: armor strong on plains, weak in mountains; supply matters
+	var tank := {"owner": 0, "prov": 0, "div": [sim._make_div("armor")], "strength": 600, "gen": -1, "supply": 100, "path": [], "move": 0, "id": -1}
+	var inf := {"owner": 0, "prov": 0, "div": [sim._make_div("infantry")], "strength": 500, "gen": -1, "supply": 100, "path": [], "move": 0, "id": -2}
+	var plain := -1
+	var mount := -1
+	for p in sim.provinces():
+		if p["terrain"] == "plains": plain = p["id"]
+		if p["terrain"] == "mountain": mount = p["id"]
+	if plain >= 0 and mount >= 0:
+		tank["prov"] = plain
+		inf["prov"] = plain
+		check(sim.army_power(tank, true) > sim.army_power(inf, true) * 2.0, "tanks dominate infantry on plains")
+		tank["prov"] = mount
+		inf["prov"] = mount
+		check(sim.army_power(tank, true) < sim.army_power(inf, true) * 1.4, "tanks lose their edge in mountains")
+	tank["supply"] = 0
+	tank["prov"] = plain
+	var full: float = sim.army_power(inf, true)
+	inf["prov"] = plain
+	inf["supply"] = 0
+	check(sim.army_power(inf, true) < full * 0.6, "no supply roughly halves power")
+	# supply decays with distance from the capital
+	var dist := sim._supply_dist(0)
+	check(dist[c["capital"]] == 0, "capital is a supply hub")
+	var far := 0
+	for p in dist:
+		far = maxi(far, dist[p])
+	check(far >= 3, "supply distance grows (max %d)" % far)
+	sim.tick_day()
+	check(a["supply"] > 0 and a["supply"] <= 100, "armies get a supply value")
+
+
+func test_supply_hurts() -> void:
+	var sim := _make(42)
+	var a: Dictionary = sim.armies_of(0)[0]
+	# park the army in enemy-ish land far away from the capital
+	var dist := sim._supply_dist(0)
+	var far_p := -1
+	var far_d := 0
+	for p in dist:
+		if dist[p] > far_d:
+			far_d = dist[p]
+			far_p = p
+	a["prov"] = far_p
+	sim._supply()
+	check(a["supply"] < 80, "far-away army has reduced supply (%d)" % a["supply"])
+
+
+func test_technology() -> void:
+	var sim := _make(42)
+	check(sim.tech_defs.size() == 33, "tech defs loaded")
+	var c: Dictionary = sim.countries[0]
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "nope"})["ok"], "unknown tech rejected")
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "ind3"})["ok"], "missing prerequisites rejected")
+	check(sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})["ok"], "queue ag1")
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})["ok"], "no duplicate queue")
+	check(sim.apply_command({"type": "research", "country": 0, "tech": "ag2"})["ok"], "can queue behind queued prerequisite")
+	check(sim.apply_command({"type": "unqueue_tech", "country": 0, "tech": "ag1"})["ok"], "unqueue")
+	check(c["queue"].is_empty(), "dependents removed with their prerequisite")
+	# research finishes and its effect applies
+	sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})
+	var days := 0
+	while not c["techs"].has("ag1") and days < 200:
+		sim.tick_day()
+		days += 1
+	check(c["techs"].has("ag1"), "ag1 researched in %d days" % days)
+	check(days > 5 and days < 120, "research takes a sensible time (%d days)" % days)
+	check(sim.mod(0, "food_pct") == 15, "effect applied to modifiers")
+	# slots: only `slots` techs progress at once
+	var s2 := _make(42)
+	for id in ["ag1", "en1", "wp1", "lg1"]:
+		s2.apply_command({"type": "research", "country": 0, "tech": id})
+	s2.tick_day()
+	check(s2.countries[0]["progress"].size() == s2.research_slots(0), "only %d techs progress at once" % s2.research_slots(0))
+	# real effects
+	var a := _make(42)
+	var b := _make(42)
+	b.countries[0]["techs"] = ["wp1", "ar1", "lg1", "eco1"]
+	b._recalc_mods(0)
+	var inf := {"owner": 0, "prov": 0, "div": [a._make_div("infantry")], "strength": 500, "gen": -1, "supply": 100, "path": [], "move": 0, "id": -1}
+	check(b.army_power(inf, true) > a.army_power(inf, true) * 1.09, "weapons tech boosts infantry attack")
+	a.tick_day()
+	b.tick_day()
+	check(b.countries[0]["income"] > a.countries[0]["income"], "economy tech raises income")
+	var dist_a := a._supply_dist(0)
+	check(dist_a.size() > 0, "supply hubs exist")
+	# AI researches and everything stays deterministic
+	var x := _make(7)
+	var y := _make(7)
+	for i in 300:
+		x.tick_day()
+		y.tick_day()
+	check(x.checksum() == y.checksum(), "deterministic with research")
+	var total := 0
+	for cc in x.countries:
+		total += cc["techs"].size()
+	check(total > 8, "AI countries research technologies (%d done)" % total)
+	# save/load keeps research
+	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == x.checksum(), "research survives save/load")
+	check(r.mod(0, "income_pct") == x.mod(0, "income_pct"), "modifiers rebuilt after load")

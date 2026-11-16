@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 3
+const SAVE_VERSION := 5
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -14,6 +14,11 @@ const FLEET_STEEL := 100
 const STOCK_CAP := 3000
 const MAX_DEALS := 6
 const GRACE_DAYS := 60  # AI does not start wars before this day
+const MAX_DIV := 9
+const AI_STACK := 6
+const MAX_GENERALS := 8
+const MAX_QUEUE := 8
+const BASE_SLOTS := 2
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -35,6 +40,11 @@ var trades: Array = []  # {"id","seller","buyer","res","amount","price","fails"}
 var next_trade_id := 1
 var embargoes: Array = []  # {"a": embargoer, "b": target}
 var res_defs: Array = []
+var unit_defs: Dictionary = {}
+var name_pool: Dictionary = {}
+var next_general_id := 1
+var tech_defs: Dictionary = {}
+var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
 var command_log: Array = []
 var log_lines: Array = []
@@ -45,6 +55,9 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	seed_value = seed_value_
 	rng.seed = seed_value
 	res_defs = load_resource_defs()
+	unit_defs = load_unit_defs()
+	name_pool = load_name_pool()
+	_load_techs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
 	owner = WorldGen.assign_owners(world, caps)
@@ -56,9 +69,16 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 			"capital": caps[i], "treasury": 120, "income": 0, "upkeep": 0,
 			"ai": true, "alive": true, "last_peace": -100,
 			"stock": _start_stock(), "prod": _zero_res(), "cons": _zero_res(), "short": [],
+			"manpower": 200, "generals": [],
+			"techs": [], "queue": [], "progress": {}, "mods": {}, "industry": 0,
 		})
 		_spawn_army(i, caps[i])
 		_spawn_army(i, caps[i])
+		for _g in 3:
+			_new_general(i)
+		var mine := armies_of(i)
+		for k in mini(2, mine.size()):
+			_set_general(mine[k], countries[i]["generals"][k]["id"])
 
 
 func _zero_res() -> Dictionary:
@@ -89,6 +109,127 @@ func price_of(res: String) -> int:
 		if r["id"] == res:
 			return r["price"]
 	return 1
+
+
+func _load_techs() -> void:
+	tech_defs = {}
+	tech_order = []
+	var f := FileAccess.open("res://data/techs.json", FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return
+	for t in parsed.get("techs", []):
+		tech_defs[t["id"]] = t
+		tech_order.append(t["id"])
+
+
+func mod(cid: int, key: String) -> int:
+	return countries[cid]["mods"].get(key, 0)
+
+
+func _recalc_mods(cid: int) -> void:
+	var m := {}
+	for id in countries[cid]["techs"]:
+		for k in tech_defs[id]["effects"]:
+			m[k] = m.get(k, 0) + int(tech_defs[id]["effects"][k])
+	countries[cid]["mods"] = m
+
+
+func tech_reqs_met(cid: int, id: String) -> bool:
+	for r in tech_defs[id]["requires"]:
+		if not countries[cid]["techs"].has(r):
+			return false
+	return true
+
+
+func research_slots(cid: int) -> int:
+	return BASE_SLOTS + mod(cid, "research_slots")
+
+
+func research_points(cid: int) -> int:
+	return int((6 + countries[cid]["industry"] / 6) * (100 + mod(cid, "research_pct")) / 100.0)
+
+
+## Validated enqueue used by commands and AI.
+func _queue_tech(cid: int, id: String) -> Dictionary:
+	var c: Dictionary = countries[cid]
+	if not tech_defs.has(id):
+		return _fail("unknown tech")
+	if c["techs"].has(id) or c["queue"].has(id):
+		return _fail("already researched or queued")
+	if c["queue"].size() >= MAX_QUEUE:
+		return _fail("queue full")
+	for r in tech_defs[id]["requires"]:
+		if not c["techs"].has(r) and not c["queue"].has(r):
+			return _fail("missing prerequisite")
+	c["queue"].append(id)
+	return {"ok": true}
+
+
+func _research() -> void:
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		var slots := research_slots(cid)
+		var pts := research_points(cid)
+		var active := 0
+		for id in c["queue"].duplicate():
+			if active >= slots:
+				break
+			if not tech_reqs_met(cid, id):
+				continue
+			active += 1
+			c["progress"][id] = c["progress"].get(id, 0) + pts
+			if c["progress"][id] >= tech_defs[id]["cost"]:
+				c["queue"].erase(id)
+				c["progress"].erase(id)
+				c["techs"].append(id)
+				_recalc_mods(cid)
+				if not c["ai"]:
+					_log("%s: %s — изучено: %s" % [date_string(), c["name"], tech_defs[id]["name"]])
+
+
+func _ai_research(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	if c["queue"].size() >= research_slots(cid) + 1:
+		return
+	var warlike := not enemies_of(cid).is_empty()
+	var best := ""
+	var best_score := 1e12
+	for id in tech_order:
+		if c["techs"].has(id) or c["queue"].has(id) or not tech_reqs_met(cid, id):
+			continue
+		var t: Dictionary = tech_defs[id]
+		var score: float = t["cost"]
+		if warlike and ["weapons", "armor", "logistics", "medicine", "navy"].has(t["category"]):
+			score *= 0.7
+		if score < best_score:
+			best_score = score
+			best = id
+	if best != "":
+		_queue_tech(cid, best)
+
+
+static func load_unit_defs() -> Dictionary:
+	var out := {}
+	var f := FileAccess.open("res://data/units.json", FileAccess.READ)
+	if f == null:
+		return out
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY:
+		for u in parsed.get("units", []):
+			out[u["id"]] = u
+	return out
+
+
+static func load_name_pool() -> Dictionary:
+	var f := FileAccess.open("res://data/generals.json", FileAccess.READ)
+	if f == null:
+		return {"first": ["Генерал"], "last": ["Безымянный"]}
+	return JSON.parse_string(f.get_as_text())
 
 
 static func load_resource_defs() -> Array:
@@ -317,9 +458,67 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 				return _fail("not enough steel")
 			if owner[c["capital"]] != cid:
 				return _fail("capital lost")
+			if c["manpower"] < 2 * unit_defs["infantry"]["manpower"]:
+				return _fail("no manpower")
 			c["treasury"] -= ARMY_COST
 			c["stock"]["steel"] -= ARMY_STEEL
+			c["manpower"] -= 2 * unit_defs["infantry"]["manpower"]
 			_spawn_army(cid, c["capital"])
+			return {"ok": true}
+		"research":
+			return _queue_tech(cid, cmd.get("tech", ""))
+		"unqueue_tech":
+			var ut2: String = cmd.get("tech", "")
+			if not countries[cid]["queue"].has(ut2):
+				return _fail("not queued")
+			countries[cid]["queue"].erase(ut2)
+			# drop queued techs that depended on it
+			var changed := true
+			while changed:
+				changed = false
+				for q in countries[cid]["queue"].duplicate():
+					for r in tech_defs[q]["requires"]:
+						if not countries[cid]["techs"].has(r) and not countries[cid]["queue"].has(r):
+							countries[cid]["queue"].erase(q)
+							changed = true
+							break
+			return {"ok": true}
+		"train_division":
+			var ut: String = cmd.get("unit", "")
+			if not unit_defs.has(ut):
+				return _fail("invalid unit")
+			return _train(cid, ut, cmd.get("army", -1))
+		"merge_armies":
+			var ma := army_by_id(cmd.get("army", -1))
+			var mb := army_by_id(cmd.get("other", -1))
+			if ma.is_empty() or mb.is_empty() or ma["owner"] != cid or mb["owner"] != cid or ma["id"] == mb["id"]:
+				return _fail("invalid army")
+			if ma["prov"] != mb["prov"]:
+				return _fail("not in same province")
+			if ma["div"].size() + mb["div"].size() > MAX_DIV:
+				return _fail("army full")
+			_merge(ma, mb)
+			return {"ok": true}
+		"split_army":
+			var sa := army_by_id(cmd.get("army", -1))
+			var n: int = cmd.get("count", 1)
+			if sa.is_empty() or sa["owner"] != cid:
+				return _fail("invalid army")
+			if n < 1 or n >= sa["div"].size():
+				return _fail("invalid split")
+			var moved: Array = sa["div"].slice(sa["div"].size() - n)
+			sa["div"] = sa["div"].slice(0, sa["div"].size() - n)
+			_sync(sa)
+			_add_army(cid, sa["prov"], moved)
+			return {"ok": true}
+		"assign_general":
+			var ga := army_by_id(cmd.get("army", -1))
+			if ga.is_empty() or ga["owner"] != cid:
+				return _fail("invalid army")
+			var gid: int = cmd.get("general", -1)
+			if gid >= 0 and _general(cid, gid).is_empty():
+				return _fail("invalid general")
+			_set_general(ga, gid)
 			return {"ok": true}
 		"declare_war":
 			var target: int = cmd.get("target", -1)
@@ -464,14 +663,20 @@ func tick_day() -> void:
 	_economy()
 	_trade()
 	_resources()
+	_research()
 	_move_armies()
 	_move_fleets()
+	_supply()
 	_battles()
 	_occupation()
 	if day % 5 == 0:
 		_ai()
 	_peace()
 	_eliminate()
+	if day % 120 == 0:
+		for c in countries:
+			if c["alive"] and c["generals"].size() < MAX_GENERALS:
+				_new_general(c["id"])
 
 
 func _economy() -> void:
@@ -491,13 +696,17 @@ func _economy() -> void:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
 		if c["alive"]:
+			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) / 100
+			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
+	for c in countries:
+		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
 			if c["treasury"] < 0:
 				c["treasury"] = 0
 				# unpaid armies lose strength
 				for a in armies:
 					if a["owner"] == c["id"]:
-						a["strength"] = int(a["strength"] * 0.98)
+						_hurt(a, a["strength"] / 50)
 
 
 func _embargoed(a: int, b: int) -> bool:
@@ -595,14 +804,23 @@ func _resources() -> void:
 			continue
 		var cid: int = c["id"]
 		var st: Dictionary = c["stock"]
+		for rr in ["food", "coal", "iron", "oil"]:
+			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
+		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] / 90
 		var astr := army_strength(cid)
 		var fstr := 0
 		for f in fleets_of(cid):
 			fstr += f["strength"]
-		c["cons"]["oil"] = (astr + 2 * fstr) / 2000
+		var armor_hp := 0
+		for a in armies_of(cid):
+			for d in a["div"]:
+				if unit_defs[d["t"]]["oil"]:
+					armor_hp += d["hp"]
+		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000
+		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
-		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] / 3)
+		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] * (100 + mod(cid, "steel_pct")) / 300)
 		c["prod"]["steel"] = steel
 		c["cons"]["iron"] = steel
 		c["cons"]["coal"] = steel
@@ -616,7 +834,7 @@ func _resources() -> void:
 		if c["short"].has("oil") or c["short"].has("food"):
 			for a in armies:
 				if a["owner"] == cid:
-					a["strength"] -= a["strength"] / (100 if c["short"].has("oil") else 200)
+					_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
 
 
 func net_of(cid: int, res: String) -> int:
@@ -671,8 +889,8 @@ func _naval_battles() -> void:
 				var y: Dictionary = group[j]
 				if x["strength"] <= 0 or y["strength"] <= 0 or not at_war(x["owner"], y["owner"]):
 					continue
-				var px: float = x["strength"] * rng.randf_range(0.8, 1.2)
-				var py: float = y["strength"] * rng.randf_range(0.8, 1.2)
+				var px: float = x["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(x["owner"], "fleet_pct") / 100.0)
+				var py: float = y["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(y["owner"], "fleet_pct") / 100.0)
 				x["strength"] -= int(py * 0.15)
 				y["strength"] -= int(px * 0.15)
 	# transports without escort are sunk by enemy fleets
@@ -689,7 +907,7 @@ func _naval_battles() -> void:
 			elif at_war(f["owner"], a["owner"]):
 				enemy_here = true
 		if enemy_here and not friend_here:
-			a["strength"] -= int(a["strength"] * 0.35) + 1
+			_hurt(a, int(a["strength"] * 0.35) + 1)
 	fleets = fleets.filter(func(f): return f["strength"] > 100)
 
 
@@ -716,16 +934,20 @@ func _battles() -> void:
 					continue
 				if not at_war(x["owner"], y["owner"]):
 					continue
-				var xd := def_bonus if owner[p] == x["owner"] else 1.0
-				var yd := def_bonus if owner[p] == y["owner"] else 1.0
-				var px: float = x["strength"] * rng.randf_range(0.8, 1.2) * xd
-				var py: float = y["strength"] * rng.randf_range(0.8, 1.2) * yd
-				x["strength"] -= int(py * 0.12)
-				y["strength"] -= int(px * 0.12)
+				var x_def: bool = owner[p] == x["owner"]
+				var y_def: bool = owner[p] == y["owner"]
+				var px: float = army_power(x, not x_def) * rng.randf_range(0.8, 1.2) * (def_bonus if x_def else 1.0)
+				var py: float = army_power(y, not y_def) * rng.randf_range(0.8, 1.2) * (def_bonus if y_def else 1.0)
+				_hurt(x, int(py * 0.12))
+				_hurt(y, int(px * 0.12))
+				_battle_xp(x)
+				_battle_xp(y)
 	var survivors: Array = []
 	for a in armies:
-		if a["strength"] > 50:
+		if a["strength"] > 50 and not a["div"].is_empty():
 			survivors.append(a)
+		else:
+			_set_general(a, -1)
 	armies = survivors
 
 
@@ -804,12 +1026,251 @@ func _declare_war(a: int, b: int) -> void:
 				_log("%s: %s вступает в войну на стороне %s" % [date_string(), countries[x]["name"], countries[side[0]]["name"]])
 
 
-func _spawn_army(cid: int, prov: int) -> void:
-	armies.append({
-		"id": next_army_id, "owner": cid, "prov": prov,
-		"strength": ARMY_BASE_STRENGTH, "path": [], "move": 0,
+func _make_div(t: String) -> Dictionary:
+	return {"t": t, "hp": unit_defs[t]["hp"], "exp": 0}
+
+
+func _sync(a: Dictionary) -> void:
+	var s := 0
+	for d in a["div"]:
+		s += d["hp"]
+	a["strength"] = s
+
+
+## Damage spread proportionally over divisions; nearly dead divisions are lost.
+func _hurt(a: Dictionary, amount: int) -> void:
+	var total: int = a["strength"]
+	if total <= 0 or amount <= 0:
+		return
+	for d in a["div"]:
+		d["hp"] -= int(float(amount) * d["hp"] / total)
+	a["div"] = a["div"].filter(func(d): return d["hp"] > 25)
+	_sync(a)
+
+
+func _battle_xp(a: Dictionary) -> void:
+	for d in a["div"]:
+		d["exp"] = mini(d["exp"] + 1, 50)
+	var g := _general(a["owner"], a["gen"])
+	if not g.is_empty():
+		g["xp"] += 1
+		if g["xp"] >= 150 * g["skill"] and g["skill"] < 5:
+			g["skill"] += 1
+			g["xp"] = 0
+			_log("%s: генерал %s (%s) повышен до уровня %d" % [date_string(), g["name"], countries[a["owner"]]["name"], g["skill"]])
+
+
+## Combat power of an army in its current province.
+func army_power(a: Dictionary, attacking: bool) -> float:
+	var terrain: String = provinces()[a["prov"]]["terrain"]
+	var oil_short: bool = countries[a["owner"]]["short"].has("oil")
+	var p := 0.0
+	for d in a["div"]:
+		var u: Dictionary = unit_defs[d["t"]]
+		var m: float = u["atk"] if attacking else u["def"]
+		m *= u["terrain"].get(terrain, 1.0)
+		var o: int = a["owner"]
+		var tb: int = (mod(o, "atk_pct") + mod(o, "atk_" + d["t"] + "_pct")) if attacking else (mod(o, "def_pct") + mod(o, "def_" + d["t"] + "_pct"))
+		m *= 1.0 + tb / 100.0
+		if u["oil"] and oil_short:
+			m *= 0.5
+		p += d["hp"] * m * (1.0 + d["exp"] / 200.0)
+	var sup: float = 0.5 + 0.5 * a["supply"] / 100.0
+	var g := _general(a["owner"], a["gen"])
+	var gm: float = 1.0 + (0.05 * g["skill"] if not g.is_empty() else 0.0)
+	return p * sup * gm
+
+
+func divisions_of(cid: int) -> int:
+	var n := 0
+	for a in armies:
+		if a["owner"] == cid:
+			n += a["div"].size()
+	return n
+
+
+func army_label(a: Dictionary) -> String:
+	var counts := {}
+	for d in a["div"]:
+		counts[d["t"]] = counts.get(d["t"], 0) + 1
+	var parts: Array[String] = []
+	for t in unit_defs:
+		if counts.has(t):
+			parts.append("%s×%d" % [unit_defs[t]["name"], counts[t]])
+	return ", ".join(parts)
+
+
+# ---- generals
+
+func _general(cid: int, gid: int) -> Dictionary:
+	if gid < 0:
+		return {}
+	for g in countries[cid]["generals"]:
+		if g["id"] == gid:
+			return g
+	return {}
+
+
+func _new_general(cid: int) -> void:
+	var first: Array = name_pool["first"]
+	var last: Array = name_pool["last"]
+	countries[cid]["generals"].append({
+		"id": next_general_id,
+		"name": "%s %s" % [first[rng.randi_range(0, first.size() - 1)], last[rng.randi_range(0, last.size() - 1)]],
+		"skill": rng.randi_range(1, 3), "xp": 0, "army": -1,
 	})
+	next_general_id += 1
+
+
+## Assign general `gid` (or -1 to clear) to army `a`, releasing any previous holder.
+func _set_general(a: Dictionary, gid: int) -> void:
+	var cid: int = a["owner"]
+	var old := _general(cid, a["gen"])
+	if not old.is_empty():
+		old["army"] = -1
+	a["gen"] = -1
+	if gid < 0:
+		return
+	var g := _general(cid, gid)
+	if g.is_empty():
+		return
+	if g["army"] >= 0:
+		var prev := army_by_id(g["army"])
+		if not prev.is_empty():
+			prev["gen"] = -1
+	g["army"] = a["id"]
+	a["gen"] = gid
+
+
+func _merge(a: Dictionary, b: Dictionary) -> void:
+	a["div"].append_array(b["div"])
+	if a["gen"] < 0 and b["gen"] >= 0:
+		var gid: int = b["gen"]
+		_set_general(b, -1)
+		_set_general(a, gid)
+	else:
+		_set_general(b, -1)
+	armies = armies.filter(func(x): return x["id"] != b["id"])
+	_sync(a)
+
+
+## Train one division at the capital: adds to an army there or founds a new one.
+func _train(cid: int, t: String, army_id: int = -1) -> Dictionary:
+	var c: Dictionary = countries[cid]
+	var u: Dictionary = unit_defs[t]
+	if owner[c["capital"]] != cid:
+		return _fail("capital lost")
+	if c["treasury"] < u["cost"]:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < u["steel"]:
+		return _fail("not enough steel")
+	if c["manpower"] < u["manpower"]:
+		return _fail("no manpower")
+	var target := {}
+	if army_id >= 0:
+		target = army_by_id(army_id)
+		if target.is_empty() or target["owner"] != cid or target["prov"] != c["capital"]:
+			return _fail("invalid army")
+		if target["div"].size() >= MAX_DIV:
+			return _fail("army full")
+	else:
+		for a in armies_of(cid):
+			if a["prov"] == c["capital"] and a["path"].is_empty() and a["div"].size() < AI_STACK:
+				target = a
+				break
+	c["treasury"] -= u["cost"]
+	c["stock"]["steel"] -= u["steel"]
+	c["manpower"] -= u["manpower"]
+	if target.is_empty():
+		_add_army(cid, c["capital"], [_make_div(t)])
+	else:
+		target["div"].append(_make_div(t))
+		_sync(target)
+	return {"ok": true}
+
+
+# ---- supply
+
+## Supply distance from hubs (capital; ports too when a fleet provides naval supply).
+func _supply_dist(cid: int) -> Dictionary:
+	var provs := provinces()
+	var dist := {}
+	var buckets: Array = []
+	for _i in 160:
+		buckets.append([])
+	var cap: int = countries[cid]["capital"]
+	if owner[cap] == cid:
+		dist[cap] = 0
+		buckets[0].append(cap)
+	else:
+		for p in owner.size():
+			if owner[p] == cid:
+				dist[p] = 6
+				buckets[6].append(p)
+				break
+	if not fleets_of(cid).is_empty():
+		for p in owner.size():
+			if owner[p] == cid and is_coastal(p) and not dist.has(p):
+				dist[p] = 8
+				buckets[8].append(p)
+	for d in 160:
+		for p in buckets[d]:
+			if dist[p] != d:
+				continue
+			for q in provs[p]["land_neighbors"]:
+				var o := owner[q]
+				var cost := 1 if (o == cid or allied(cid, o)) else 3
+				var nd := d + cost
+				if nd < 160 and nd < dist.get(q, 999):
+					dist[q] = nd
+					buckets[nd].append(q)
+	return dist
+
+
+func _supply() -> void:
+	var provs := provinces()
+	var industry := {}
+	for c in countries:
+		industry[c["id"]] = 0
+	for p in owner.size():
+		if owner[p] >= 0:
+			industry[owner[p]] += provs[p]["industry"]
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var mine := armies_of(c["id"])
+		if mine.is_empty():
+			continue
+		var dist := _supply_dist(c["id"])
+		var demand := 0
+		for a in mine:
+			demand += a["div"].size()
+		var factor := minf(1.0, float(6 + industry[c["id"]]) * (100 + mod(c["id"], "supply_pct")) / 100.0 / maxf(demand, 1.0))
+		for a in mine:
+			var d: int = dist.get(a["prov"], 999)
+			if not provs[a["prov"]]["land"]:
+				d = 8
+			a["supply"] = int(clampf(1.0 - d * 0.1 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
+			if a["supply"] < 20:
+				_hurt(a, a["strength"] / 100)
+
+
+func _add_army(cid: int, prov: int, divs: Array) -> Dictionary:
+	var a := {
+		"id": next_army_id, "owner": cid, "prov": prov, "div": divs,
+		"strength": 0, "path": [], "move": 0, "gen": -1, "supply": 100,
+	}
+	_sync(a)
+	armies.append(a)
 	next_army_id += 1
+	return a
+
+
+func _spawn_army(cid: int, prov: int, types: Array = ["infantry", "infantry"]) -> void:
+	var divs: Array = []
+	for t in types:
+		divs.append(_make_div(t))
+	_add_army(cid, prov, divs)
 
 
 func _spawn_fleet(cid: int, sea: int) -> void:
@@ -975,10 +1436,14 @@ func _ai() -> void:
 			c["stock"]["steel"] -= FLEET_STEEL
 			_spawn_fleet(cid, sea_next_to(port_of(cid)))
 		# economic: build armies
-		if c["treasury"] >= ARMY_COST * 2 and c["stock"]["steel"] >= ARMY_STEEL and armies_of(cid).size() < 3 + country_provinces(cid).size() / 4:
-			c["treasury"] -= ARMY_COST
-			c["stock"]["steel"] -= ARMY_STEEL
-			_spawn_army(cid, c["capital"])
+		if c["treasury"] >= 120 and divisions_of(cid) < 6 + country_provinces(cid).size():
+			var kinds := ["infantry", "infantry", "armor", "artillery"]
+			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
+		_ai_generals(cid)
+		if day % 10 == 0:
+			_ai_research(cid)
+		if day % 10 == 0:
+			_ai_merge(cid)
 		# military: send idle armies at the nearest enemy target
 		if enemies.is_empty():
 			continue
@@ -1009,6 +1474,29 @@ func _enemy_fleet_in(p: int, enemies: Array) -> bool:
 		if f["prov"] == p and enemies.has(f["owner"]):
 			return true
 	return false
+
+
+func _ai_generals(cid: int) -> void:
+	for a in armies_of(cid):
+		if a["gen"] >= 0:
+			continue
+		var best := {}
+		for g in countries[cid]["generals"]:
+			if g["army"] < 0 and (best.is_empty() or g["skill"] > best["skill"]):
+				best = g
+		if not best.is_empty():
+			_set_general(a, best["id"])
+
+
+func _ai_merge(cid: int) -> void:
+	var mine := armies_of(cid)
+	for i in mine.size():
+		for j in range(i + 1, mine.size()):
+			var a: Dictionary = mine[i]
+			var b: Dictionary = mine[j]
+			if a["prov"] == b["prov"] and a["path"].is_empty() and b["path"].is_empty() and a["div"].size() + b["div"].size() <= AI_STACK:
+				_merge(a, b)
+				return
 
 
 func _ai_trade(cid: int) -> void:
@@ -1044,7 +1532,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -1065,9 +1553,15 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.next_trade_id = d["next_trade_id"]
 	sim.embargoes = d["embargoes"]
 	sim.res_defs = load_resource_defs()
+	sim.unit_defs = load_unit_defs()
+	sim.name_pool = load_name_pool()
+	sim._load_techs()
+	sim.next_general_id = d["next_general_id"]
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
+	for c in sim.countries:
+		sim._recalc_mods(c["id"])
 	return sim
 
 
