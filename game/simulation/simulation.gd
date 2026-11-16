@@ -2163,9 +2163,18 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 				return _fail("not at war")
 			if not countries[t4]["ai"]:
 				return _fail("human target")
+			var terms: String = cmd.get("terms", "status_quo")
+			if terms != "status_quo" and terms != "annex":
+				return _fail("invalid terms")
+			if terms == "annex" and cells_held_from(cid, t4).is_empty():
+				return _fail("nothing to annex")
 			if not _ai_accepts_peace(t4, cid):
 				return _fail("refused")
+			if terms == "annex" and not _ai_accepts_annex(t4, cid):
+				return _fail("refused terms")
 			_end_war(cid, t4, "мирный договор")
+			if terms == "annex":
+				_settle_annex(cid, t4)
 			return {"ok": true}
 		"move_army":
 			var a := army_by_id(cmd.get("army", -1))
@@ -3021,6 +3030,40 @@ func _common_threat(a: int, b: int) -> bool:
 ## Would AI country `ai` agree to ally with `other`?
 func _ai_accepts_alliance(ai: int, other: int) -> bool:
 	return _common_enemy(ai, other) or _common_threat(ai, other)
+
+
+## Cells `holder` controls (owner[]) that are legally (legal[]) another country's.
+func cells_held_from(holder: int, legal_owner: int) -> Array[int]:
+	var out: Array[int] = []
+	for p in cells_of(holder):
+		if legal[p] == legal_owner:
+			out.append(p)
+	return out
+
+
+## The only way recognised ownership (legal[]) changes in a war: a peace treaty with the "annex" term.
+## The winner gets legal title to everything it holds from the loser; whatever the loser still holds of the
+## winner's legal land is handed back. Control (owner[]) of annexed cells does not change.
+func _settle_annex(winner: int, loser: int) -> void:
+	var annexed := cells_held_from(winner, loser)
+	for p in annexed:
+		legal[p] = winner
+		dirty_provinces.append(p)
+	var returned := cells_held_from(loser, winner)
+	for p in returned:
+		set_owner(p, winner)
+		dirty_provinces.append(p)
+	var cap: int = countries[loser]["capital"]
+	if cap < 0 or owner[cap] != loser:
+		var rest := cells_of(loser)
+		if not rest.is_empty():
+			countries[loser]["capital"] = rest[0]
+	_log("%s: договор — %s: признано за ним %d яч. государства %s%s" % [date_string(), countries[winner]["name"], annexed.size(), countries[loser]["name"], ", возвращено ему %d яч." % returned.size() if not returned.is_empty() else ""])
+
+
+## An AI only accepts losing recognised land to a clearly stronger enemy (on top of the normal peace conditions).
+func _ai_accepts_annex(ai: int, other: int) -> bool:
+	return army_strength(other) >= army_strength(ai) * 1.5
 
 
 ## Would AI country `ai` agree to peace with `other`?
