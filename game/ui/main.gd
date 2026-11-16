@@ -26,7 +26,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -94,6 +94,23 @@ func _make_theme() -> Theme:
 			"pressed": sb.bg_color = Color(0.45, 0.36, 0.14)
 			"disabled": sb.bg_color = Color(0.09, 0.1, 0.12)
 		t.set_stylebox(state, "Button", sb)
+	for state in ["normal", "focus", "read_only"]:
+		var le := StyleBoxFlat.new()
+		le.bg_color = Color(0.1, 0.12, 0.16)
+		le.border_color = Color(0.75, 0.62, 0.3, 0.7 if state == "focus" else 0.35)
+		le.set_border_width_all(1)
+		le.set_corner_radius_all(3)
+		le.set_content_margin_all(5)
+		t.set_stylebox(state, "LineEdit", le)
+	var te := StyleBoxFlat.new()
+	te.bg_color = Color(0.1, 0.12, 0.16)
+	te.border_color = Color(0.75, 0.62, 0.3, 0.35)
+	te.set_border_width_all(1)
+	te.set_content_margin_all(5)
+	t.set_stylebox("normal", "TextEdit", te)
+	t.set_stylebox("focus", "TextEdit", te)
+	t.set_color("font_color", "LineEdit", Color("e8e2d0"))
+	t.set_color("font_color", "TextEdit", Color("e8e2d0"))
 	var pb_bg := StyleBoxFlat.new()
 	pb_bg.bg_color = Color(0.13, 0.16, 0.21)
 	pb_bg.set_corner_radius_all(3)
@@ -154,9 +171,17 @@ func _show_menu() -> void:
 	_seed_edit.placeholder_text = "Seed мира"
 	box.add_child(_seed_edit)
 	var start := Button.new()
-	start.text = "Новая игра"
+	start.text = "Новая игра (случайный мир)"
 	start.pressed.connect(_new_game)
 	box.add_child(start)
+	var scen := Button.new()
+	scen.text = "Сценарии"
+	scen.pressed.connect(_show_scenarios)
+	box.add_child(scen)
+	var edit := Button.new()
+	edit.text = "Редактор сценариев"
+	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
+	box.add_child(edit)
 	var load_btn := Button.new()
 	load_btn.text = "Загрузить (F9)"
 	load_btn.pressed.connect(_load_game)
@@ -174,6 +199,99 @@ func _new_game() -> void:
 	sim.setup(s, Simulation.load_country_defs())
 	map.bind(sim)
 	_show_country_select()
+
+
+func _start_scenario(scn: Dictionary) -> void:
+	var fresh := Simulation.new()
+	var problems := fresh.setup_scenario(scn)
+	if not problems.is_empty() and fresh.world.is_empty():
+		_show_scenarios("Сценарий не загружен: " + "; ".join(problems.slice(0, 3)))
+		return
+	sim = fresh
+	map.bind(sim)
+	map.player_country = -1
+	_show_country_select()
+
+
+func _show_scenarios(message: Variant = "") -> void:
+	_clear_ui()
+	player = -1
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.theme = _theme
+	ui.add_child(root)
+	var bg := ColorRect.new()
+	bg.color = Color("0b1119")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.custom_minimum_size = Vector2(620, 0)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.add_theme_constant_override("separation", 10)
+	root.add_child(box)
+	var title := Label.new()
+	title.text = "Сценарии"
+	title.add_theme_font_size_override("font_size", 32)
+	title.add_theme_color_override("font_color", Color("e0c070"))
+	box.add_child(title)
+	if str(message) != "":
+		var m := Label.new()
+		m.text = str(message)
+		m.add_theme_color_override("font_color", Color("d9a05a"))
+		m.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box.add_child(m)
+	var seed_row := HBoxContainer.new()
+	box.add_child(seed_row)
+	var sl := Label.new()
+	sl.text = "Seed (пусто — из сценария):"
+	seed_row.add_child(sl)
+	var seed_override := LineEdit.new()
+	seed_override.custom_minimum_size = Vector2(120, 0)
+	seed_row.add_child(seed_override)
+	for entry in ScenarioLoader.list_all():
+		var data: Dictionary = entry["data"]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		box.add_child(row)
+		var b := Button.new()
+		b.text = "%s%s" % [data.get("name", "?"), "" if entry["builtin"] else "  (пользовательский)"]
+		b.tooltip_text = "%s\nСтарт: %s, seed %s, стран: %d" % [data.get("description", ""), data.get("start_date", ""), str(data.get("seed", "")), data.get("countries", []).size()]
+		b.custom_minimum_size = Vector2(300, 0)
+		b.pressed.connect(func():
+			var scn: Dictionary = data.duplicate(true)
+			var has_overrides: bool = scn.has("owners") or scn.has("deposits") or scn.has("armies") or scn.has("capitals")
+			if seed_override.text.is_valid_int() and not has_overrides:
+				scn["seed"] = int(seed_override.text)
+			_start_scenario(scn))
+		row.add_child(b)
+		var d := Label.new()
+		d.text = str(data.get("description", ""))
+		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		d.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		d.custom_minimum_size = Vector2(260, 0)
+		row.add_child(d)
+		var eb := Button.new()
+		eb.text = "Править"
+		eb.pressed.connect(func(): _open_editor(data))
+		row.add_child(eb)
+	var back := Button.new()
+	back.text = "← Назад"
+	back.pressed.connect(_show_menu)
+	box.add_child(back)
+
+
+func _open_editor(scn: Dictionary) -> void:
+	_clear_ui()
+	player = -1
+	var ed := ScenarioEditor.new()
+	ui.add_child(ed)
+	ed.start(map, _theme, scn)
+	ed.closed.connect(_show_menu)
+	ed.play_requested.connect(func(s: Dictionary):
+		_clear_ui()
+		_start_scenario(s))
 
 
 func _load_game() -> void:
@@ -508,6 +626,7 @@ func _refresh_info() -> void:
 			t += "Отношения: %s\n" % ("[color=#d96a5a]ВОЙНА[/color]" if sim.at_war(player, o) else "мир")
 	else:
 		t += "Владелец: нейтральная\n"
+	t += "Инфраструктура: %d%s\n" % [sim.infra[pid], (" (из-за разрушений %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else ""]
 	if sim.damage[pid] > 0:
 		t += "Разрушения от бомбардировок: %d%%\n" % sim.damage[pid]
 	var wh := sim.wings_at(pid)
@@ -557,6 +676,8 @@ func _refresh_info() -> void:
 			_actions.add_child(wb2)
 	if map.selected_wing >= 0:
 		_air_tools(sim.wing_by_id(map.selected_wing))
+	if o == player and sim.infra[pid] < Simulation.MAX_INFRA:
+		_cmd_button("Улучшить инфраструктуру до %d (%d $, 15 стали)" % [sim.infra[pid] + 1, 60 + 20 * sim.infra[pid]], {"type": "build_infra", "country": player, "province": pid})
 	if o == player:
 		for at in sim.air_defs:
 			var ad: Dictionary = sim.air_defs[at]
@@ -749,6 +870,11 @@ func _eco_refresh() -> void:
 			if i == 0 and c["short"].has(id):
 				l.add_theme_color_override("font_color", Color("d96a5a"))
 			grid.add_child(l)
+	if c["blockade"] > 0:
+		var bl := Label.new()
+		bl.text = "Блокада портов: %d%% (доход снижен, морская торговля нарушена)" % c["blockade"]
+		bl.add_theme_color_override("font_color", Color("d96a5a"))
+		_eco_dyn.add_child(bl)
 	var deals := sim.trades_of(player)
 	var t := Label.new()
 	t.text = "Торговые сделки: %d" % deals.size()
@@ -810,7 +936,7 @@ func _toggle_tech() -> void:
 		_tech.queue_free()
 		_tech = null
 		return
-	var cats: Array = JSON.parse_string(FileAccess.get_file_as_string("res://data/techs.json")).get("categories", [])
+	var cats: Array = JSON.parse_string(Simulation.read_data("techs.json")).get("categories", [])
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)

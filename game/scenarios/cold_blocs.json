@@ -1,0 +1,157 @@
+{
+ "schema_version": 1,
+ "id": "cold_blocs",
+ "name": "Холодные блоки",
+ "description": "Два военных блока с развитой экономикой и технологиями. Напряжение растёт, войны ИИ начинаются быстро.",
+ "seed": 77,
+ "start_date": "1950-03-01",
+ "countries": [
+  {
+   "tag": "NRM",
+   "name": "Северная Марка",
+   "color": "#4a7fb5",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "SLV",
+   "name": "Союз Славии",
+   "color": "#b5483f",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "AUR",
+   "name": "Аурелийская Республика",
+   "color": "#c9a23c",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "ZEL",
+   "name": "Зелёная Федерация",
+   "color": "#4f9a57",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "KRS",
+   "name": "Красногорский Союз",
+   "color": "#9a4fa0",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "ALB",
+   "name": "Альбийская Империя",
+   "color": "#d9792e",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "MRD",
+   "name": "Мерридианская Лига",
+   "color": "#3fa6a0",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  },
+  {
+   "tag": "VOS",
+   "name": "Восточный Протекторат",
+   "color": "#8a8f98",
+   "treasury": 500,
+   "techs": [
+    "ind1",
+    "eco1",
+    "wp1",
+    "ar1",
+    "lg1"
+   ],
+   "laws": {
+    "economy": "partial"
+   }
+  }
+ ],
+ "alliances": [
+  [
+   "NRM",
+   "AUR"
+  ],
+  [
+   "NRM",
+   "ZEL"
+  ],
+  [
+   "SLV",
+   "KRS"
+  ],
+  [
+   "SLV",
+   "VOS"
+  ]
+ ],
+ "grace_days": 20
+}

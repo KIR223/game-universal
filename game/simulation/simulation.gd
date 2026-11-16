@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 8
+const SAVE_VERSION := 10
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -22,6 +22,7 @@ const BASE_SLOTS := 2
 const WING_SIZE := 50
 const PP_CAP := 300
 const MAX_NET := 100
+const MAX_INFRA := 5
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -62,6 +63,12 @@ var next_event_uid := 1
 var intel_defs: Dictionary = {}
 var ops: Array = []  # {"id","owner","target","type","left","total"}
 var next_op_id := 1
+var start_date := "1936-01-01"
+var disabled_events: Array = []
+var grace_days := GRACE_DAYS
+var scenario_id := ""
+var scenario_deposits: Dictionary = {}
+var infra := PackedInt32Array()  # per-province railway/road level 1..5
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -85,6 +92,12 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	owner = WorldGen.assign_owners(world, caps)
 	damage.resize(owner.size())
 	damage.fill(0)
+	infra.resize(owner.size())
+	for p in owner.size():
+		var pv: Dictionary = world["provinces"][p]
+		infra[p] = clampi(1 + pv["pop"] / 80, 1, 4) if pv["land"] else 0
+	for cap_p in caps:
+		infra[cap_p] = mini(MAX_INFRA, infra[cap_p] + 1)
 	countries.clear()
 	for i in caps.size():
 		var d: Dictionary = country_defs[i]
@@ -132,7 +145,7 @@ func price_of(res: String) -> int:
 func _load_techs() -> void:
 	tech_defs = {}
 	tech_order = []
-	var f := FileAccess.open("res://data/techs.json", FileAccess.READ)
+	var f := _open_data("techs.json")
 	if f == null:
 		return
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -225,7 +238,7 @@ func _ai_research(cid: int) -> void:
 
 static func load_air_defs() -> Dictionary:
 	var out := {}
-	var f := FileAccess.open("res://data/aircraft.json", FileAccess.READ)
+	var f := _open_data("aircraft.json")
 	if f == null:
 		return out
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -517,6 +530,157 @@ func _ai_air(cid: int) -> void:
 					_set_mission(cid, w, "idle", -1)
 
 
+# --------------------------------------------------------------- scenarios
+
+## Structural checks that need no world (types, tags, references between fields).
+static func validate_scenario(scn: Dictionary) -> Array:
+	var errs: Array = []
+	if int(scn.get("schema_version", 0)) != 1:
+		errs.append("unsupported schema_version")
+	if not scn.has("seed") or typeof(scn["seed"]) not in [TYPE_INT, TYPE_FLOAT]:
+		errs.append("seed must be a number")
+	var tags := {}
+	var cs: Variant = scn.get("countries", [])
+	if typeof(cs) != TYPE_ARRAY or cs.size() < 2:
+		errs.append("need at least 2 countries")
+		return errs
+	for c in cs:
+		for k in ["tag", "name", "color"]:
+			if not c.has(k) or str(c[k]) == "":
+				errs.append("country missing %s" % k)
+		if c.has("tag"):
+			if tags.has(c["tag"]):
+				errs.append("duplicate tag %s" % c["tag"])
+			tags[c["tag"]] = true
+		if c.has("color") and not str(c["color"]).is_valid_html_color():
+			errs.append("bad color %s" % c["color"])
+	for pair_key in ["alliances", "wars"]:
+		for pair in scn.get(pair_key, []):
+			if pair.size() != 2 or not tags.has(pair[0]) or not tags.has(pair[1]) or pair[0] == pair[1]:
+				errs.append("bad %s entry %s" % [pair_key, str(pair)])
+	for a in scn.get("armies", []):
+		if not tags.has(a.get("tag", "")):
+			errs.append("army for unknown tag %s" % str(a.get("tag", "")))
+	for t in scn.get("owners", {}).values():
+		if t != null and not tags.has(t):
+			errs.append("owner override for unknown tag %s" % str(t))
+	for t in scn.get("capitals", {}):
+		if not tags.has(t):
+			errs.append("capital for unknown tag %s" % t)
+	return errs
+
+
+## Build the game from a scenario dictionary. Returns a list of problems (empty = success).
+func setup_scenario(scn: Dictionary) -> Array:
+	var problems := validate_scenario(scn)
+	if not problems.is_empty():
+		return problems
+	var defs: Array = scn["countries"]
+	start_date = str(scn.get("start_date", "1936-01-01"))
+	disabled_events = scn.get("disabled_events", []).duplicate()
+	grace_days = int(scn.get("grace_days", GRACE_DAYS))
+	scenario_id = str(scn.get("id", ""))
+	setup(int(scn["seed"]), defs)
+	if countries.size() != defs.size():
+		return ["map has room for only %d countries" % countries.size()]
+	var by_tag := {}
+	for c in countries:
+		by_tag[c["tag"]] = c["id"]
+	var provs := provinces()
+	for k in scn.get("deposits", {}):
+		var p := int(k)
+		if p < 0 or p >= provs.size() or not provs[p]["land"]:
+			problems.append("deposits on invalid province %s" % k)
+			continue
+		var dep := {}
+		for r in scn["deposits"][k]:
+			if int(scn["deposits"][k][r]) > 0:
+				dep[r] = int(scn["deposits"][k][r])
+		provs[p]["deposits"] = dep
+		scenario_deposits[str(p)] = dep
+	for k in scn.get("owners", {}):
+		var p2 := int(k)
+		if p2 < 0 or p2 >= owner.size() or not provs[p2]["land"]:
+			problems.append("owner override on invalid province %s" % k)
+			continue
+		var tag: Variant = scn["owners"][k]
+		owner[p2] = by_tag[tag] if tag != null else -1
+	for tag in scn.get("capitals", {}):
+		var cp := int(scn["capitals"][tag])
+		if cp >= 0 and cp < owner.size() and provs[cp]["land"]:
+			countries[by_tag[tag]]["capital"] = cp
+	for c in countries:
+		var own := country_provinces(c["id"])
+		if own.is_empty():
+			problems.append("%s owns no provinces" % c["tag"])
+			continue
+		if owner[c["capital"]] != c["id"]:
+			c["capital"] = own[0]
+	for d in defs:
+		var c: Dictionary = countries[by_tag[d["tag"]]]
+		if d.has("treasury"):
+			c["treasury"] = int(d["treasury"])
+		if d.has("manpower"):
+			c["manpower"] = int(d["manpower"])
+		for r in d.get("stock", {}):
+			if c["stock"].has(r):
+				c["stock"][r] = int(d["stock"][r])
+		for t in d.get("techs", []):
+			if tech_defs.has(t):
+				if not c["techs"].has(t):
+					c["techs"].append(t)
+			else:
+				problems.append("unknown tech %s" % str(t))
+		for cat in d.get("laws", {}):
+			if law_defs.has(cat) and not law_option(cat, d["laws"][cat]).is_empty():
+				c["laws"][cat] = d["laws"][cat]
+			else:
+				problems.append("unknown law %s/%s" % [cat, str(d["laws"][cat])])
+		if d.has("ideology"):
+			if ideo_defs.has(d["ideology"]):
+				c["ideology"] = d["ideology"]
+				_shift_popularity(c, d["ideology"], 55 - c["party_pop"][d["ideology"]])
+			else:
+				problems.append("unknown ideology %s" % str(d["ideology"]))
+	if scn.get("armies_mode", "") == "replace":
+		armies.clear()
+		for c in countries:
+			for g in c["generals"]:
+				g["army"] = -1
+	for a in scn.get("armies", []):
+		var cid: int = by_tag[a["tag"]]
+		var divs: Array = []
+		for t in a.get("divisions", ["infantry", "infantry"]):
+			if unit_defs.has(t):
+				divs.append(_make_div(t))
+			else:
+				problems.append("unknown unit %s" % str(t))
+		if int(a["province"]) < 0 or int(a["province"]) >= owner.size() or not provs[int(a["province"])]["land"] or divs.is_empty():
+			problems.append("bad army placement for %s" % a["tag"])
+			continue
+		_add_army(cid, int(a["province"]), divs)
+	for c in countries:
+		var mine := armies_of(c["id"])
+		var gi := 0
+		for a in mine:
+			if a["gen"] < 0 and gi < c["generals"].size():
+				while gi < c["generals"].size() and c["generals"][gi]["army"] >= 0:
+					gi += 1
+				if gi < c["generals"].size():
+					_set_general(a, c["generals"][gi]["id"])
+	for pair in scn.get("alliances", []):
+		alliances.append({"a": by_tag[pair[0]], "b": by_tag[pair[1]]})
+	for pair in scn.get("wars", []):
+		if not at_war(by_tag[pair[0]], by_tag[pair[1]]):
+			wars.append({"a": by_tag[pair[0]], "b": by_tag[pair[1]], "start": 0})
+	for c in countries:
+		c["stability"] = _stability_target(c)
+		c["war_support"] = _war_support_target(c)
+		_recalc_mods(c["id"])
+	dirty_provinces.clear()
+	return problems
+
+
 # ---------------------------------------------------------------- politics
 
 func _new_country(tag: String, cname: String, color: String, capital: int) -> Dictionary:
@@ -531,6 +695,7 @@ func _new_country(tag: String, cname: String, color: String, capital: int) -> Di
 		"laws": law_defaults.duplicate(), "done": {}, "timed": [], "crisis": 0,
 		"ev_seen": {}, "pending": [],
 		"intel": {"level": 1, "xp": 0, "net": {}, "counter": 0, "disinfo_until": -1},
+		"blockade": 0,
 	}
 	countries.append(c)
 	return c
@@ -543,7 +708,7 @@ func _load_politics() -> void:
 	law_defaults = {}
 	event_defs = []
 	decision_defs = []
-	var f := FileAccess.open("res://data/politics.json", FileAccess.READ)
+	var f := _open_data("politics.json")
 	if f != null:
 		var parsed: Variant = JSON.parse_string(f.get_as_text())
 		if typeof(parsed) == TYPE_DICTIONARY:
@@ -552,12 +717,12 @@ func _load_politics() -> void:
 				ideo_order.append(i["id"])
 			law_defs = parsed["laws"]
 			law_defaults = parsed["defaults"]
-	var f2 := FileAccess.open("res://data/events.json", FileAccess.READ)
+	var f2 := _open_data("events.json")
 	if f2 != null:
 		var p2: Variant = JSON.parse_string(f2.get_as_text())
 		if typeof(p2) == TYPE_DICTIONARY:
 			event_defs = p2["events"]
-	var f3 := FileAccess.open("res://data/decisions.json", FileAccess.READ)
+	var f3 := _open_data("decisions.json")
 	if f3 != null:
 		var p3: Variant = JSON.parse_string(f3.get_as_text())
 		if typeof(p3) == TYPE_DICTIONARY:
@@ -783,6 +948,8 @@ func _resolve_event(c: Dictionary, uid: int, option: int) -> Dictionary:
 
 func _events(c: Dictionary) -> void:
 	for e in event_defs:
+		if disabled_events.has(e["id"]):
+			continue
 		if e["once"] and c["ev_seen"].has(e["id"]):
 			continue
 		if day - c["ev_seen"].get(e["id"], -99999) < int(e["cooldown"]):
@@ -972,7 +1139,7 @@ func _run_decision(c: Dictionary, dd: Dictionary) -> void:
 
 func _load_intel() -> void:
 	intel_defs = {}
-	var f := FileAccess.open("res://data/intel.json", FileAccess.READ)
+	var f := _open_data("intel.json")
 	if f == null:
 		return
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -1163,9 +1330,83 @@ func _ai_intel(cid: int) -> void:
 				return
 
 
+func _ai_navy(cid: int) -> void:
+	var enemies := enemies_of(cid)
+	var mine := fleets_of(cid)
+	var idx := 0
+	for f in mine:
+		idx += 1
+		if not f["path"].is_empty():
+			continue
+		var goals: Array[int] = []
+		if not enemies.is_empty() and idx % 2 == 1:
+			# blockade / raid: enemy ports and the lanes of their sea trade
+			for p in owner.size():
+				if enemies.has(owner[p]) and is_coastal(p):
+					var sn := sea_next_to(p)
+					if sn >= 0 and not goals.has(sn):
+						goals.append(sn)
+			for t in trades:
+				if enemies.has(t["buyer"]) or enemies.has(t["seller"]):
+					for q in trade_route(t["buyer"], t["seller"]):
+						if not goals.has(q):
+							goals.append(q)
+		else:
+			# escort: sit on the lane of our own sea trade, else at home
+			for t in trades:
+				if t["buyer"] == cid or t["seller"] == cid:
+					var r := trade_route(t["buyer"], t["seller"])
+					if not r.is_empty():
+						goals.append(r[r.size() / 2])
+						break
+			if goals.is_empty() and port_of(cid) >= 0:
+				goals.append(sea_next_to(port_of(cid)))
+		var best: Array = []
+		for g in goals:
+			if g == f["prov"]:
+				best = []
+				break
+			var path := _sea_path(f["prov"], g)
+			if not path.is_empty() and (best.is_empty() or path.size() < best.size()):
+				best = path
+		if not best.is_empty():
+			f["path"] = best
+			f["move"] = 0
+
+
+func _ai_infra(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	if c["treasury"] < 300 or c["stock"]["steel"] < 60:
+		return
+	var best := -1
+	for a in armies_of(cid):
+		var p: int = a["prov"]
+		if owner[p] == cid and infra[p] < MAX_INFRA and (best < 0 or infra[p] < infra[best]):
+			best = p
+	if best < 0 and owner[c["capital"]] == cid and infra[c["capital"]] < MAX_INFRA:
+		best = c["capital"]
+	if best >= 0:
+		apply_command({"type": "build_infra", "country": cid, "province": best})
+
+
+## Data files can be overridden by mods: user://mods/data/<name> wins over res://data/<name>.
+static func _open_data(name: String) -> FileAccess:
+	var mod_path := "user://mods/data/" + name
+	if FileAccess.file_exists(mod_path):
+		var mf := FileAccess.open(mod_path, FileAccess.READ)
+		if mf != null:
+			return mf
+	return FileAccess.open("res://data/" + name, FileAccess.READ)
+
+
+static func read_data(name: String) -> String:
+	var f := _open_data(name)
+	return f.get_as_text() if f != null else ""
+
+
 static func load_unit_defs() -> Dictionary:
 	var out := {}
-	var f := FileAccess.open("res://data/units.json", FileAccess.READ)
+	var f := _open_data("units.json")
 	if f == null:
 		return out
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -1176,14 +1417,14 @@ static func load_unit_defs() -> Dictionary:
 
 
 static func load_name_pool() -> Dictionary:
-	var f := FileAccess.open("res://data/generals.json", FileAccess.READ)
+	var f := _open_data("generals.json")
 	if f == null:
 		return {"first": ["Генерал"], "last": ["Безымянный"]}
 	return JSON.parse_string(f.get_as_text())
 
 
 static func load_resource_defs() -> Array:
-	var f := FileAccess.open("res://data/resources.json", FileAccess.READ)
+	var f := _open_data("resources.json")
 	if f == null:
 		return []
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -1193,7 +1434,7 @@ static func load_resource_defs() -> Array:
 
 
 static func load_country_defs() -> Array:
-	var f := FileAccess.open("res://data/countries.json", FileAccess.READ)
+	var f := _open_data("countries.json")
 	if f == null:
 		return []
 	var parsed: Variant = JSON.parse_string(f.get_as_text())
@@ -1380,7 +1621,7 @@ func alive_count() -> int:
 
 
 func date_string() -> String:
-	var unix := Time.get_unix_time_from_datetime_string("1936-01-01T00:00:00") + day * 86400
+	var unix := Time.get_unix_time_from_datetime_string(start_date + "T00:00:00") + day * 86400
 	return Time.get_date_string_from_unix_time(unix)
 
 
@@ -1424,6 +1665,22 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 					ops = ops.filter(func(x): return x["id"] != oid)
 					return {"ok": true}
 			return _fail("no such operation")
+		"build_infra":
+			var ip: int = cmd.get("province", -1)
+			if ip < 0 or ip >= owner.size() or owner[ip] != cid or not provinces()[ip]["land"]:
+				return _fail("invalid province")
+			if infra[ip] >= MAX_INFRA:
+				return _fail("already maximal")
+			var ic: Dictionary = countries[cid]
+			var icost := 60 + 20 * infra[ip]
+			if ic["treasury"] < icost:
+				return _fail("not enough funds")
+			if ic["stock"]["steel"] < 15:
+				return _fail("not enough steel")
+			ic["treasury"] -= icost
+			ic["stock"]["steel"] -= 15
+			infra[ip] += 1
+			return {"ok": true}
 		"set_law":
 			var cat: String = cmd.get("category", "")
 			var lid: String = cmd.get("law", "")
@@ -1663,6 +1920,7 @@ func _fail(reason: String) -> Dictionary:
 
 func tick_day() -> void:
 	day += 1
+	_logistics()
 	_economy()
 	_trade()
 	_resources()
@@ -1702,7 +1960,7 @@ func _economy() -> void:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
 		if c["alive"]:
-			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) / 100
+			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) / 10000
 			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
 	for c in countries:
 		if c["alive"]:
@@ -1764,6 +2022,72 @@ func _try_trade(buyer: int, seller: int, res: String, amount: int) -> Dictionary
 	return {"ok": true}
 
 
+## A port province is blockaded when an enemy fleet sits in an adjacent sea and no friendly fleet contests it.
+func port_blockaded(p: int, cid: int) -> bool:
+	var provs := provinces()
+	var enemy_here := false
+	var friend_here := false
+	for q in provs[p]["neighbors"]:
+		if provs[q]["land"]:
+			continue
+		for f in fleets:
+			if f["prov"] != q or f["strength"] <= 0:
+				continue
+			if f["owner"] == cid or allied(cid, f["owner"]):
+				friend_here = true
+			elif at_war(cid, f["owner"]):
+				enemy_here = true
+	return enemy_here and not friend_here
+
+
+func blockade_level(cid: int) -> int:
+	var ports := 0
+	var blocked := 0
+	for p in owner.size():
+		if owner[p] == cid and is_coastal(p):
+			ports += 1
+			if port_blockaded(p, cid):
+				blocked += 1
+	return blocked * 100 / ports if ports > 0 else 0
+
+
+## Sea lane between two trading partners (empty if they share a land border).
+func trade_route(buyer: int, seller: int) -> Array:
+	if neighbor_countries(buyer).has(seller):
+		return []
+	var pb := port_of(buyer)
+	var ps := port_of(seller)
+	if pb < 0 or ps < 0:
+		return []
+	var a := sea_next_to(pb)
+	var b := sea_next_to(ps)
+	if a < 0 or b < 0:
+		return []
+	var path := _sea_path(a, b)
+	path.push_front(a)
+	return path
+
+
+func _lane_forces(route: Array, buyer: int, seller: int) -> Vector2:
+	var raiders := 0.0
+	var escorts := 0.0
+	for f in fleets:
+		if f["strength"] <= 0 or not route.has(f["prov"]):
+			continue
+		var o: int = f["owner"]
+		if o == buyer or o == seller or allied(o, buyer) or allied(o, seller):
+			escorts += f["strength"]
+		elif at_war(o, buyer) or at_war(o, seller):
+			raiders += f["strength"]
+	return Vector2(raiders, escorts)
+
+
+func _logistics() -> void:
+	for c in countries:
+		if c["alive"]:
+			c["blockade"] = blockade_level(c["id"])
+
+
 func _trade() -> void:
 	var kept: Array = []
 	for t in trades:
@@ -1772,6 +2096,20 @@ func _trade() -> void:
 		if not b["alive"] or not s["alive"] or at_war(t["buyer"], t["seller"]) or _embargoed(t["buyer"], t["seller"]):
 			continue
 		var cost: int = t["amount"] * t["price"]
+		var route := trade_route(t["buyer"], t["seller"])
+		if not route.is_empty():
+			if b["blockade"] >= 50 or s["blockade"] >= 50:
+				t["fails"] += 1
+				if t["fails"] <= 15:
+					kept.append(t)
+				continue
+			var forces := _lane_forces(route, t["buyer"], t["seller"])
+			if forces.x > forces.y and s["stock"][t["res"]] >= t["amount"]:
+				s["stock"][t["res"]] -= t["amount"]  # shipment sunk
+				if day % 10 == 0:
+					_log("%s: конвой %s → %s потоплен рейдерами" % [date_string(), s["name"], b["name"]])
+				kept.append(t)
+				continue
 		if s["stock"][t["res"]] >= t["amount"] and b["treasury"] >= cost:
 			s["stock"][t["res"]] -= t["amount"]
 			b["stock"][t["res"]] = mini(b["stock"][t["res"]] + t["amount"], STOCK_CAP)
@@ -2206,11 +2544,16 @@ func _train(cid: int, t: String, army_id: int = -1) -> Dictionary:
 # ---- supply
 
 ## Supply distance from hubs (capital; ports too when a fleet provides naval supply).
+func eff_infra(p: int) -> int:
+	return maxi(1, infra[p] - damage[p] / 30)
+
+
+## Supply distance from hubs. Cost per step depends on infrastructure (own land ~5-9, hostile ~20-24).
 func _supply_dist(cid: int) -> Dictionary:
 	var provs := provinces()
 	var dist := {}
 	var buckets: Array = []
-	for _i in 160:
+	for _i in 600:
 		buckets.append([])
 	var cap: int = countries[cid]["capital"]
 	if owner[cap] == cid:
@@ -2219,23 +2562,23 @@ func _supply_dist(cid: int) -> Dictionary:
 	else:
 		for p in owner.size():
 			if owner[p] == cid:
-				dist[p] = 6
-				buckets[6].append(p)
+				dist[p] = 60
+				buckets[60].append(p)
 				break
 	if not fleets_of(cid).is_empty():
 		for p in owner.size():
-			if owner[p] == cid and is_coastal(p) and not dist.has(p):
-				dist[p] = 8
-				buckets[8].append(p)
-	for d in 160:
+			if owner[p] == cid and is_coastal(p) and not dist.has(p) and not port_blockaded(p, cid):
+				dist[p] = 80
+				buckets[80].append(p)
+	for d in 600:
 		for p in buckets[d]:
 			if dist[p] != d:
 				continue
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
-				var cost := 1 if (o == cid or allied(cid, o)) else 3
+				var cost: int = (10 - eff_infra(q)) if (o == cid or allied(cid, o)) else (25 - eff_infra(q))
 				var nd := d + cost
-				if nd < 160 and nd < dist.get(q, 999):
+				if nd < 600 and nd < dist.get(q, 9999):
 					dist[q] = nd
 					buckets[nd].append(q)
 	return dist
@@ -2261,10 +2604,10 @@ func _supply() -> void:
 			demand += a["div"].size()
 		var factor := minf(1.0, float(6 + industry[c["id"]]) * (100 + mod(c["id"], "supply_pct")) / 100.0 / maxf(demand, 1.0))
 		for a in mine:
-			var d: int = dist.get(a["prov"], 999)
+			var d: int = dist.get(a["prov"], 9999)
 			if not provs[a["prov"]]["land"]:
-				d = 8
-			a["supply"] = int(clampf(1.0 - d * 0.1 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
+				d = 80
+			a["supply"] = int(clampf(1.0 - d * 0.01 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
 			if a["supply"] < 20:
 				_hurt(a, a["strength"] / 100)
 
@@ -2412,7 +2755,7 @@ func _ai() -> void:
 		var my_str := army_strength(cid)
 		var enemies := enemies_of(cid)
 		# strategic: choose a victim
-		if enemies.is_empty() and day >= GRACE_DAYS and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2:
+		if enemies.is_empty() and day >= grace_days and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2:
 			var victim := -1
 			var weakest := 1 << 30
 			var targets := neighbor_countries(cid)
@@ -2459,6 +2802,10 @@ func _ai() -> void:
 			_ai_politics(cid)
 		if day % 15 == 0:
 			_ai_intel(cid)
+		if day % 10 == 0:
+			_ai_navy(cid)
+		if day % 20 == 0:
+			_ai_infra(cid)
 		if day % 10 == 0:
 			_ai_research(cid)
 		if day % 10 == 0:
@@ -2551,7 +2898,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "next_general_id": next_general_id, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -2576,6 +2923,14 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
+	sim.start_date = d["start_date"]
+	sim.disabled_events = d["disabled_events"]
+	sim.grace_days = d["grace_days"]
+	sim.scenario_id = d["scenario_id"]
+	sim.scenario_deposits = d["scenario_deposits"]
+	for k in sim.scenario_deposits:
+		sim.world["provinces"][int(k)]["deposits"] = sim.scenario_deposits[k]
+	sim.infra = d["infra"]
 	sim.ops = d["ops"]
 	sim.next_op_id = d["next_op_id"]
 	sim._load_intel()
@@ -2593,4 +2948,4 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, fleets, wings, damage, alliances, trades, embargoes, wars, rng.state]).hash()
+	return var_to_str([day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]).hash()

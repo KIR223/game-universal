@@ -1,0 +1,7 @@
+{
+ "scenarios": [
+  "world_order.json",
+  "cold_blocs.json",
+  "chaos.json"
+ ]
+}
