@@ -1,6 +1,12 @@
 # Android
 
-**Статус:** debug APK собирается и подписывается (arm64-v8a, minSdk 24, targetSdk 36). **На устройстве/эмуляторе не запускался** — их на машине разработки нет. Сенсорное управление, мобильные профили графики и оптимизация ещё не сделаны (игра пока управляется мышью/клавиатурой).
+**Статус:** debug APK собирается и подписывается (arm64-v8a для телефона, x86_64 для эмулятора; minSdk 24, targetSdk 36). **Проверено в эмуляторе** (Android 35 x86_64, Google APIs, хост-GPU): главное меню, список сценариев, касанием запущен «Современный мир», выбор государства с реальной картой всех 205 стран отображается. **На физическом устройстве не запускался.** Дальше выбор страны/игра, сенсорное управление, мобильные профили графики и оптимизация ещё не проверены/не сделаны.
+
+## Рендерер
+Vulkan (Forward Mobile) на эмуляторе даёт чёрный экран (`Couldn't present to Vulkan queue`) и с хост-GPU, и с SwiftShader. Для Android включён Compatibility (OpenGL ES): `renderer/rendering_method.android="gl_compatibility"` (только Android, desktop/iOS не затронуты). С программным GL (SwiftShader) интерфейс не рисуется (лимит uniform), с хост-GPU эмулятора (`-gpu host`) всё работает. Как поведёт себя реальный телефон — не проверено.
+
+## Эмулятор
+`avdmanager` в этой версии создаёт AVD с `avd.name=<build>` и нулевым экраном — в `config.ini` исправлены имя, `hw.lcd.*`, `hw.gpu.mode=host`, `disk.dataPartition.size=3G` (на диске C: мало места). Запуск: `emulator -avd iron_test -gpu host`; пакет — `com.kir223.irondominion/com.godot.game.GodotAppLauncher`.
 
 ## Инструменты (Windows, установлены вне репозитория)
 - JDK 17: `winget install Microsoft.OpenJDK.17` → `C:\Program Files\Microsoft\jdk-17.0.21.21-hotspot`
