@@ -26,11 +26,23 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
+const EFFECT_NAMES := {
+	"income_pct": "доход", "upkeep_pct": "содержание армий", "food_pct": "добыча продовольствия", "coal_pct": "добыча угля",
+	"iron_pct": "добыча железа", "oil_pct": "добыча нефти", "steel_pct": "выплавка стали", "manpower_pct": "прирост людей",
+	"atk_pct": "атака всех войск", "def_pct": "защита всех войск", "atk_infantry_pct": "атака пехоты", "atk_armor_pct": "атака танков",
+	"atk_artillery_pct": "атака артиллерии", "def_infantry_pct": "защита пехоты", "def_armor_pct": "защита танков",
+	"def_artillery_pct": "защита артиллерии", "fleet_pct": "сила флота в бою", "supply_pct": "ёмкость снабжения",
+	"supply_decay_pct": "дальность снабжения", "attrition_pct": "снижение потерь от нехватки", "research_pct": "скорость исследований",
+	"research_slots": "слот исследований",
+}
+var _tech: PanelContainer
+var _tech_buttons := {}
+var _tech_queue_box: VBoxContainer
 var _eco: PanelContainer
 var _eco_dyn: VBoxContainer
 var _t_res := 0
@@ -72,6 +84,14 @@ func _make_theme() -> Theme:
 			"pressed": sb.bg_color = Color(0.45, 0.36, 0.14)
 			"disabled": sb.bg_color = Color(0.09, 0.1, 0.12)
 		t.set_stylebox(state, "Button", sb)
+	var pb_bg := StyleBoxFlat.new()
+	pb_bg.bg_color = Color(0.13, 0.16, 0.21)
+	pb_bg.set_corner_radius_all(3)
+	var pb_fill := StyleBoxFlat.new()
+	pb_fill.bg_color = Color("c9a23c")
+	pb_fill.set_corner_radius_all(3)
+	t.set_stylebox("background", "ProgressBar", pb_bg)
+	t.set_stylebox("fill", "ProgressBar", pb_fill)
 	t.set_color("font_color", "Button", Color("e8e2d0"))
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
 	t.set_color("font_color", "Label", Color("e8e2d0"))
@@ -247,6 +267,10 @@ func _build_hud() -> void:
 		mode.text = "Карта: рельеф" if map.map_mode == "terrain" else "Карта: политика"
 		map.repaint_all())
 	hb.add_child(mode)
+	var tech := Button.new()
+	tech.text = "Технологии"
+	tech.pressed.connect(_toggle_tech)
+	hb.add_child(tech)
 	var eco := Button.new()
 	eco.text = "Экономика"
 	eco.pressed.connect(_toggle_eco)
@@ -380,6 +404,8 @@ func _refresh_all() -> void:
 	_refresh_info()
 	if _eco != null and is_instance_valid(_eco):
 		_eco_refresh()
+	if _tech != null and is_instance_valid(_tech):
+		_tech_refresh()
 	while log_seen < sim.log_lines.size():
 		_log.append_text(sim.log_lines[log_seen] + "\n")
 		log_seen += 1
@@ -681,3 +707,130 @@ func _army_tools(a: Dictionary, here: Array) -> void:
 	for g in sim.countries[player]["generals"]:
 		if g["id"] != a["gen"]:
 			_cmd_button("Генерал: %s (ур. %d)%s" % [g["name"], g["skill"], " — занят" if g["army"] >= 0 else ""], {"type": "assign_general", "country": player, "army": a["id"], "general": g["id"]})
+
+
+func _effects_text(t: Dictionary) -> String:
+	var parts: Array[String] = []
+	for k in t["effects"]:
+		var v: int = t["effects"][k]
+		if k == "research_slots":
+			parts.append("+%d %s" % [v, EFFECT_NAMES[k]])
+		else:
+			parts.append("%+d%% %s" % [v, EFFECT_NAMES.get(k, k)])
+	return ", ".join(parts)
+
+
+func _toggle_tech() -> void:
+	if _tech != null and is_instance_valid(_tech):
+		_tech.queue_free()
+		_tech = null
+		return
+	var cats: Array = JSON.parse_string(FileAccess.get_file_as_string("res://data/techs.json")).get("categories", [])
+	_tech = PanelContainer.new()
+	_tech.theme = _theme
+	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_tech.position = Vector2(12, 62)
+	_tech.custom_minimum_size = Vector2(900, 560)
+	ui.add_child(_tech)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_tech.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
+	var h := Label.new()
+	h.text = "Исследования"
+	h.add_theme_font_size_override("font_size", 20)
+	h.add_theme_color_override("font_color", Color("e0c070"))
+	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(h)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(_toggle_tech)
+	head.add_child(close)
+	_tech_queue_box = VBoxContainer.new()
+	v.add_child(_tech_queue_box)
+	v.add_child(HSeparator.new())
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(scroll)
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 6)
+	scroll.add_child(body)
+	_tech_buttons.clear()
+	for cat in cats:
+		var cl := Label.new()
+		cl.text = cat["name"]
+		cl.add_theme_color_override("font_color", Color("e0c070"))
+		body.add_child(cl)
+		var flow := HFlowContainer.new()
+		flow.add_theme_constant_override("h_separation", 6)
+		flow.add_theme_constant_override("v_separation", 6)
+		body.add_child(flow)
+		for id in sim.tech_order:
+			var t: Dictionary = sim.tech_defs[id]
+			if t["category"] != cat["id"]:
+				continue
+			var b := Button.new()
+			var tid: String = id
+			b.pressed.connect(func(): _tech_click(tid))
+			flow.add_child(b)
+			_tech_buttons[id] = b
+	_tech_refresh()
+
+
+func _tech_click(id: String) -> void:
+	var c: Dictionary = sim.countries[player]
+	var cmd := {"type": "unqueue_tech", "country": player, "tech": id} if c["queue"].has(id) else {"type": "research", "country": player, "tech": id}
+	var r := sim.apply_command(cmd)
+	if not r["ok"]:
+		_log.append_text("[color=#d9a05a]Отказ: %s[/color]\n" % _reason(r["reason"]))
+	_tech_refresh()
+
+
+func _tech_refresh() -> void:
+	var c: Dictionary = sim.countries[player]
+	for ch in _tech_queue_box.get_children():
+		ch.queue_free()
+	var info := Label.new()
+	info.text = "Слотов: %d   Очки на слот: %d/день   Изучено: %d / %d" % [sim.research_slots(player), sim.research_points(player), c["techs"].size(), sim.tech_defs.size()]
+	_tech_queue_box.add_child(info)
+	var active := 0
+	for id in c["queue"]:
+		var t: Dictionary = sim.tech_defs[id]
+		var row := HBoxContainer.new()
+		var runs: bool = active < sim.research_slots(player) and sim.tech_reqs_met(player, id)
+		if runs:
+			active += 1
+		var l := Label.new()
+		l.text = ("▶ " if runs else "⏳ ") + t["name"]
+		l.custom_minimum_size = Vector2(280, 0)
+		row.add_child(l)
+		var bar := ProgressBar.new()
+		bar.max_value = t["cost"]
+		bar.value = c["progress"].get(id, 0)
+		bar.custom_minimum_size = Vector2(300, 18)
+		bar.show_percentage = false
+		row.add_child(bar)
+		_tech_queue_box.add_child(row)
+	for id in _tech_buttons:
+		var t: Dictionary = sim.tech_defs[id]
+		var b: Button = _tech_buttons[id]
+		var done: bool = c["techs"].has(id)
+		var queued: bool = c["queue"].has(id)
+		var avail := true
+		for r in t["requires"]:
+			if not c["techs"].has(r) and not c["queue"].has(r):
+				avail = false
+		if done:
+			b.text = "✓ " + t["name"]
+		elif queued:
+			b.text = "⏳ %s  (%d%%)" % [t["name"], 100 * c["progress"].get(id, 0) / t["cost"]]
+		else:
+			b.text = "%s  [%d]" % [t["name"], t["cost"]]
+		b.disabled = done or (not queued and not avail)
+		var req_names: Array[String] = []
+		for r in t["requires"]:
+			req_names.append(sim.tech_defs[r]["name"])
+		b.tooltip_text = "%s\nСтоимость: %d\n%s" % [_effects_text(t), t["cost"], ("Требует: " + ", ".join(req_names)) if not req_names.is_empty() else "Без требований"]

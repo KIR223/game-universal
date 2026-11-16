@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 4
+const SAVE_VERSION := 5
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -17,6 +17,8 @@ const GRACE_DAYS := 60  # AI does not start wars before this day
 const MAX_DIV := 9
 const AI_STACK := 6
 const MAX_GENERALS := 8
+const MAX_QUEUE := 8
+const BASE_SLOTS := 2
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -41,6 +43,8 @@ var res_defs: Array = []
 var unit_defs: Dictionary = {}
 var name_pool: Dictionary = {}
 var next_general_id := 1
+var tech_defs: Dictionary = {}
+var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
 var command_log: Array = []
 var log_lines: Array = []
@@ -53,6 +57,7 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	res_defs = load_resource_defs()
 	unit_defs = load_unit_defs()
 	name_pool = load_name_pool()
+	_load_techs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
 	owner = WorldGen.assign_owners(world, caps)
@@ -65,6 +70,7 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 			"ai": true, "alive": true, "last_peace": -100,
 			"stock": _start_stock(), "prod": _zero_res(), "cons": _zero_res(), "short": [],
 			"manpower": 200, "generals": [],
+			"techs": [], "queue": [], "progress": {}, "mods": {}, "industry": 0,
 		})
 		_spawn_army(i, caps[i])
 		_spawn_army(i, caps[i])
@@ -103,6 +109,108 @@ func price_of(res: String) -> int:
 		if r["id"] == res:
 			return r["price"]
 	return 1
+
+
+func _load_techs() -> void:
+	tech_defs = {}
+	tech_order = []
+	var f := FileAccess.open("res://data/techs.json", FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return
+	for t in parsed.get("techs", []):
+		tech_defs[t["id"]] = t
+		tech_order.append(t["id"])
+
+
+func mod(cid: int, key: String) -> int:
+	return countries[cid]["mods"].get(key, 0)
+
+
+func _recalc_mods(cid: int) -> void:
+	var m := {}
+	for id in countries[cid]["techs"]:
+		for k in tech_defs[id]["effects"]:
+			m[k] = m.get(k, 0) + int(tech_defs[id]["effects"][k])
+	countries[cid]["mods"] = m
+
+
+func tech_reqs_met(cid: int, id: String) -> bool:
+	for r in tech_defs[id]["requires"]:
+		if not countries[cid]["techs"].has(r):
+			return false
+	return true
+
+
+func research_slots(cid: int) -> int:
+	return BASE_SLOTS + mod(cid, "research_slots")
+
+
+func research_points(cid: int) -> int:
+	return int((6 + countries[cid]["industry"] / 6) * (100 + mod(cid, "research_pct")) / 100.0)
+
+
+## Validated enqueue used by commands and AI.
+func _queue_tech(cid: int, id: String) -> Dictionary:
+	var c: Dictionary = countries[cid]
+	if not tech_defs.has(id):
+		return _fail("unknown tech")
+	if c["techs"].has(id) or c["queue"].has(id):
+		return _fail("already researched or queued")
+	if c["queue"].size() >= MAX_QUEUE:
+		return _fail("queue full")
+	for r in tech_defs[id]["requires"]:
+		if not c["techs"].has(r) and not c["queue"].has(r):
+			return _fail("missing prerequisite")
+	c["queue"].append(id)
+	return {"ok": true}
+
+
+func _research() -> void:
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		var slots := research_slots(cid)
+		var pts := research_points(cid)
+		var active := 0
+		for id in c["queue"].duplicate():
+			if active >= slots:
+				break
+			if not tech_reqs_met(cid, id):
+				continue
+			active += 1
+			c["progress"][id] = c["progress"].get(id, 0) + pts
+			if c["progress"][id] >= tech_defs[id]["cost"]:
+				c["queue"].erase(id)
+				c["progress"].erase(id)
+				c["techs"].append(id)
+				_recalc_mods(cid)
+				if not c["ai"]:
+					_log("%s: %s — изучено: %s" % [date_string(), c["name"], tech_defs[id]["name"]])
+
+
+func _ai_research(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	if c["queue"].size() >= research_slots(cid) + 1:
+		return
+	var warlike := not enemies_of(cid).is_empty()
+	var best := ""
+	var best_score := 1e12
+	for id in tech_order:
+		if c["techs"].has(id) or c["queue"].has(id) or not tech_reqs_met(cid, id):
+			continue
+		var t: Dictionary = tech_defs[id]
+		var score: float = t["cost"]
+		if warlike and ["weapons", "armor", "logistics", "medicine", "navy"].has(t["category"]):
+			score *= 0.7
+		if score < best_score:
+			best_score = score
+			best = id
+	if best != "":
+		_queue_tech(cid, best)
 
 
 static func load_unit_defs() -> Dictionary:
@@ -357,6 +465,24 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			c["manpower"] -= 2 * unit_defs["infantry"]["manpower"]
 			_spawn_army(cid, c["capital"])
 			return {"ok": true}
+		"research":
+			return _queue_tech(cid, cmd.get("tech", ""))
+		"unqueue_tech":
+			var ut2: String = cmd.get("tech", "")
+			if not countries[cid]["queue"].has(ut2):
+				return _fail("not queued")
+			countries[cid]["queue"].erase(ut2)
+			# drop queued techs that depended on it
+			var changed := true
+			while changed:
+				changed = false
+				for q in countries[cid]["queue"].duplicate():
+					for r in tech_defs[q]["requires"]:
+						if not countries[cid]["techs"].has(r) and not countries[cid]["queue"].has(r):
+							countries[cid]["queue"].erase(q)
+							changed = true
+							break
+			return {"ok": true}
 		"train_division":
 			var ut: String = cmd.get("unit", "")
 			if not unit_defs.has(ut):
@@ -537,6 +663,7 @@ func tick_day() -> void:
 	_economy()
 	_trade()
 	_resources()
+	_research()
 	_move_armies()
 	_move_fleets()
 	_supply()
@@ -567,6 +694,10 @@ func _economy() -> void:
 		countries[a["owner"]]["upkeep"] += a["strength"] / 200
 	for f in fleets:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
+	for c in countries:
+		if c["alive"]:
+			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) / 100
+			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
 	for c in countries:
 		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
@@ -673,6 +804,9 @@ func _resources() -> void:
 			continue
 		var cid: int = c["id"]
 		var st: Dictionary = c["stock"]
+		for rr in ["food", "coal", "iron", "oil"]:
+			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
+		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] / 90
 		var astr := army_strength(cid)
 		var fstr := 0
@@ -684,9 +818,9 @@ func _resources() -> void:
 				if unit_defs[d["t"]]["oil"]:
 					armor_hp += d["hp"]
 		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000
-		c["manpower"] = mini(c["manpower"] + pop_sum[cid] / 200, 2000)
+		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
-		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] / 3)
+		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] * (100 + mod(cid, "steel_pct")) / 300)
 		c["prod"]["steel"] = steel
 		c["cons"]["iron"] = steel
 		c["cons"]["coal"] = steel
@@ -700,7 +834,7 @@ func _resources() -> void:
 		if c["short"].has("oil") or c["short"].has("food"):
 			for a in armies:
 				if a["owner"] == cid:
-					_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200))
+					_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
 
 
 func net_of(cid: int, res: String) -> int:
@@ -755,8 +889,8 @@ func _naval_battles() -> void:
 				var y: Dictionary = group[j]
 				if x["strength"] <= 0 or y["strength"] <= 0 or not at_war(x["owner"], y["owner"]):
 					continue
-				var px: float = x["strength"] * rng.randf_range(0.8, 1.2)
-				var py: float = y["strength"] * rng.randf_range(0.8, 1.2)
+				var px: float = x["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(x["owner"], "fleet_pct") / 100.0)
+				var py: float = y["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(y["owner"], "fleet_pct") / 100.0)
 				x["strength"] -= int(py * 0.15)
 				y["strength"] -= int(px * 0.15)
 	# transports without escort are sunk by enemy fleets
@@ -935,6 +1069,9 @@ func army_power(a: Dictionary, attacking: bool) -> float:
 		var u: Dictionary = unit_defs[d["t"]]
 		var m: float = u["atk"] if attacking else u["def"]
 		m *= u["terrain"].get(terrain, 1.0)
+		var o: int = a["owner"]
+		var tb: int = (mod(o, "atk_pct") + mod(o, "atk_" + d["t"] + "_pct")) if attacking else (mod(o, "def_pct") + mod(o, "def_" + d["t"] + "_pct"))
+		m *= 1.0 + tb / 100.0
 		if u["oil"] and oil_short:
 			m *= 0.5
 		p += d["hp"] * m * (1.0 + d["exp"] / 200.0)
@@ -1108,12 +1245,12 @@ func _supply() -> void:
 		var demand := 0
 		for a in mine:
 			demand += a["div"].size()
-		var factor := minf(1.0, float(6 + industry[c["id"]]) / maxf(demand, 1.0))
+		var factor := minf(1.0, float(6 + industry[c["id"]]) * (100 + mod(c["id"], "supply_pct")) / 100.0 / maxf(demand, 1.0))
 		for a in mine:
 			var d: int = dist.get(a["prov"], 999)
 			if not provs[a["prov"]]["land"]:
 				d = 8
-			a["supply"] = int(clampf(1.0 - d * 0.1, 0.0, 1.0) * factor * 100.0)
+			a["supply"] = int(clampf(1.0 - d * 0.1 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
 			if a["supply"] < 20:
 				_hurt(a, a["strength"] / 100)
 
@@ -1304,6 +1441,8 @@ func _ai() -> void:
 			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
 		_ai_generals(cid)
 		if day % 10 == 0:
+			_ai_research(cid)
+		if day % 10 == 0:
 			_ai_merge(cid)
 		# military: send idle armies at the nearest enemy target
 		if enemies.is_empty():
@@ -1416,10 +1555,13 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.res_defs = load_resource_defs()
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
+	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
+	for c in sim.countries:
+		sim._recalc_mods(c["id"])
 	return sim
 
 
