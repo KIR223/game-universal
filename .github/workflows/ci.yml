@@ -37,3 +37,30 @@ jobs:
         run: godot --headless --path . -s tests/run_tests.gd
       - name: UI smoke tests on the real map
         run: godot --headless --path . -s tests/run_ui_tests.gd
+
+  windows-build:
+    name: windows x64 export
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+      - name: Import project
+        run: godot --headless --path . --import
+      - name: Export Windows x64
+        run: |
+          mkdir -p build/windows
+          godot --headless --path . --export-release "Windows x64" build/windows/IronDominion.exe
+          cp README.md ASSET_LICENSES.md build/windows/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IRON-DOMINION-WINDOWS-X64
+          path: build/windows/

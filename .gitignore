@@ -9,3 +9,4 @@ builds/
 *.key
 *.p12
 *.mobileprovision
+build/
