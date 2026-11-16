@@ -522,26 +522,41 @@ func _process(delta: float) -> void:
 			_log.append_text("[color=#d96a5a]Ваше государство уничтожено.[/color]\n")
 
 
+## Hotkeys follow the physical key position, so they work with any keyboard layout (e.g. the Russian one,
+## where the M key produces 'ь' and `keycode` would never equal KEY_M).
+func _hotkey(ke: InputEventKey) -> Key:
+	return ke.physical_keycode if ke.physical_keycode != KEY_NONE else ke.keycode
+
+
+## Next map mode (key M and the layers icon next to the mode selector).
+func _cycle_map_mode() -> void:
+	if map is EarthMapView and _mode_opt != null:
+		var nxt := (EarthMapView.MODES.size() + _mode_opt.selected + 1) % EarthMapView.MODES.size()
+		_mode_opt.select(nxt)
+		map.set_mode(EarthMapView.MODES[nxt][0])
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
+	# F9 is advertised on the main menu button, so it must work from the menu too (no game running yet)
+	if event is InputEventKey and event.pressed and not event.echo and _hotkey(event) == KEY_F9:
+		_load_game()
+		get_viewport().set_input_as_handled()
+		return
 	if not (event is InputEventKey) or not event.pressed or event.echo or sim == null or player < 0:
 		return
 	var ke := event as InputEventKey
-	if (ke.keycode == KEY_F and (ke.ctrl_pressed or ke.meta_pressed)) or ke.keycode == KEY_SLASH:
+	if (_hotkey(ke) == KEY_F and (ke.ctrl_pressed or ke.meta_pressed)) or _hotkey(ke) == KEY_SLASH:
 		if _search != null:
 			_search.grab_focus()
 			get_viewport().set_input_as_handled()
 		return
-	match ke.keycode:
+	match _hotkey(ke):
 		KEY_SPACE: _set_speed(0 if speed_idx > 0 else 1)
 		KEY_1: _set_speed(1)
 		KEY_2: _set_speed(2)
 		KEY_3: _set_speed(3)
 		KEY_4: _set_speed(4)
-		KEY_M:
-			if map is EarthMapView and _mode_opt != null:
-				var nxt := (EarthMapView.MODES.size() + _mode_opt.selected + 1) % EarthMapView.MODES.size()
-				_mode_opt.select(nxt)
-				map.set_mode(EarthMapView.MODES[nxt][0])
+		KEY_M: _cycle_map_mode()
 		KEY_F5: SaveSystem.save(sim, "quick")
 		KEY_ESCAPE:
 			if _search_panel != null and is_instance_valid(_search_panel):
@@ -1509,11 +1524,27 @@ func _muted(text: String) -> Label:
 	return l
 
 
+## Where a click on a top-bar resource chip leads ("@wars" = the Wars tab of the right panel).
+const CHIP_TARGETS := {"coin": "economy", "influence": "politics", "stability": "politics", "manpower": "army", "steel": "economy", "oil": "economy", "food": "economy", "flag": "@wars"}
+
+
+func _chip_clicked(kind: String) -> void:
+	var target: String = CHIP_TARGETS.get(kind, "")
+	if target == "@wars":
+		_right_set_tab("wars")
+	elif target != "" and _open_panel_name != target:
+		_nav_pressed(target)
+
+
 func _make_chip(kind: String, tip: String) -> HBoxContainer:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 3)
 	hb.tooltip_text = tip
 	hb.mouse_filter = Control.MOUSE_FILTER_STOP
+	hb.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	hb.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_chip_clicked(kind))
 	var ic := IconButton.new(kind, tip, Vector2(22, 22))
 	ic.pad = 3.0
 	ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1683,7 +1714,7 @@ func _build_hud() -> void:
 	modes.add_child(mh)
 	var lic := IconButton.new("layers", "Режим карты (M)", Vector2(30, 30))
 	lic.pad = 5.0
-	lic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lic.pressed.connect(_cycle_map_mode)
 	mh.add_child(lic)
 	_mode_opt = OptionButton.new()
 	_mode_opt.custom_minimum_size = Vector2(190, 0)
