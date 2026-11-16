@@ -26,7 +26,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -43,6 +43,7 @@ const EFFECT_NAMES := {
 var _tech: PanelContainer
 var _tech_buttons := {}
 var _tech_queue_box: VBoxContainer
+var _pending_air := ""
 var _eco: PanelContainer
 var _eco_dyn: VBoxContainer
 var _t_res := 0
@@ -364,12 +365,28 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			map.selected_army = -1
 			map.selected_fleet = -1
+			map.selected_wing = -1
+			_pending_air = ""
 			map.queue_redraw()
 			_refresh_info()
 
 
 func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
+		return
+	if map.selected_wing >= 0 and _pending_air != "" and not sim.wing_by_id(map.selected_wing).is_empty():
+		var cmd: Dictionary
+		if _pending_air == "rebase":
+			cmd = {"type": "rebase", "country": player, "wing": map.selected_wing, "base": pid}
+		else:
+			cmd = {"type": "air_mission", "country": player, "wing": map.selected_wing, "mission": _pending_air, "target": pid}
+		var ra := sim.apply_command(cmd)
+		if not ra["ok"]:
+			_log.append_text("[color=#d9a05a]Приказ авиации отклонён: %s[/color]\n" % _reason(ra["reason"]))
+		_pending_air = ""
+		map.selected_province = pid
+		map.queue_redraw()
+		_refresh_info()
 		return
 	if map.selected_fleet >= 0 and not sim.fleet_by_id(map.selected_fleet).is_empty():
 		var fl := sim.fleet_by_id(map.selected_fleet)
@@ -395,6 +412,8 @@ func _on_province_clicked(pid: int) -> void:
 	map.selected_province = pid
 	map.selected_army = -1
 	map.selected_fleet = -1
+	map.selected_wing = -1
+	_pending_air = ""
 	map.queue_redraw()
 	_refresh_info()
 
@@ -415,9 +434,9 @@ func _refresh_top() -> void:
 	if _top_label == null:
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Люди: %d   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
+	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   Авиа: %d   |   Люди: %d   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
 		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.fleets_of(player).size(), c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
+		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.wings_of(player).size(), c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
 	for i in _speed_buttons.size():
 		_speed_buttons[i].disabled = i == speed_idx
 
@@ -464,6 +483,14 @@ func _refresh_info() -> void:
 			t += "Отношения: %s\n" % ("[color=#d96a5a]ВОЙНА[/color]" if sim.at_war(player, o) else "мир")
 	else:
 		t += "Владелец: нейтральная\n"
+	if sim.damage[pid] > 0:
+		t += "Разрушения от бомбардировок: %d%%\n" % sim.damage[pid]
+	var wh := sim.wings_at(pid)
+	if not wh.is_empty():
+		t += "\n[b]Авиация (аэродром %d/%d):[/b]\n" % [wh.size(), sim.air_capacity(pid)]
+		for w in wh:
+			var mname := {"idle": "ожидание", "air_superiority": "господство", "bomb": "бомбардировка", "cas": "поддержка войск"}
+			t += "#%d [color=%s]%s[/color] %s ×%d — %s%s\n" % [w["id"], sim.countries[w["owner"]]["color"], sim.countries[w["owner"]]["name"], sim.air_defs[w["type"]]["name"], w["strength"], mname.get(w["mission"], ""), " ◀" if w["id"] == map.selected_wing else ""]
 	var here := sim.armies_in(pid)
 	if not here.is_empty():
 		t += "\n[b]Армии:[/b]\n"
@@ -485,6 +512,33 @@ func _refresh_info() -> void:
 				map.queue_redraw()
 				_refresh_info())
 			_actions.add_child(b)
+	for w in wh:
+		if w["owner"] == player:
+			var wb2 := Button.new()
+			wb2.text = "Выбрать авиагруппу #%d" % w["id"]
+			var wid: int = w["id"]
+			wb2.pressed.connect(func():
+				map.selected_wing = wid
+				map.selected_army = -1
+				_pending_air = ""
+				map.queue_redraw()
+				_refresh_info())
+			_actions.add_child(wb2)
+	if map.selected_wing >= 0:
+		_air_tools(sim.wing_by_id(map.selected_wing))
+	if o == player:
+		for at in sim.air_defs:
+			var ad: Dictionary = sim.air_defs[at]
+			var ab := Button.new()
+			ab.text = "Авиагруппа: %s (%d $, %d стали, %d чел.)" % [ad["name"], ad["cost"], ad["steel"], ad["manpower"]]
+			ab.disabled = wh.size() >= sim.air_capacity(pid)
+			ab.pressed.connect(func():
+				var rw := sim.apply_command({"type": "build_wing", "country": player, "type_air": at, "base": pid})
+				if not rw["ok"]:
+					_log.append_text("[color=#d9a05a]%s[/color]\n" % _reason(rw["reason"]))
+				map.queue_redraw()
+				_refresh_all())
+			_actions.add_child(ab)
 	if map.selected_army >= 0:
 		_army_tools(sim.army_by_id(map.selected_army), here)
 	if o == player and pid == sim.countries[player]["capital"]:
@@ -834,3 +888,28 @@ func _tech_refresh() -> void:
 		for r in t["requires"]:
 			req_names.append(sim.tech_defs[r]["name"])
 		b.tooltip_text = "%s\nСтоимость: %d\n%s" % [_effects_text(t), t["cost"], ("Требует: " + ", ".join(req_names)) if not req_names.is_empty() else "Без требований"]
+
+
+func _air_tools(w: Dictionary) -> void:
+	if w.is_empty() or w["owner"] != player:
+		return
+	var l := Label.new()
+	l.text = "Авиагруппа #%d: %s, дальность %d" % [w["id"], sim.air_defs[w["type"]]["name"], sim.air_range(player, w["type"])]
+	_actions.add_child(l)
+	var missions := {"fighter": ["air_superiority", "Господство в воздухе"], "bomber": ["bomb", "Бомбардировка"], "attacker": ["cas", "Поддержка войск"]}
+	var m: Array = missions[w["type"]]
+	var b := Button.new()
+	b.text = "%s — затем клик по цели%s" % [m[1], " ◀" if _pending_air == m[0] else ""]
+	b.pressed.connect(func():
+		_pending_air = m[0]
+		_log.append_text("[color=#8ac5ff]%s: выберите цель на карте[/color]\n" % m[1])
+		_refresh_info())
+	_actions.add_child(b)
+	var rb := Button.new()
+	rb.text = "Перебазировать — затем клик по аэродрому"
+	rb.pressed.connect(func():
+		_pending_air = "rebase"
+		_log.append_text("[color=#8ac5ff]Выберите новый аэродром[/color]\n")
+		_refresh_info())
+	_actions.add_child(rb)
+	_cmd_button("Отбой (ожидание)", {"type": "air_mission", "country": player, "wing": w["id"], "mission": "idle", "target": -1})

@@ -17,6 +17,7 @@ var camera := Camera2D.new()
 var selected_province := -1
 var selected_army := -1
 var selected_fleet := -1
+var selected_wing := -1
 var player_country := -1
 var map_mode := "political"  # political | terrain
 
@@ -182,6 +183,29 @@ func _draw() -> void:
 			var dir := (end - pts[pts.size() - 2]).normalized()
 			var nrm := dir.orthogonal()
 			draw_colored_polygon(PackedVector2Array([end, end - dir * 9 + nrm * 5, end - dir * 9 - nrm * 5]), Color(1, 0.85, 0.4))
+	# bombing damage
+	for p in sim.damage.size():
+		if sim.damage[p] > 0:
+			draw_circle(provs[p]["center"] * CELL, 5.0 + sim.damage[p] * 0.12, Color(0.85, 0.2, 0.1, 0.12 + sim.damage[p] * 0.003))
+	# aircraft: wings at their bases, mission lines to targets
+	var wslot := {}
+	var mission_col := {"air_superiority": Color(0.55, 0.8, 1.0, 0.85), "bomb": Color(1.0, 0.45, 0.3, 0.85), "cas": Color(0.7, 1.0, 0.5, 0.85)}
+	var letters := {"fighter": "И", "bomber": "Б", "attacker": "Ш"}
+	for w in sim.wings:
+		var bp: int = w["base"]
+		var wi: int = wslot.get(bp, 0)
+		wslot[bp] = wi + 1
+		var wpos: Vector2 = provs[bp]["center"] * CELL + Vector2(-9 + wi * 11, -17)
+		var wcol := Color(sim.countries[w["owner"]]["color"])
+		var plane := PackedVector2Array([wpos + Vector2(0, -5), wpos + Vector2(4, 3), wpos + Vector2(0, 1), wpos + Vector2(-4, 3)])
+		draw_colored_polygon(plane, wcol)
+		draw_polyline(PackedVector2Array([plane[0], plane[1], plane[2], plane[3], plane[0]]), Color("ffe08a") if w["id"] == selected_wing else Color.BLACK, 1.2)
+		draw_string(font, wpos + Vector2(-3, 12), "%s%d" % [letters.get(w["type"], "?"), w["strength"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color.WHITE)
+		if w["mission"] != "idle" and w["target"] >= 0:
+			var tpos: Vector2 = provs[w["target"]]["center"] * CELL
+			var col: Color = mission_col.get(w["mission"], Color.WHITE)
+			draw_dashed_line(wpos, tpos, col, 1.5, 5.0)
+			draw_arc(tpos, 9.0, 0, TAU, 20, col, 1.5)
 	# fleets
 	var fslot := {}
 	for f in sim.fleets:

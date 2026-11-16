@@ -345,7 +345,7 @@ func test_supply_hurts() -> void:
 
 func test_technology() -> void:
 	var sim := _make(42)
-	check(sim.tech_defs.size() == 33, "tech defs loaded")
+	check(sim.tech_defs.size() == 38, "tech defs loaded")
 	var c: Dictionary = sim.countries[0]
 	check(not sim.apply_command({"type": "research", "country": 0, "tech": "nope"})["ok"], "unknown tech rejected")
 	check(not sim.apply_command({"type": "research", "country": 0, "tech": "ind3"})["ok"], "missing prerequisites rejected")
@@ -396,3 +396,130 @@ func test_technology() -> void:
 	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
 	check(r.checksum() == x.checksum(), "research survives save/load")
 	check(r.mod(0, "income_pct") == x.mod(0, "income_pct"), "modifiers rebuilt after load")
+
+
+func _prep_air(sim: Simulation) -> void:
+	for c in sim.countries:
+		c["treasury"] = 100000
+		c["stock"]["steel"] = 5000
+		c["manpower"] = 5000
+
+
+func test_aviation() -> void:
+	var sim := _make(42)
+	_prep_air(sim)
+	check(sim.air_defs.size() == 3, "aircraft defs loaded")
+	var cap: int = sim.countries[0]["capital"]
+	var enemy_cap: int = sim.countries[1]["capital"]
+	# building
+	var r := sim.apply_command({"type": "build_wing", "country": 0, "type_air": "fighter", "base": cap})
+	check(r["ok"] and sim.wings.size() == 1 and sim.wings[0]["strength"] == Simulation.WING_SIZE, "wing built at capital")
+	check(not sim.apply_command({"type": "build_wing", "country": 0, "type_air": "fighter", "base": enemy_cap})["ok"], "cannot build on foreign base")
+	while sim.wings_at(cap).size() < sim.air_capacity(cap):
+		sim.apply_command({"type": "build_wing", "country": 0, "type_air": "bomber", "base": cap})
+	check(not sim.apply_command({"type": "build_wing", "country": 0, "type_air": "bomber", "base": cap})["ok"], "airbase capacity enforced")
+	sim.countries[0]["stock"]["steel"] = 0
+	check(not sim.apply_command({"type": "build_wing", "country": 0, "type_air": "fighter", "base": sim.port_of(0) if sim.port_of(0) != cap else cap})["ok"], "wings need steel")
+	sim.countries[0]["stock"]["steel"] = 5000
+	# mission validation
+	var fighter: Dictionary = sim.wings[0]
+	check(not sim.apply_command({"type": "air_mission", "country": 0, "wing": fighter["id"], "mission": "bomb", "target": cap})["ok"], "fighters cannot bomb")
+	var far := -1
+	var reachable := sim.reach(cap, sim.air_range(0, "fighter"))
+	for p in sim.provinces():
+		if p["land"] and not reachable.has(p["id"]):
+			far = p["id"]
+			break
+	check(far >= 0 and not sim.apply_command({"type": "air_mission", "country": 0, "wing": fighter["id"], "mission": "air_superiority", "target": far})["ok"], "range limit enforced")
+	check(sim.apply_command({"type": "air_mission", "country": 0, "wing": fighter["id"], "mission": "air_superiority", "target": cap})["ok"], "superiority mission accepted in range")
+	check(sim.apply_command({"type": "air_mission", "country": 0, "wing": fighter["id"], "mission": "idle"})["ok"], "mission can be cancelled")
+
+
+func test_air_combat_effects() -> void:
+	var sim := _make(42)
+	sim.wars.append({"a": 0, "b": 1, "start": 0})
+	var t: int = sim.countries[1]["capital"]
+	var home: int = sim.countries[0]["capital"]
+	# dogfight: both sides lose planes, shares are symmetric
+	sim.wings = [
+		{"id": 1, "owner": 0, "base": home, "type": "fighter", "strength": 50, "mission": "air_superiority", "target": t},
+		{"id": 2, "owner": 1, "base": t, "type": "fighter", "strength": 50, "mission": "air_superiority", "target": t},
+	]
+	sim.next_wing_id = 3
+	sim._air()
+	check(sim.wings.size() == 2 and sim.wings[0]["strength"] < 50 and sim.wings[1]["strength"] < 50, "dogfight costs both sides planes")
+	check(absf(sim.air_sup[t][0] - 0.5) < 0.001, "equal fighters => 50% air superiority")
+	# superiority bonus for the land army
+	var army: Dictionary = sim.armies_of(1)[0]
+	var base_power := _power_without_air(sim, army)
+	sim.wings = [{"id": 1, "owner": 1, "base": t, "type": "fighter", "strength": 50, "mission": "air_superiority", "target": army["prov"]}]
+	sim._air()
+	check(sim.army_power(army, false) > base_power, "air superiority boosts the army below")
+	# bombing: damages province and enemy army; interceptors reduce it
+	sim.damage[t] = 0
+	var h0: int = army["strength"]
+	sim.wings = [{"id": 1, "owner": 0, "base": home, "type": "bomber", "strength": 50, "mission": "bomb", "target": t}]
+	var enemy_armies_here := sim.armies_in(t)
+	var hp_before: int = enemy_armies_here[0]["strength"] if not enemy_armies_here.is_empty() else 0
+	sim._air()
+	check(sim.damage[t] > 0, "bombing damages the province")
+	check(not enemy_armies_here.is_empty() and enemy_armies_here[0]["strength"] < hp_before, "bombing hurts enemy armies")
+	var d_free: int = sim.damage[t]
+	sim.damage[t] = 0
+	sim.wings = [
+		{"id": 1, "owner": 0, "base": home, "type": "bomber", "strength": 50, "mission": "bomb", "target": t},
+		{"id": 2, "owner": 1, "base": t, "type": "fighter", "strength": 50, "mission": "idle", "target": -1},
+	]
+	sim._air()
+	check(sim.damage[t] <= d_free, "interceptors reduce bombing damage")
+	# close air support
+	var a1: Dictionary = sim.armies_of(0)[0]
+	var plain := _power_without_air(sim, a1)
+	sim.wings = [{"id": 1, "owner": 0, "base": home, "type": "attacker", "strength": 50, "mission": "cas", "target": a1["prov"]}]
+	sim._air()
+	check(sim.army_power(a1, true) > plain * 1.05, "close air support boosts the supported army")
+	# no oil, no sorties
+	sim.countries[0]["short"] = ["oil"]
+	sim.damage[t] = 0
+	sim.wings = [{"id": 1, "owner": 0, "base": home, "type": "bomber", "strength": 50, "mission": "bomb", "target": t}]
+	sim._air()
+	check(sim.damage[t] == 0, "wings are grounded without oil")
+	sim.countries[0]["short"] = []
+	# damage reduces income
+	var s2 := _make(42)
+	s2.tick_day()
+	var inc: int = s2.countries[1]["income"]
+	for p in s2.owner.size():
+		if s2.owner[p] == 1:
+			s2.damage[p] = 100
+	s2.tick_day()
+	check(s2.countries[1]["income"] < inc, "bomb damage cuts income")
+
+
+func _power_without_air(sim: Simulation, army: Dictionary) -> float:
+	var a := sim.air_sup
+	var b := sim.air_cas
+	sim.air_sup = {}
+	sim.air_cas = {}
+	var p := sim.army_power(army, true)
+	sim.air_sup = a
+	sim.air_cas = b
+	return p
+
+
+func test_air_long_run() -> void:
+	var x := _make(3)
+	var y := _make(3)
+	var peak := 0
+	for i in 500:
+		x.tick_day()
+		y.tick_day()
+		peak = maxi(peak, x.wings.size())
+	check(x.checksum() == y.checksum(), "air war deterministic over 500 days")
+	check(peak > 0, "AI builds air wings (peak %d)" % peak)
+	for w in x.wings:
+		check(x.owner[w["base"]] == w["owner"], "wings only sit on own bases")
+		check(w["strength"] > 0 and w["strength"] <= Simulation.WING_SIZE, "wing strength within bounds")
+	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == x.checksum() and r.wings.size() == x.wings.size(), "aviation survives save/load")
+	print("  wings=", x.wings.size(), " peak=", peak)

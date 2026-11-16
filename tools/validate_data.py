@@ -53,7 +53,7 @@ cats = {c["id"] for c in techs["categories"]}
 EFFECTS = {"income_pct", "upkeep_pct", "food_pct", "coal_pct", "iron_pct", "oil_pct", "steel_pct", "manpower_pct",
            "atk_pct", "def_pct", "atk_infantry_pct", "atk_armor_pct", "atk_artillery_pct", "def_infantry_pct",
            "def_armor_pct", "def_artillery_pct", "fleet_pct", "supply_pct", "supply_decay_pct", "attrition_pct",
-           "research_pct", "research_slots"}
+           "research_pct", "research_slots", "air_fighter_pct", "air_bomber_pct", "air_attacker_pct", "air_range"}
 tmap = {}
 for t in techs["techs"]:
     if t["id"] in tmap:
@@ -84,6 +84,17 @@ def visit(i):
     state[i] = 2
 for i in tmap:
     visit(i)
+
+air = json.loads((root / "data/aircraft.json").read_text(encoding="utf-8"))
+air_ids = set()
+for a in air["aircraft"]:
+    for k in ("id", "name", "cost", "steel", "manpower", "range"):
+        if k not in a:
+            errors.append(f"aircraft {a.get('id')}: missing {k}")
+    air_ids.add(a.get("id"))
+for need in ("fighter", "bomber", "attacker"):
+    if need not in air_ids:
+        errors.append(f"aircraft.json must define {need}")
 
 if errors:
     print("\n".join(errors)); sys.exit(1)

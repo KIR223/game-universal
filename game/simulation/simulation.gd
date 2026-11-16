@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 5
+const SAVE_VERSION := 6
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -19,6 +19,7 @@ const AI_STACK := 6
 const MAX_GENERALS := 8
 const MAX_QUEUE := 8
 const BASE_SLOTS := 2
+const WING_SIZE := 50
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -43,6 +44,12 @@ var res_defs: Array = []
 var unit_defs: Dictionary = {}
 var name_pool: Dictionary = {}
 var next_general_id := 1
+var wings: Array = []  # {"id","owner","base","type","strength","mission","target"}
+var next_wing_id := 1
+var damage := PackedInt32Array()  # per-province bombing damage 0..100
+var air_defs: Dictionary = {}
+var air_sup: Dictionary = {}  # derived daily: province -> {country: fighter share}
+var air_cas: Dictionary = {}  # derived daily: province -> {country: close-air-support strength}
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -58,9 +65,12 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	unit_defs = load_unit_defs()
 	name_pool = load_name_pool()
 	_load_techs()
+	air_defs = load_air_defs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
 	owner = WorldGen.assign_owners(world, caps)
+	damage.resize(owner.size())
+	damage.fill(0)
 	countries.clear()
 	for i in caps.size():
 		var d: Dictionary = country_defs[i]
@@ -211,6 +221,300 @@ func _ai_research(cid: int) -> void:
 			best = id
 	if best != "":
 		_queue_tech(cid, best)
+
+
+static func load_air_defs() -> Dictionary:
+	var out := {}
+	var f := FileAccess.open("res://data/aircraft.json", FileAccess.READ)
+	if f == null:
+		return out
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY:
+		for a in parsed.get("aircraft", []):
+			out[a["id"]] = a
+	return out
+
+
+# ---------------------------------------------------------------- aviation
+
+func wings_of(cid: int) -> Array:
+	return wings.filter(func(w): return w["owner"] == cid)
+
+
+func wings_at(p: int) -> Array:
+	return wings.filter(func(w): return w["base"] == p)
+
+
+func wing_by_id(wid: int) -> Dictionary:
+	for w in wings:
+		if w["id"] == wid:
+			return w
+	return {}
+
+
+func air_capacity(p: int) -> int:
+	var cap: int = 2 + provinces()[p]["industry"] / 2
+	for c in countries:
+		if c["capital"] == p and owner[p] == c["id"]:
+			cap += 2
+	return cap
+
+
+func air_range(cid: int, type: String) -> int:
+	return air_defs[type]["range"] + mod(cid, "air_range")
+
+
+## Province -> hop distance for every province within `limit` hops (air and sea included).
+func reach(from: int, limit: int) -> Dictionary:
+	var provs := provinces()
+	var dist := {from: 0}
+	var queue: Array[int] = [from]
+	while not queue.is_empty():
+		var cur: int = queue.pop_front()
+		if dist[cur] >= limit:
+			continue
+		for q in provs[cur]["neighbors"]:
+			if not dist.has(q):
+				dist[q] = dist[cur] + 1
+				queue.append(q)
+	return dist
+
+
+func _build_wing(cid: int, type: String, base: int) -> Dictionary:
+	var c: Dictionary = countries[cid]
+	if not air_defs.has(type):
+		return _fail("invalid aircraft")
+	if base < 0 or base >= owner.size() or owner[base] != cid or not provinces()[base]["land"]:
+		return _fail("invalid base")
+	if wings_at(base).size() >= air_capacity(base):
+		return _fail("airbase full")
+	var d: Dictionary = air_defs[type]
+	if c["treasury"] < d["cost"]:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < d["steel"]:
+		return _fail("not enough steel")
+	if c["manpower"] < d["manpower"]:
+		return _fail("no manpower")
+	c["treasury"] -= d["cost"]
+	c["stock"]["steel"] -= d["steel"]
+	c["manpower"] -= d["manpower"]
+	wings.append({"id": next_wing_id, "owner": cid, "base": base, "type": type, "strength": WING_SIZE, "mission": "idle", "target": -1})
+	next_wing_id += 1
+	return {"ok": true}
+
+
+func _set_mission(cid: int, w: Dictionary, mission: String, target: int) -> Dictionary:
+	if mission == "idle":
+		w["mission"] = "idle"
+		w["target"] = -1
+		return {"ok": true}
+	var provs := provinces()
+	if target < 0 or target >= owner.size():
+		return _fail("invalid target")
+	var need := {"air_superiority": "fighter", "bomb": "bomber", "cas": "attacker"}
+	if not need.has(mission) or need[mission] != w["type"]:
+		return _fail("wrong aircraft for mission")
+	if mission != "air_superiority" and not provs[target]["land"]:
+		return _fail("land target required")
+	if mission == "bomb" and (owner[target] < 0 or not at_war(cid, owner[target])):
+		return _fail("target not at war")
+	if not reach(w["base"], air_range(cid, w["type"])).has(target):
+		return _fail("out of range")
+	w["mission"] = mission
+	w["target"] = target
+	return {"ok": true}
+
+
+func _can_fly(w: Dictionary) -> bool:
+	return not countries[w["owner"]]["short"].has("oil")
+
+
+func air_oil(cid: int) -> int:
+	var n := 0
+	for w in wings:
+		if w["owner"] == cid and w["mission"] != "idle":
+			n += w["strength"] / 25
+	return n
+
+
+func _zone_add(zone: Dictionary, t: int, cid: int, w: Dictionary, weight: float) -> void:
+	if not zone.has(t):
+		zone[t] = {}
+	if not zone[t].has(cid):
+		zone[t][cid] = []
+	zone[t][cid].append([w, weight])
+
+
+func _zone_power(list: Array, cid: int) -> float:
+	var p := 0.0
+	for e in list:
+		p += e[0]["strength"] * e[1]
+	return p * (100 + mod(cid, "air_fighter_pct")) / 100.0
+
+
+func _wing_losses(list: Array, amount: float) -> void:
+	var total := 0.0
+	for e in list:
+		total += e[0]["strength"] * e[1]
+	if total <= 0.0 or amount <= 0.0:
+		return
+	for e in list:
+		e[0]["strength"] -= int(amount * e[0]["strength"] * e[1] / total)
+
+
+func _foe_power(zp: Dictionary, cid: int) -> float:
+	var foe := 0.0
+	for o in zp:
+		if at_war(cid, o):
+			foe += zp[o]
+	return foe
+
+
+func _friend_power(zp: Dictionary, cid: int) -> float:
+	var f := 0.0
+	for o in zp:
+		if o == cid or allied(cid, o):
+			f += zp[o]
+	return f
+
+
+func _air() -> void:
+	air_sup = {}
+	air_cas = {}
+	if wings.is_empty():
+		return
+	var provs := provinces()
+	# bases that fell: relocate or lose the wing
+	for w in wings:
+		if owner[w["base"]] != w["owner"]:
+			var cap_p: int = countries[w["owner"]]["capital"]
+			if owner[cap_p] == w["owner"] and wings_at(cap_p).size() < air_capacity(cap_p):
+				w["base"] = cap_p
+				w["mission"] = "idle"
+				w["target"] = -1
+			else:
+				w["strength"] = 0
+	# 1. fighters: superiority missions and idle interceptors
+	var zone := {}
+	for w in wings:
+		if w["type"] != "fighter" or w["strength"] <= 0:
+			continue
+		var cid: int = w["owner"]
+		if w["mission"] == "air_superiority" and _can_fly(w):
+			_zone_add(zone, w["target"], cid, w, 1.0)
+		elif w["mission"] == "idle":
+			_zone_add(zone, w["base"], cid, w, 0.5)
+			for q in provs[w["base"]]["neighbors"]:
+				_zone_add(zone, q, cid, w, 0.5)
+	var zpow := {}
+	var tkeys: Array = zone.keys()
+	tkeys.sort()
+	for t in tkeys:
+		var per: Dictionary = zone[t]
+		var cids: Array = per.keys()
+		cids.sort()
+		var zp := {}
+		for cid in cids:
+			zp[cid] = _zone_power(per[cid], cid)
+		zpow[t] = zp
+		air_sup[t] = {}
+		for cid in cids:
+			var foe := _foe_power(zp, cid)
+			air_sup[t][cid] = zp[cid] / (zp[cid] + foe) if (zp[cid] + foe) > 0.0 else 0.5
+		for cid in cids:
+			var foe2 := _foe_power(zp, cid)
+			if foe2 > 0.0:
+				_wing_losses(per[cid], foe2 * 0.04 * rng.randf_range(0.8, 1.2))
+	# 2. bombers and ground-attack aircraft
+	for w in wings:
+		if w["strength"] <= 0 or w["mission"] == "idle" or w["type"] == "fighter":
+			continue
+		var cid2: int = w["owner"]
+		if not _can_fly(w):
+			continue
+		var t2: int = w["target"]
+		var zp2: Dictionary = zpow.get(t2, {})
+		var foe3 := _foe_power(zp2, cid2)
+		if w["type"] == "bomber" and w["mission"] == "bomb":
+			var o2 := owner[t2]
+			if o2 < 0 or not at_war(cid2, o2):
+				w["mission"] = "idle"
+				w["target"] = -1
+				continue
+			var interception := foe3 / (foe3 + _friend_power(zp2, cid2) + 25.0)
+			var dmg: float = w["strength"] * 0.8 * (1.0 - interception) * (100 + mod(cid2, "air_bomber_pct")) / 100.0
+			damage[t2] = mini(100, damage[t2] + int(dmg / 10.0))
+			for a in armies:
+				if a["prov"] == t2 and at_war(cid2, a["owner"]):
+					_hurt(a, int(dmg * 0.5))
+			_wing_losses([[w, 1.0]], foe3 * 0.05 + (1.0 if day % 3 == 0 else 0.0))
+		elif w["type"] == "attacker" and w["mission"] == "cas":
+			if not air_cas.has(t2):
+				air_cas[t2] = {}
+			var cur: float = air_cas[t2].get(cid2, 0.0)
+			air_cas[t2][cid2] = cur + w["strength"] * (100 + mod(cid2, "air_attacker_pct")) / 100.0
+			_wing_losses([[w, 1.0]], foe3 * 0.03 + (1.0 if day % 4 == 0 else 0.0))
+	# 3. replenishment, repair, cleanup
+	for w in wings:
+		if w["mission"] == "idle" and w["strength"] < WING_SIZE and day % 2 == 0:
+			w["strength"] += 1
+	for p in damage.size():
+		if damage[p] > 0 and day % 2 == 0:
+			damage[p] -= 1
+	wings = wings.filter(func(w): return w["strength"] > 3)
+
+
+func _ai_air(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var provs := provinces()
+	if day % 10 == 0 and c["treasury"] >= 250 and wings_of(cid).size() < 2 + country_provinces(cid).size() / 4:
+		var kinds := ["fighter", "attacker", "bomber", "fighter"]
+		var base: int = c["capital"]
+		if owner[base] != cid or wings_at(base).size() >= air_capacity(base):
+			base = -1
+			for p in owner.size():
+				if owner[p] == cid and provs[p]["land"] and wings_at(p).size() < air_capacity(p):
+					base = p
+					break
+		if base >= 0:
+			_build_wing(cid, kinds[(day / 10 + cid) % kinds.size()], base)
+	if day % 5 != 0:
+		return
+	var enemies := enemies_of(cid)
+	var hot := -1
+	for a in armies_of(cid):
+		for b in armies:
+			if b["prov"] == a["prov"] and enemies.has(b["owner"]):
+				hot = a["prov"]
+				break
+		if hot >= 0:
+			break
+	for w in wings_of(cid):
+		var r := reach(w["base"], air_range(cid, w["type"]))
+		match w["type"]:
+			"fighter":
+				if hot >= 0 and r.has(hot):
+					_set_mission(cid, w, "air_superiority", hot)
+				else:
+					_set_mission(cid, w, "idle", -1)
+			"attacker":
+				if hot >= 0 and r.has(hot):
+					_set_mission(cid, w, "cas", hot)
+				else:
+					_set_mission(cid, w, "idle", -1)
+			"bomber":
+				var best := -1
+				var best_v := -1
+				for t in r:
+					if provs[t]["land"] and owner[t] >= 0 and enemies.has(owner[t]):
+						var v: int = provs[t]["industry"] * 10 + armies_in(t).size()
+						if v > best_v:
+							best_v = v
+							best = t
+				if best >= 0:
+					_set_mission(cid, w, "bomb", best)
+				else:
+					_set_mission(cid, w, "idle", -1)
 
 
 static func load_unit_defs() -> Dictionary:
@@ -465,6 +769,28 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			c["manpower"] -= 2 * unit_defs["infantry"]["manpower"]
 			_spawn_army(cid, c["capital"])
 			return {"ok": true}
+		"build_wing":
+			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
+		"air_mission":
+			var aw := wing_by_id(cmd.get("wing", -1))
+			if aw.is_empty() or aw["owner"] != cid:
+				return _fail("invalid wing")
+			return _set_mission(cid, aw, cmd.get("mission", ""), cmd.get("target", -1))
+		"rebase":
+			var rw := wing_by_id(cmd.get("wing", -1))
+			var nb: int = cmd.get("base", -1)
+			if rw.is_empty() or rw["owner"] != cid:
+				return _fail("invalid wing")
+			if nb < 0 or nb >= owner.size() or owner[nb] != cid or not provinces()[nb]["land"]:
+				return _fail("invalid base")
+			if wings_at(nb).size() >= air_capacity(nb):
+				return _fail("airbase full")
+			if not reach(rw["base"], air_range(cid, rw["type"]) * 2).has(nb):
+				return _fail("out of range")
+			rw["base"] = nb
+			rw["mission"] = "idle"
+			rw["target"] = -1
+			return {"ok": true}
 		"research":
 			return _queue_tech(cid, cmd.get("tech", ""))
 		"unqueue_tech":
@@ -667,6 +993,7 @@ func tick_day() -> void:
 	_move_armies()
 	_move_fleets()
 	_supply()
+	_air()
 	_battles()
 	_occupation()
 	if day % 5 == 0:
@@ -689,7 +1016,7 @@ func _economy() -> void:
 	for p in owner.size():
 		var o := owner[p]
 		if o >= 0 and countries[o]["alive"]:
-			countries[o]["income"] += provs[p]["pop"] * provs[p]["industry"] / 100
+			countries[o]["income"] += provs[p]["pop"] * provs[p]["industry"] * (100 - damage[p]) / 10000
 	for a in armies:
 		countries[a["owner"]]["upkeep"] += a["strength"] / 200
 	for f in fleets:
@@ -798,7 +1125,7 @@ func _resources() -> void:
 		for r in provs[p]["deposits"]:
 			countries[o]["prod"][r] += provs[p]["deposits"][r]
 		pop_sum[o] += provs[p]["pop"]
-		ind_sum[o] += provs[p]["industry"]
+		ind_sum[o] += (provs[p]["industry"] * (100 - damage[p]) + 50) / 100
 	for c in countries:
 		if not c["alive"]:
 			continue
@@ -817,7 +1144,7 @@ func _resources() -> void:
 			for d in a["div"]:
 				if unit_defs[d["t"]]["oil"]:
 					armor_hp += d["hp"]
-		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000
+		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000 + air_oil(cid)
 		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
 		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] * (100 + mod(cid, "steel_pct")) / 300)
@@ -1078,7 +1405,13 @@ func army_power(a: Dictionary, attacking: bool) -> float:
 	var sup: float = 0.5 + 0.5 * a["supply"] / 100.0
 	var g := _general(a["owner"], a["gen"])
 	var gm: float = 1.0 + (0.05 * g["skill"] if not g.is_empty() else 0.0)
-	return p * sup * gm
+	var tprov: int = a["prov"]
+	var air_share := 0.5
+	if air_sup.has(tprov) and air_sup[tprov].has(a["owner"]):
+		air_share = air_sup[tprov][a["owner"]]
+	var cas: float = air_cas.get(tprov, {}).get(a["owner"], 0.0)
+	var cas_m: float = 1.0 + minf(0.3, cas / (a["strength"] + 1.0) * 2.0)
+	return p * sup * gm * (1.0 + 0.2 * (air_share - 0.5)) * cas_m
 
 
 func divisions_of(cid: int) -> int:
@@ -1440,6 +1773,7 @@ func _ai() -> void:
 			var kinds := ["infantry", "infantry", "armor", "artillery"]
 			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
 		_ai_generals(cid)
+		_ai_air(cid)
 		if day % 10 == 0:
 			_ai_research(cid)
 		if day % 10 == 0:
@@ -1532,7 +1866,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "next_general_id": next_general_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -1557,6 +1891,10 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
+	sim.wings = d["wings"]
+	sim.next_wing_id = d["next_wing_id"]
+	sim.damage = d["damage"]
+	sim.air_defs = load_air_defs()
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
@@ -1567,4 +1905,4 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, fleets, alliances, trades, embargoes, wars, rng.state]).hash()
+	return var_to_str([day, owner, countries, armies, fleets, wings, damage, alliances, trades, embargoes, wars, rng.state]).hash()
