@@ -64,3 +64,62 @@ jobs:
         with:
           name: IRON-DOMINION-WINDOWS-X64
           path: build/windows/
+
+  android-apk:
+    name: android debug APK
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+          include-templates: true
+      - name: Android SDK packages
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36"
+      - name: Debug keystore and Godot editor settings (nothing secret: debug key only)
+        run: |
+          keytool -genkeypair -keystore "$HOME/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.7.tres" <<EOT
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$SDK"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOT
+      - name: Import project
+        run: godot --headless --path . --import
+      - name: Export debug APKs (phone arm64 + emulator x86_64)
+        run: |
+          mkdir -p build/android
+          godot --headless --path . --export-debug "Android debug APK" build/android/IronDominion-debug.apk
+          godot --headless --path . --export-debug "Android debug APK (emulator x86_64)" build/android/IronDominion-debug-x86_64.apk
+          ls -la build/android
+      - name: Verify APKs are signed and contain the world data
+        run: |
+          for apk in build/android/*.apk; do
+            "$SDK/build-tools/36.1.0/apksigner" verify "$apk"
+            size=$(stat -c %s "$apk")
+            echo "$apk $size bytes"
+            # without data/world the APK is ~28 MB; with it ~37+ MB
+            test "$size" -gt 36000000
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IRON-DOMINION-ANDROID-DEBUG
+          path: |
+            build/android/*.apk
