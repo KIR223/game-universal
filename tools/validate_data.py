@@ -19,6 +19,72 @@ for c in data["countries"]:
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
         errors.append(f"{c.get('tag')}: bad color")
 
+res = json.loads((root / "data/resources.json").read_text(encoding="utf-8"))
+ids = set()
+for r in res["resources"]:
+    for k in ("id", "name", "price", "color"):
+        if k not in r:
+            errors.append(f"resource {r}: missing {k}")
+    if r.get("id") in ids:
+        errors.append(f"duplicate resource {r.get('id')}")
+    ids.add(r.get("id"))
+    if not isinstance(r.get("price"), int) or r["price"] < 1:
+        errors.append(f"{r.get('id')}: bad price")
+for need in ("food", "oil", "steel", "iron", "coal"):
+    if need not in ids:
+        errors.append(f"missing required resource {need}")
+
+units = json.loads((root / "data/units.json").read_text(encoding="utf-8"))
+terrains = {"plains", "forest", "hills", "mountain", "desert"}
+for u in units["units"]:
+    for k in ("id", "name", "cost", "steel", "manpower", "hp", "atk", "def", "oil", "terrain"):
+        if k not in u:
+            errors.append(f"unit {u.get('id')}: missing {k}")
+    if set(u.get("terrain", {})) != terrains:
+        errors.append(f"unit {u.get('id')}: terrain table must cover {sorted(terrains)}")
+if "infantry" not in {u["id"] for u in units["units"]}:
+    errors.append("units.json must define infantry")
+gen = json.loads((root / "data/generals.json").read_text(encoding="utf-8"))
+if not gen.get("first") or not gen.get("last"):
+    errors.append("generals.json: need first and last name lists")
+
+techs = json.loads((root / "data/techs.json").read_text(encoding="utf-8"))
+cats = {c["id"] for c in techs["categories"]}
+EFFECTS = {"income_pct", "upkeep_pct", "food_pct", "coal_pct", "iron_pct", "oil_pct", "steel_pct", "manpower_pct",
+           "atk_pct", "def_pct", "atk_infantry_pct", "atk_armor_pct", "atk_artillery_pct", "def_infantry_pct",
+           "def_armor_pct", "def_artillery_pct", "fleet_pct", "supply_pct", "supply_decay_pct", "attrition_pct",
+           "research_pct", "research_slots"}
+tmap = {}
+for t in techs["techs"]:
+    if t["id"] in tmap:
+        errors.append(f"duplicate tech {t['id']}")
+    tmap[t["id"]] = t
+    if t["category"] not in cats:
+        errors.append(f"{t['id']}: unknown category {t['category']}")
+    if not isinstance(t["cost"], int) or t["cost"] <= 0:
+        errors.append(f"{t['id']}: bad cost")
+    for k in t["effects"]:
+        if k not in EFFECTS:
+            errors.append(f"{t['id']}: unknown effect {k}")
+for t in techs["techs"]:
+    for r in t["requires"]:
+        if r not in tmap:
+            errors.append(f"{t['id']}: missing prerequisite {r}")
+# cycle check
+state = {}
+def visit(i):
+    if state.get(i) == 1:
+        errors.append(f"tech cycle at {i}"); return
+    if state.get(i) == 2:
+        return
+    state[i] = 1
+    for r in tmap[i]["requires"]:
+        if r in tmap:
+            visit(r)
+    state[i] = 2
+for i in tmap:
+    visit(i)
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs)")

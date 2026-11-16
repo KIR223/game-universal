@@ -16,6 +16,7 @@ var sim: Simulation
 var camera := Camera2D.new()
 var selected_province := -1
 var selected_army := -1
+var selected_fleet := -1
 var player_country := -1
 var map_mode := "political"  # political | terrain
 
@@ -168,7 +169,9 @@ func _draw() -> void:
 		draw_rect(rect, col)
 		if a["id"] == selected_army:
 			draw_rect(rect.grow(3.0), Color("ffe08a"), false, 1.5)
-		draw_string(font, pos + Vector2(0, 19), str(a["strength"] / 100), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
+		if a["supply"] < 30:
+			draw_rect(rect.grow(2.5), Color("e04a3a"), false, 1.5)
+		draw_string(font, pos + Vector2(0, 19), "%d·%d" % [a["div"].size(), a["strength"] / 100], HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
 		# movement arrow
 		if not a["path"].is_empty():
 			var pts := PackedVector2Array([provs[p]["center"] * CELL])
@@ -179,6 +182,23 @@ func _draw() -> void:
 			var dir := (end - pts[pts.size() - 2]).normalized()
 			var nrm := dir.orthogonal()
 			draw_colored_polygon(PackedVector2Array([end, end - dir * 9 + nrm * 5, end - dir * 9 - nrm * 5]), Color(1, 0.85, 0.4))
+	# fleets
+	var fslot := {}
+	for f in sim.fleets:
+		var fp: int = f["prov"]
+		var fi: int = fslot.get(fp, 0)
+		fslot[fp] = fi + 1
+		var fpos: Vector2 = provs[fp]["center"] * CELL + Vector2(fi * 14 - 6, 6)
+		var fcol := Color(sim.countries[f["owner"]]["color"])
+		var tri := PackedVector2Array([fpos + Vector2(0, -7), fpos + Vector2(8, 6), fpos + Vector2(-8, 6)])
+		draw_colored_polygon(tri, fcol)
+		draw_polyline(PackedVector2Array([tri[0], tri[1], tri[2], tri[0]]), Color.BLACK if f["id"] != selected_fleet else Color("ffe08a"), 1.5)
+		draw_string(font, fpos + Vector2(-6, 17), str(f["strength"] / 100), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
+		if not f["path"].is_empty():
+			var fpts := PackedVector2Array([provs[fp]["center"] * CELL])
+			for q in f["path"]:
+				fpts.append(provs[q]["center"] * CELL)
+			draw_polyline(fpts, Color(0.6, 0.85, 1.0, 0.9), 2.0, true)
 	# country names
 	for l in _labels:
 		var fs: int = l["size"]

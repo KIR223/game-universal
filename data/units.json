@@ -1,0 +1,11 @@
+{
+	"schema_version": 1,
+	"units": [
+		{"id": "infantry", "name": "Пехота", "cost": 30, "steel": 20, "manpower": 10, "hp": 500, "atk": 1.0, "def": 1.0, "oil": false,
+		 "terrain": {"plains": 1.0, "forest": 1.0, "hills": 1.0, "mountain": 1.0, "desert": 1.0}},
+		{"id": "armor", "name": "Танки", "cost": 60, "steel": 40, "manpower": 8, "hp": 600, "atk": 2.0, "def": 1.1, "oil": true,
+		 "terrain": {"plains": 1.25, "forest": 0.8, "hills": 0.8, "mountain": 0.45, "desert": 1.15}},
+		{"id": "artillery", "name": "Артиллерия", "cost": 45, "steel": 30, "manpower": 8, "hp": 350, "atk": 1.6, "def": 0.7, "oil": false,
+		 "terrain": {"plains": 1.0, "forest": 0.9, "hills": 1.0, "mountain": 0.9, "desert": 1.0}}
+	]
+}

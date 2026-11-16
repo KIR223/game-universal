@@ -119,6 +119,41 @@ static func generate(seed_value: int, land_count: int = 130, sea_count: int = 30
 			"land_neighbors": [],
 		})
 
+	# resource deposits (own RNG stream so the map itself never changes)
+	var drng := RandomNumberGenerator.new()
+	drng.seed = seed_value + 31337
+	for pr in provinces:
+		var dep := {}
+		if pr["land"]:
+			var food := 0
+			var coal := 0
+			var iron := 0
+			var oil := 0
+			match pr["terrain"]:
+				"plains":
+					food = drng.randi_range(4, 6)
+					if drng.randf() < 0.15: coal = drng.randi_range(2, 4)
+					if drng.randf() < 0.08: oil = drng.randi_range(3, 5)
+				"forest":
+					food = drng.randi_range(2, 4)
+					if drng.randf() < 0.10: iron = drng.randi_range(2, 3)
+				"hills":
+					food = drng.randi_range(2, 3)
+					if drng.randf() < 0.5: coal = drng.randi_range(2, 5)
+					if drng.randf() < 0.4: iron = drng.randi_range(2, 5)
+				"mountain":
+					food = 1
+					if drng.randf() < 0.4: coal = drng.randi_range(2, 4)
+					if drng.randf() < 0.5: iron = drng.randi_range(3, 6)
+				"desert":
+					food = drng.randi_range(0, 1)
+					if drng.randf() < 0.4: oil = drng.randi_range(4, 8)
+			if food > 0: dep["food"] = food
+			if coal > 0: dep["coal"] = coal
+			if iron > 0: dep["iron"] = iron
+			if oil > 0: dep["oil"] = oil
+		pr["deposits"] = dep
+
 	# adjacency from cell edges
 	var nb: Array = []
 	for _p in n_total:
