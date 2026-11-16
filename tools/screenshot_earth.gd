@@ -24,7 +24,7 @@ func _process(_delta: float) -> bool:
 	frames += 1
 	if frames == 90:
 		main._start_scenario(ScenarioLoader.read_file("res://game/scenarios/modern_world.json"))
-	elif frames == 100:
+	elif frames == 160:
 		root.get_viewport().get_texture().get_image().save_png(out + "_select.png")
 		var cid := 0
 		for c in main.sim.countries:
@@ -38,7 +38,7 @@ func _process(_delta: float) -> bool:
 		main.sim.dirty_provinces.clear()
 		main._refresh_all()
 		main.map.camera.zoom = Vector2.ONE * 3.0
-	elif frames == 130:
+	elif frames == 220:
 		root.get_viewport().get_texture().get_image().save_png(out + "_game.png")
 		var ok := SaveSystem.save(main.sim, "wintest")
 		sum_before = str(main.sim.checksum())
