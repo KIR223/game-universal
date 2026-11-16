@@ -13,6 +13,10 @@ static func save(sim: Simulation, slot: String = "quick") -> bool:
 	return true
 
 
+static func exists(slot: String) -> bool:
+	return FileAccess.file_exists("%s/%s.sav" % [DIR, slot])
+
+
 static func load_slot(slot: String = "quick") -> Simulation:
 	var path := "%s/%s.sav" % [DIR, slot]
 	if not FileAccess.file_exists(path):

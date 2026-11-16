@@ -242,6 +242,11 @@ func _show_menu() -> void:
 	edit.text = "Редактор сценариев"
 	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
 	box.add_child(edit)
+	if SaveSystem.exists("auto"):
+		var cont := Button.new()
+		cont.text = "Продолжить (автосохранение)"
+		cont.pressed.connect(_load_game.bind("auto"))
+		box.add_child(cont)
 	var load_btn := Button.new()
 	load_btn.text = "Загрузить (F9)"
 	load_btn.pressed.connect(_load_game)
@@ -391,8 +396,14 @@ func _open_editor(scn: Dictionary) -> void:
 		_start_scenario(s))
 
 
-func _load_game() -> void:
-	var loaded := SaveSystem.load_slot("quick")
+## Mobile OSes can kill a backgrounded app without notice: save the running game when it goes to the background.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED and sim != null and player >= 0:
+		SaveSystem.save(sim, "auto")
+
+
+func _load_game(slot: String = "quick") -> void:
+	var loaded := SaveSystem.load_slot(slot)
 	if loaded == null:
 		return
 	sim = loaded
