@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 7
+const SAVE_VERSION := 8
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -21,6 +21,7 @@ const MAX_QUEUE := 8
 const BASE_SLOTS := 2
 const WING_SIZE := 50
 const PP_CAP := 300
+const MAX_NET := 100
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -58,6 +59,9 @@ var law_defaults: Dictionary = {}
 var event_defs: Array = []
 var decision_defs: Array = []
 var next_event_uid := 1
+var intel_defs: Dictionary = {}
+var ops: Array = []  # {"id","owner","target","type","left","total"}
+var next_op_id := 1
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -74,6 +78,7 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	name_pool = load_name_pool()
 	_load_techs()
 	_load_politics()
+	_load_intel()
 	air_defs = load_air_defs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
@@ -525,6 +530,7 @@ func _new_country(tag: String, cname: String, color: String, capital: int) -> Di
 		"ideology": "", "party_pop": {}, "stability": 50, "war_support": 40, "pp": 50,
 		"laws": law_defaults.duplicate(), "done": {}, "timed": [], "crisis": 0,
 		"ev_seen": {}, "pending": [],
+		"intel": {"level": 1, "xp": 0, "net": {}, "counter": 0, "disinfo_until": -1},
 	}
 	countries.append(c)
 	return c
@@ -962,6 +968,201 @@ func _run_decision(c: Dictionary, dd: Dictionary) -> void:
 	_log("%s: %s — %s" % [date_string(), c["name"], dd["name"]])
 
 
+# ------------------------------------------------------------- intelligence
+
+func _load_intel() -> void:
+	intel_defs = {}
+	var f := FileAccess.open("res://data/intel.json", FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY:
+		for o in parsed["operations"]:
+			intel_defs[o["id"]] = o
+
+
+func net_of_agent(viewer: int, target: int) -> int:
+	return countries[viewer]["intel"]["net"].get(target, 0)
+
+
+func intel_slots(cid: int) -> int:
+	return 1 + (countries[cid]["intel"]["level"] + 1) / 2
+
+
+func ops_of(cid: int) -> Array:
+	return ops.filter(func(o): return o["owner"] == cid)
+
+
+## Percent chance that an operation of `type` by `cid` against `target` succeeds.
+func op_chance(cid: int, target: int, type: String) -> int:
+	var lvl: int = countries[cid]["intel"]["level"]
+	if type == "counter_intel":
+		return 100
+	var counter: int = countries[target]["intel"]["counter"]
+	if type == "build_network":
+		return clampi(60 + 5 * lvl - counter / 3, 10, 95)
+	return clampi(45 + 5 * lvl + net_of_agent(cid, target) / 4 - counter / 2, 10, 90)
+
+
+func _start_op(cid: int, type: String, target: int) -> Dictionary:
+	if not intel_defs.has(type):
+		return _fail("invalid operation")
+	var d: Dictionary = intel_defs[type]
+	var c: Dictionary = countries[cid]
+	if type == "counter_intel":
+		target = cid
+	elif target < 0 or target >= countries.size() or target == cid or not countries[target]["alive"]:
+		return _fail("invalid target")
+	if ops_of(cid).size() >= intel_slots(cid):
+		return _fail("no free agents")
+	if net_of_agent(cid, target) < int(d["min_network"]) and type != "counter_intel":
+		return _fail("network too weak")
+	if c["treasury"] < int(d["cost"]):
+		return _fail("not enough funds")
+	for o in ops:
+		if o["owner"] == cid and o["target"] == target and o["type"] == type:
+			return _fail("already running")
+	c["treasury"] -= int(d["cost"])
+	ops.append({"id": next_op_id, "owner": cid, "target": target, "type": type, "left": int(d["duration"]), "total": int(d["duration"])})
+	next_op_id += 1
+	return {"ok": true}
+
+
+func _gain_xp(cid: int, amount: int) -> void:
+	var it: Dictionary = countries[cid]["intel"]
+	it["xp"] += amount
+	var lvl := mini(5, 1 + it["xp"] / 100)
+	if lvl > it["level"]:
+		it["level"] = lvl
+		_log("%s: разведка %s достигла уровня %d" % [date_string(), countries[cid]["name"], lvl])
+
+
+## Resolve one finished operation. `force` (-1 random, 0 fail, 1 success) is for tests.
+func _resolve_op(op: Dictionary, force: int = -1) -> void:
+	var cid: int = op["owner"]
+	var tid: int = op["target"]
+	var c: Dictionary = countries[cid]
+	var t: Dictionary = countries[tid]
+	var type: String = op["type"]
+	var ok: bool
+	if force >= 0:
+		ok = force == 1
+	else:
+		ok = rng.randi_range(1, 100) <= op_chance(cid, tid, type)
+	if not ok:
+		c["intel"]["net"][tid] = maxi(0, net_of_agent(cid, tid) - 25)
+		_gain_xp(cid, 4)
+		if not t["ai"] or not c["ai"]:
+			_log("%s: операция «%s» против %s провалена, агентура раскрыта" % [date_string(), intel_defs[type]["name"], t["name"]])
+		return
+	_gain_xp(cid, 15)
+	match type:
+		"build_network":
+			c["intel"]["net"][tid] = mini(MAX_NET, net_of_agent(cid, tid) + 25)
+		"sabotage":
+			var best := -1
+			for p in owner.size():
+				if owner[p] == tid and (best < 0 or provinces()[p]["industry"] > provinces()[best]["industry"]):
+					best = p
+			if best >= 0:
+				damage[best] = mini(100, damage[best] + 35)
+		"destabilize":
+			t["stability"] = clampi(t["stability"] - 8, 0, 100)
+			_shift_popularity(t, t["ideology"], -2)
+			_shift_popularity(t, top_opposition(t), 2)
+		"steal_tech":
+			if t["techs"].size() > c["techs"].size():
+				_apply_effect(c, {"type": "tech_progress", "value": 120})
+		"disinformation":
+			c["intel"]["disinfo_until"] = day + 60
+		"counter_intel":
+			c["intel"]["counter"] = mini(80, c["intel"]["counter"] + 20)
+	# the target may notice a successful operation
+	if type != "counter_intel" and rng.randi_range(1, 100) <= t["intel"]["counter"] / 2:
+		c["intel"]["net"][tid] = maxi(0, net_of_agent(cid, tid) - 10)
+		if not t["ai"]:
+			_log("%s: контрразведка %s вскрыла операцию против нас («%s»)" % [date_string(), t["name"], intel_defs[type]["name"]])
+
+
+func _intel() -> void:
+	var live: Array = []
+	for op in ops:
+		if not countries[op["owner"]]["alive"] or not countries[op["target"]]["alive"]:
+			continue
+		op["left"] -= 1
+		if op["left"] <= 0:
+			_resolve_op(op)
+		else:
+			live.append(op)
+	ops = live
+	if day % 10 == 0:
+		for c in countries:
+			if not c["alive"]:
+				continue
+			var net: Dictionary = c["intel"]["net"]
+			for tid in net.keys():
+				net[tid] = net[tid] - 1 - countries[tid]["intel"]["counter"] / 20
+				if net[tid] <= 0 or not countries[tid]["alive"]:
+					net.erase(tid)
+	if day % 5 == 0:
+		for c in countries:
+			if c["alive"] and c["intel"]["counter"] > 0:
+				c["intel"]["counter"] -= 1
+
+
+## Can `viewer` see this army's real strength? (own/allied, agent network, or next to their territory/forces)
+func intel_visible(viewer: int, a: Dictionary) -> bool:
+	var o: int = a["owner"]
+	if o == viewer or allied(viewer, o) or net_of_agent(viewer, o) >= 25:
+		return true
+	var provs := provinces()
+	var p: int = a["prov"]
+	if owner[p] == viewer:
+		return true
+	for q in provs[p]["neighbors"]:
+		if owner[q] == viewer:
+			return true
+	for b in armies:
+		if b["owner"] == viewer and (b["prov"] == p or provs[p]["neighbors"].has(b["prov"])):
+			return true
+	return false
+
+
+## Strength as `viewer` perceives it: -1 = unknown; disinformation distorts it.
+func perceived_strength(viewer: int, a: Dictionary) -> int:
+	if not intel_visible(viewer, a):
+		return -1
+	var o: int = a["owner"]
+	var s: int = a["strength"]
+	if o != viewer and not allied(viewer, o) and countries[o]["intel"]["disinfo_until"] > day and net_of_agent(viewer, o) < 60:
+		s = s * (60 + (a["id"] * 37) % 81) / 100
+	return s
+
+
+func _ai_intel(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	if c["treasury"] < 150 or ops_of(cid).size() >= intel_slots(cid):
+		return
+	if c["intel"]["counter"] < 15 and _start_op(cid, "counter_intel", cid)["ok"]:
+		return
+	var targets := enemies_of(cid)
+	for n in neighbor_countries(cid):
+		if not targets.has(n):
+			targets.append(n)
+	for t in targets:
+		var net := net_of_agent(cid, t)
+		var order: Array = ["build_network"]
+		if net >= 20:
+			order = ["disinformation", "sabotage", "destabilize", "steal_tech", "build_network"]
+		if enemies_of(cid).has(t) and net >= 30:
+			order = ["sabotage", "destabilize", "steal_tech", "build_network"]
+		for type in order:
+			if type == "build_network" and net >= 75:
+				continue
+			if _start_op(cid, type, t)["ok"]:
+				return
+
+
 static func load_unit_defs() -> Dictionary:
 	var out := {}
 	var f := FileAccess.open("res://data/units.json", FileAccess.READ)
@@ -1214,6 +1415,15 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			c["manpower"] -= 2 * unit_defs["infantry"]["manpower"]
 			_spawn_army(cid, c["capital"])
 			return {"ok": true}
+		"intel_op":
+			return _start_op(cid, cmd.get("op", ""), cmd.get("target", -1))
+		"cancel_op":
+			var oid: int = cmd.get("op_id", -1)
+			for o in ops:
+				if o["id"] == oid and o["owner"] == cid:
+					ops = ops.filter(func(x): return x["id"] != oid)
+					return {"ok": true}
+			return _fail("no such operation")
 		"set_law":
 			var cat: String = cmd.get("category", "")
 			var lid: String = cmd.get("law", "")
@@ -1457,6 +1667,7 @@ func tick_day() -> void:
 	_trade()
 	_resources()
 	_politics()
+	_intel()
 	_research()
 	_move_armies()
 	_move_fleets()
@@ -2246,6 +2457,8 @@ func _ai() -> void:
 		_ai_air(cid)
 		if day % 10 == 0:
 			_ai_politics(cid)
+		if day % 15 == 0:
+			_ai_intel(cid)
 		if day % 10 == 0:
 			_ai_research(cid)
 		if day % 10 == 0:
@@ -2338,7 +2551,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "next_general_id": next_general_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -2363,6 +2576,9 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
+	sim.ops = d["ops"]
+	sim.next_op_id = d["next_op_id"]
+	sim._load_intel()
 	sim.next_event_uid = d["next_event_uid"]
 	sim._load_politics()
 	sim.wings = d["wings"]

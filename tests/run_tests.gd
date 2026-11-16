@@ -682,3 +682,84 @@ func test_politics_long_run() -> void:
 		check(c["pp"] >= 0 and c["pp"] <= Simulation.PP_CAP, "influence stays in range")
 	check(events > 0, "events fire during a long game (%d)" % events)
 	print("  countries=", x.countries.size(), " events=", events, " log=", x.log_lines.size())
+
+
+func test_intelligence() -> void:
+	var sim := _make(42)
+	check(sim.intel_defs.size() == 6, "intel ops loaded")
+	var c0: Dictionary = sim.countries[0]
+	c0["treasury"] = 5000
+	check(sim.intel_slots(0) == 2, "level 1 agency has 2 slots")
+	# need a network first
+	check(not sim.apply_command({"type": "intel_op", "country": 0, "op": "sabotage", "target": 1})["ok"], "sabotage needs a network")
+	check(not sim.apply_command({"type": "intel_op", "country": 0, "op": "build_network", "target": 0})["ok"], "cannot spy on yourself")
+	var t0: int = c0["treasury"]
+	check(sim.apply_command({"type": "intel_op", "country": 0, "op": "build_network", "target": 1})["ok"], "network operation started")
+	check(c0["treasury"] == t0 - int(sim.intel_defs["build_network"]["cost"]), "operation cost paid")
+	check(not sim.apply_command({"type": "intel_op", "country": 0, "op": "build_network", "target": 1})["ok"], "no duplicate operation")
+	check(sim.apply_command({"type": "intel_op", "country": 0, "op": "build_network", "target": 2})["ok"], "second slot used")
+	check(not sim.apply_command({"type": "intel_op", "country": 0, "op": "build_network", "target": 3})["ok"], "slots are limited")
+	check(sim.apply_command({"type": "cancel_op", "country": 0, "op_id": sim.ops_of(0)[1]["id"]})["ok"], "operation cancelled")
+	# resolve outcomes deterministically
+	var op: Dictionary = sim.ops_of(0)[0]
+	sim._resolve_op(op, 1)
+	check(sim.net_of_agent(0, 1) == 25, "successful network gives +25")
+	sim._resolve_op(op, 0)
+	check(sim.net_of_agent(0, 1) == 0, "failure burns the network")
+	c0["intel"]["net"][1] = 60
+	sim.ops = []
+	# sabotage
+	var d0 := 0
+	for p in sim.owner.size():
+		d0 += sim.damage[p]
+	sim._resolve_op({"owner": 0, "target": 1, "type": "sabotage"}, 1)
+	var d1 := 0
+	for p in sim.owner.size():
+		d1 += sim.damage[p]
+	check(d1 > d0, "sabotage damages the target")
+	# destabilize
+	var st: int = sim.countries[1]["stability"]
+	sim._resolve_op({"owner": 0, "target": 1, "type": "destabilize"}, 1)
+	check(sim.countries[1]["stability"] == st - 8, "destabilization lowers stability")
+	var tot := 0
+	for i in sim.ideo_order:
+		tot += sim.countries[1]["party_pop"][i]
+	check(tot == 100, "party popularity stays at 100% after destabilization")
+	# counter-intelligence lowers the enemy's success chance
+	var ch_before := sim.op_chance(0, 1, "sabotage")
+	sim._resolve_op({"owner": 1, "target": 1, "type": "counter_intel"}, 1)
+	check(sim.countries[1]["intel"]["counter"] == 20, "counter-intelligence raised")
+	check(sim.op_chance(0, 1, "sabotage") < ch_before, "counter-intelligence lowers enemy odds")
+	# disinformation hides real numbers
+	var army: Dictionary = sim.armies_of(1)[0]
+	army["prov"] = sim.countries[1]["capital"]
+	c0["intel"]["net"][1] = 0
+	check(sim.perceived_strength(0, army) == -1, "unknown armies are hidden without intel")
+	check(sim.perceived_strength(1, army) == army["strength"], "own armies are always visible")
+	c0["intel"]["net"][1] = 30
+	check(sim.perceived_strength(0, army) == army["strength"], "agent network reveals armies")
+	sim.countries[1]["intel"]["disinfo_until"] = sim.day + 60
+	check(sim.perceived_strength(0, army) != army["strength"], "disinformation distorts what we see")
+	c0["intel"]["net"][1] = 70
+	check(sim.perceived_strength(0, army) == army["strength"], "strong network sees through disinformation")
+	# xp levels the agency up
+	var s2 := _make(42)
+	for i in 10:
+		s2._gain_xp(0, 15)
+	check(s2.countries[0]["intel"]["level"] >= 2 and s2.intel_slots(0) >= 2, "agency levels up with experience")
+
+
+func test_intelligence_long_run() -> void:
+	var x := _make(5)
+	var y := _make(5)
+	var nets := 0
+	for i in 400:
+		x.tick_day()
+		y.tick_day()
+	for c in x.countries:
+		nets += c["intel"]["net"].size()
+		check(c["intel"]["counter"] >= 0 and c["intel"]["counter"] <= 80, "counter-intel in range")
+	check(x.checksum() == y.checksum(), "intelligence is deterministic")
+	check(nets > 0 or x.ops.size() > 0, "AI runs intelligence work (networks %d, ops %d)" % [nets, x.ops.size()])
+	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == x.checksum() and r.ops.size() == x.ops.size(), "intelligence survives save/load")
