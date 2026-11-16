@@ -211,7 +211,7 @@ func _paint(pid: int) -> void:
 		for c in sim.countries:
 			if c["tag"] == tag:
 				cid = c["id"]
-	sim.owner[pid] = cid
+	sim.set_owner(pid, cid)
 	sim.dirty_provinces.append(pid)
 	var dirty: Array[int] = []
 	dirty.assign(sim.dirty_provinces)
@@ -428,7 +428,7 @@ func _tab_resources() -> void:
 				nd[r] = int(spins[r].value)
 		scn["deposits"] = scn.get("deposits", {})
 		scn["deposits"][str(sel_province)] = nd
-		sim.provinces()[sel_province]["deposits"] = nd
+		sim.set_deposits(sel_province, nd)
 		_info.text += "  (добыча обновлена)")
 	_content.add_child(apply)
 

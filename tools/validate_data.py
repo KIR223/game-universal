@@ -179,8 +179,11 @@ for fname in idx["scenarios"]:
     if not isinstance(scn.get("seed"), int):
         errors.append(f"scenario {sid}: seed must be int")
     stags = {c["tag"] for c in scn["countries"]}
-    if len(stags) != len(scn["countries"]) or len(stags) < 2:
+    is_earth = scn.get("world") == "earth"
+    if len(stags) != len(scn["countries"]) or (len(stags) < 2 and not is_earth):
         errors.append(f"scenario {sid}: need >=2 unique country tags")
+    if is_earth and not (root / "data/world/manifest.json").exists():
+        errors.append(f"scenario {sid}: needs data/world")
     for c in scn["countries"]:
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
             errors.append(f"scenario {sid}: bad color for {c.get('tag')}")
@@ -197,6 +200,41 @@ for fname in idx["scenarios"]:
         if e not in eids:
             errors.append(f"scenario {sid}: unknown event {e}")
 
+import hashlib, zlib
+wdir = root / "data" / "world"
+if (wdir / "manifest.json").exists():
+    man = json.loads((wdir / "manifest.json").read_text(encoding="utf-8"))
+    h = hashlib.sha256()
+    for fn in sorted(man["files"]):
+        data = (wdir / fn).read_bytes()
+        d = hashlib.sha256(data).hexdigest()
+        if d != man["files"][fn]["sha256"]:
+            errors.append(f"world file {fn}: sha256 mismatch")
+        h.update(fn.encode() + d.encode())
+    if h.hexdigest() != man["world_hash"]:
+        errors.append("world_hash does not match the files")
+    cells = json.loads(zlib.decompress((wdir / "cells.json.z").read_bytes()))
+    n_total = cells["n_land"] + cells["n_sea"]
+    for col in ("cx", "cy", "area", "pixels", "terrain", "elev", "relief"):
+        if len(cells[col]) != n_total:
+            errors.append(f"cells column {col} has wrong length")
+    for col in ("region", "country", "pop_est", "industry", "infra", "dep_food", "dep_oil", "top_settlement"):
+        if len(cells[col]) < cells["n_land"]:
+            errors.append(f"cells column {col} too short")
+    sett = json.loads(zlib.decompress((wdir / "settlements.json.z").read_bytes()))
+    lens = {k: len(v) for k, v in sett.items()}
+    if len(set(lens.values())) != 1:
+        errors.append(f"settlement columns differ in length: {lens}")
+    elif lens["pop"] != man["counts"]["settlements"]:
+        errors.append("settlement count differs from manifest")
+    if any(sett["cell"][i] >= cells["n_land"] or sett["cell"][i] < 0 for i in range(len(sett["cell"]))):
+        errors.append("settlement placed outside land cells")
+    if any(sett["pop"][i] > sett["pop"][i - 1] for i in range(1, len(sett["pop"]))):
+        errors.append("settlements are not sorted by population")
+    world_summary = f"{n_total} cells, {len(sett['pop'])} settlements"
+else:
+    world_summary = "no world dataset"
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions, {len(iops)} intel ops, {nscen} scenarios)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions, {len(iops)} intel ops, {nscen} scenarios, {world_summary})")

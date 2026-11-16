@@ -6,6 +6,8 @@ const SPEEDS := [0.0, 1.0, 3.0, 8.0, 20.0]
 
 var sim: Simulation
 var map: MapView
+var map_legacy: MapView
+var map_earth: EarthMapView
 var ui: CanvasLayer
 var player := -1
 var speed_idx := 1
@@ -17,8 +19,39 @@ var _side: PanelContainer
 var _log: RichTextLabel
 var _top_label: Label
 var _info: RichTextLabel
-var _actions: VBoxContainer
+var _actions: Container
 var _speed_buttons: Array[Button] = []
+const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
+const RIGHT_TABS := [["events", "События"], ["wars", "Войны"], ["fronts", "Фронты"], ["tasks", "Задачи"]]
+var _nav: Dictionary = {}
+var _speed_btns: Array = []
+var _chips: Dictionary = {}
+var _date_label: Label
+var _name_label: Label
+var _flag: ColorRect
+var _search: LineEdit
+var _search_panel: PanelContainer
+var _mode_opt: OptionButton
+var _bell: IconButton
+var _notif_panel: PanelContainer
+var _notif_seen := 0
+var _right: PanelContainer
+var _right_body: VBoxContainer
+var _right_tab := "events"
+var _right_btns: Dictionary = {}
+var _bottom: PanelContainer
+var _ctx: PopupMenu
+var _main_menu: PopupMenu
+var _ctx_cell := -1
+var _selected_sett := -1
+var _open_panel_name := ""
+var _generic: PanelContainer
+var _gbody: VBoxContainer
+var _g_filter := ""
+var _cut_cache_day := -99
+var _stats_sort := "pop"
+var _cut_set: Dictionary = {}
+var _player_supply: Dictionary = {}
 var _theme: Theme
 var _seed_edit: LineEdit
 var _menu_root: Control
@@ -63,9 +96,16 @@ var _t_amount := 3
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
 	_theme = _make_theme()
-	map = MapView.new()
-	map.province_clicked.connect(_on_province_clicked)
-	add_child(map)
+	map_legacy = MapView.new()
+	map_legacy.province_clicked.connect(_on_province_clicked)
+	map_legacy.province_right_clicked.connect(_on_province_right_clicked)
+	add_child(map_legacy)
+	map_earth = EarthMapView.new()
+	map_earth.province_clicked.connect(_on_province_clicked)
+	map_earth.province_right_clicked.connect(_on_province_right_clicked)
+	add_child(map_earth)
+	map_earth.set_active(false)
+	map = map_legacy
 	ui = CanvasLayer.new()
 	add_child(ui)
 	_show_menu()
@@ -74,8 +114,8 @@ func _ready() -> void:
 func _make_theme() -> Theme:
 	var t := Theme.new()
 	var panel := StyleBoxFlat.new()
-	panel.bg_color = Color(0.07, 0.09, 0.12, 0.93)
-	panel.border_color = Color(0.75, 0.62, 0.3, 0.55)
+	panel.bg_color = Color(0.082, 0.092, 0.112, 0.95)
+	panel.border_color = Color(0.34, 0.4, 0.48, 0.75)
 	panel.set_border_width_all(1)
 	panel.set_corner_radius_all(4)
 	panel.set_content_margin_all(10)
@@ -86,12 +126,12 @@ func _make_theme() -> Theme:
 		sb.set_content_margin_all(6)
 		sb.content_margin_left = 12
 		sb.content_margin_right = 12
-		sb.border_color = Color(0.75, 0.62, 0.3, 0.6)
+		sb.border_color = Color(0.32, 0.38, 0.46, 0.8)
 		sb.set_border_width_all(1)
 		match state:
-			"normal": sb.bg_color = Color(0.13, 0.16, 0.21)
-			"hover": sb.bg_color = Color(0.2, 0.25, 0.32)
-			"pressed": sb.bg_color = Color(0.45, 0.36, 0.14)
+			"normal": sb.bg_color = Color(0.125, 0.145, 0.18)
+			"hover": sb.bg_color = Color(0.2, 0.235, 0.29)
+			"pressed": sb.bg_color = Color(0.4, 0.33, 0.15)
 			"disabled": sb.bg_color = Color(0.09, 0.1, 0.12)
 		t.set_stylebox(state, "Button", sb)
 	for state in ["normal", "focus", "read_only"]:
@@ -111,6 +151,25 @@ func _make_theme() -> Theme:
 	t.set_stylebox("focus", "TextEdit", te)
 	t.set_color("font_color", "LineEdit", Color("e8e2d0"))
 	t.set_color("font_color", "TextEdit", Color("e8e2d0"))
+	var pm := StyleBoxFlat.new()
+	pm.bg_color = Color(0.09, 0.1, 0.125, 0.98)
+	pm.border_color = Color(0.34, 0.4, 0.48, 0.8)
+	pm.set_border_width_all(1)
+	pm.set_corner_radius_all(4)
+	pm.set_content_margin_all(6)
+	t.set_stylebox("panel", "PopupMenu", pm)
+	t.set_stylebox("panel", "TooltipPanel", pm)
+	var pmh := StyleBoxFlat.new()
+	pmh.bg_color = Color(0.22, 0.26, 0.33)
+	pmh.set_corner_radius_all(3)
+	t.set_stylebox("hover", "PopupMenu", pmh)
+	t.set_color("font_color", "PopupMenu", Color("dde3ea"))
+	t.set_color("font_hover_color", "PopupMenu", Color.WHITE)
+	t.set_color("font_color", "TooltipLabel", Color("dde3ea"))
+	for state2 in ["normal", "hover", "pressed", "disabled"]:
+		t.set_stylebox(state2, "OptionButton", t.get_stylebox(state2, "Button"))
+	t.set_color("font_color", "OptionButton", Color("dde3ea"))
+	t.set_font_size("font_size", "OptionButton", 14)
 	var pb_bg := StyleBoxFlat.new()
 	pb_bg.bg_color = Color(0.13, 0.16, 0.21)
 	pb_bg.set_corner_radius_all(3)
@@ -119,13 +178,13 @@ func _make_theme() -> Theme:
 	pb_fill.set_corner_radius_all(3)
 	t.set_stylebox("background", "ProgressBar", pb_bg)
 	t.set_stylebox("fill", "ProgressBar", pb_fill)
-	t.set_color("font_color", "Button", Color("e8e2d0"))
+	t.set_color("font_color", "Button", Color("dde3ea"))
 	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.5))
-	t.set_color("font_color", "Label", Color("e8e2d0"))
+	t.set_color("font_color", "Label", Color("dde3ea"))
 	t.set_font_size("font_size", "Label", 15)
 	t.set_font_size("font_size", "Button", 14)
 	t.set_font_size("normal_font_size", "RichTextLabel", 14)
-	t.set_color("default_color", "RichTextLabel", Color("d8d2c0"))
+	t.set_color("default_color", "RichTextLabel", Color("cfd6de"))
 	return t
 
 
@@ -191,14 +250,33 @@ func _show_menu() -> void:
 	quit.pressed.connect(func(): get_tree().quit())
 	box.add_child(quit)
 	_menu_root = root
+	var credits := Label.new()
+	credits.text = "Данные карты: Natural Earth (общественное достояние) · GeoNames (CC BY 4.0) · Terrain Tiles (AWS Open Data; SRTM, GMTED, ETOPO) · Our World in Data (CC BY 4.0). Подробности: docs/DATA_SOURCES.md"
+	credits.add_theme_font_size_override("font_size", 12)
+	credits.add_theme_color_override("font_color", Color("6f7c8e"))
+	credits.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	credits.offset_top = -30
+	credits.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	root.add_child(credits)
 
 
 func _new_game() -> void:
 	var s := int(_seed_edit.text) if _seed_edit.text.is_valid_int() else hash(_seed_edit.text)
 	sim = Simulation.new()
 	sim.setup(s, Simulation.load_country_defs())
-	map.bind(sim)
+	_bind_map(sim)
 	_show_country_select()
+
+
+## Use the renderer that matches the world kind (legacy procedural map or the real-world map).
+func _bind_map(s: Simulation) -> void:
+	var earth := str(s.world.get("kind", "")) == "earth"
+	var target: MapView = map_earth if earth else map_legacy
+	if target != map:
+		map.set_active(false)
+		map = target
+		map.set_active(true)
+	map.bind(s)
 
 
 func _start_scenario(scn: Dictionary) -> void:
@@ -208,7 +286,7 @@ func _start_scenario(scn: Dictionary) -> void:
 		_show_scenarios("Сценарий не загружен: " + "; ".join(problems.slice(0, 3)))
 		return
 	sim = fresh
-	map.bind(sim)
+	_bind_map(sim)
 	map.player_country = -1
 	_show_country_select()
 
@@ -272,10 +350,17 @@ func _show_scenarios(message: Variant = "") -> void:
 		d.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		d.custom_minimum_size = Vector2(260, 0)
 		row.add_child(d)
-		var eb := Button.new()
-		eb.text = "Править"
-		eb.pressed.connect(func(): _open_editor(data))
-		row.add_child(eb)
+		if str(data.get("world", "procedural")) != "earth":
+			var eb := Button.new()
+			eb.text = "Править"
+			eb.pressed.connect(func(): _open_editor(data))
+			row.add_child(eb)
+		else:
+			var note := Label.new()
+			note.text = "реальная карта"
+			note.add_theme_font_size_override("font_size", 12)
+			note.add_theme_color_override("font_color", Color("8a96a6"))
+			row.add_child(note)
 	var back := Button.new()
 	back.text = "← Назад"
 	back.pressed.connect(_show_menu)
@@ -299,7 +384,7 @@ func _load_game() -> void:
 	if loaded == null:
 		return
 	sim = loaded
-	map.bind(sim)
+	_bind_map(sim)
 	var pid := 0
 	for c in sim.countries:
 		if not c["ai"]:
@@ -315,32 +400,67 @@ func _show_country_select() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui.add_child(root)
 	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER_LEFT)
-	panel.position = Vector2(20, 0)
-	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	panel.position = Vector2(16, 16)
+	panel.custom_minimum_size = Vector2(430, 0)
+	panel.size = Vector2(430, 868)
 	root.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	panel.add_child(v)
-	var h := Label.new()
-	h.text = "Выберите государство"
-	h.add_theme_font_size_override("font_size", 20)
-	h.add_theme_color_override("font_color", Color("e0c070"))
-	v.add_child(h)
+	v.add_child(_h1("Выберите государство"))
+	var filter := LineEdit.new()
+	filter.placeholder_text = "Поиск по названию…"
+	filter.clear_button_enabled = true
+	v.add_child(filter)
+	var hint := Label.new()
+	hint.text = "Крупнейшие по населению сверху"
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color("8a96a6"))
+	v.add_child(hint)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 4)
+	scroll.add_child(list)
+	var agg := sim._aggregate()
+	var order: Array = []
 	for c in sim.countries:
-		var b := Button.new()
-		var cid: int = c["id"]
-		b.text = "%s  (%d пров.)" % [c["name"], sim.country_provinces(cid).size()]
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		var sb: StyleBoxFlat = _theme.get_stylebox("normal", "Button").duplicate()
-		sb.border_color = Color(c["color"])
-		sb.border_width_left = 8
-		b.add_theme_stylebox_override("normal", sb)
-		b.pressed.connect(_start_playing.bind(cid))
-		b.mouse_entered.connect(func():
-			map.selected_province = sim.countries[cid]["capital"]
-			map.queue_redraw())
-		v.add_child(b)
+		order.append(c["id"])
+	order.sort_custom(func(a, b):
+		var pa: int = agg[a]["pop"] if agg.has(a) else 0
+		var pb: int = agg[b]["pop"] if agg.has(b) else 0
+		return pa > pb or (pa == pb and a < b))
+	var fill := func(q: String):
+		for ch in list.get_children():
+			ch.queue_free()
+		var shown := 0
+		for cid in order:
+			var c: Dictionary = sim.countries[cid]
+			if q != "" and not str(c["name"]).to_lower().contains(q.to_lower()):
+				continue
+			if shown >= 80:
+				break
+			shown += 1
+			var b := Button.new()
+			var pop_m: float = float(agg[cid]["pop"]) * EarthWorld.POP_UNIT / 1.0e6 if agg.has(cid) else 0.0
+			b.text = "%s   %s · %d яч." % [c["name"], ("%.1f млн" % pop_m) if sim.is_earth_world() else "", sim.cells_of(cid).size()]
+			b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			var sb: StyleBoxFlat = _theme.get_stylebox("normal", "Button").duplicate()
+			sb.border_color = Color(c["color"])
+			sb.border_width_left = 8
+			b.add_theme_stylebox_override("normal", sb)
+			b.pressed.connect(_start_playing.bind(cid))
+			b.mouse_entered.connect(func():
+				map.selected_province = sim.countries[cid]["capital"]
+				if map is EarthMapView:
+					map.focus_lonlat_cell(sim.countries[cid]["capital"], 1.8)
+				map.queue_redraw())
+			list.add_child(b)
+	fill.call("")
+	filter.text_changed.connect(func(t: String): fill.call(t))
 	var back := Button.new()
 	back.text = "← Назад"
 	back.pressed.connect(_show_menu)
@@ -358,110 +478,22 @@ func _start_playing(cid: int) -> void:
 	map.selected_army = -1
 	var cap: Vector2 = sim.provinces()[sim.countries[cid]["capital"]]["center"] * MapView.CELL
 	map.camera.position = cap
-	map.camera.zoom = Vector2.ONE * 2.0
+	map.camera.zoom = Vector2.ONE * (2.2 if sim.is_earth_world() else 2.0)
+	if map is EarthMapView:
+		map.repaint_all()
 	log_seen = sim.log_lines.size()
+	_notif_seen = sim.log_lines.size()
 	speed_idx = 0
+	_selected_sett = -1
+	_open_panel_name = ""
 	_build_hud()
 	_refresh_all()
 
 
-func _build_hud() -> void:
-	_clear_ui()
-	var root := Control.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.theme = _theme
-	ui.add_child(root)
-
-	_top = PanelContainer.new()
-	_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	root.add_child(_top)
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 4)
-	_top.add_child(vb)
-	_top_label = Label.new()
-	vb.add_child(_top_label)
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 6)
-	vb.add_child(hb)
-	for i in SPEEDS.size():
-		var b := Button.new()
-		b.text = "⏸" if i == 0 else "▶".repeat(mini(i, 3)) + ("+" if i == 4 else "")
-		b.pressed.connect(_set_speed.bind(i))
-		hb.add_child(b)
-		_speed_buttons.append(b)
-	var mode := Button.new()
-	mode.text = "Карта"
-	mode.pressed.connect(func():
-		map.map_mode = "terrain" if map.map_mode == "political" else "political"
-		mode.text = "Рельеф" if map.map_mode == "terrain" else "Карта"
-		map.repaint_all())
-	hb.add_child(mode)
-	var intb := Button.new()
-	intb.text = "Разведка"
-	intb.pressed.connect(_toggle_intel)
-	hb.add_child(intb)
-	var polb := Button.new()
-	polb.text = "Политика"
-	polb.pressed.connect(_toggle_pol)
-	hb.add_child(polb)
-	var tech := Button.new()
-	tech.text = "Технологии"
-	tech.pressed.connect(_toggle_tech)
-	hb.add_child(tech)
-	var eco := Button.new()
-	eco.text = "Экономика"
-	eco.pressed.connect(_toggle_eco)
-	hb.add_child(eco)
-	var save := Button.new()
-	save.text = "Сохранить"
-	save.pressed.connect(func(): SaveSystem.save(sim, "quick"))
-	hb.add_child(save)
-	var menu := Button.new()
-	menu.text = "Меню"
-	menu.pressed.connect(_show_menu)
-	hb.add_child(menu)
-
-	_side = PanelContainer.new()
-	_side.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	_side.offset_top = 96
-	_side.offset_bottom = -180
-	_side.custom_minimum_size = Vector2(320, 0)
-	_side.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	root.add_child(_side)
-	var sv := VBoxContainer.new()
-	sv.add_theme_constant_override("separation", 8)
-	_side.add_child(sv)
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	sv.add_child(scroll)
-	var inner := VBoxContainer.new()
-	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	inner.add_theme_constant_override("separation", 8)
-	scroll.add_child(inner)
-	_info = RichTextLabel.new()
-	_info.bbcode_enabled = true
-	_info.fit_content = true
-	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	inner.add_child(_info)
-	_actions = VBoxContainer.new()
-	_actions.add_theme_constant_override("separation", 6)
-	inner.add_child(_actions)
-
-	var log_panel := PanelContainer.new()
-	log_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	log_panel.offset_top = -170
-	log_panel.offset_right = -340
-	root.add_child(log_panel)
-	_log = RichTextLabel.new()
-	_log.scroll_following = true
-	_log.bbcode_enabled = true
-	log_panel.add_child(_log)
-
-
 func _set_speed(i: int) -> void:
 	speed_idx = i
+	for k in _speed_btns.size():
+		_speed_btns[k].set_active(k == i)
 	_refresh_top()
 
 
@@ -473,12 +505,13 @@ func _process(delta: float) -> void:
 		return
 	accum += delta * rate
 	var stepped := false
-	var guard := 0
-	while accum >= 1.0 and guard < 30:
+	var t0 := Time.get_ticks_usec()
+	while accum >= 1.0 and (not stepped or Time.get_ticks_usec() - t0 < 14000):  # frame-time budget: never freeze the UI
 		accum -= 1.0
-		guard += 1
 		sim.tick_day()
 		stepped = true
+	if accum > 3.0:
+		accum = 3.0  # the simulation cannot keep up at this speed: drop the backlog
 	if stepped:
 		var dirty := sim.dirty_provinces.duplicate()
 		sim.dirty_provinces.clear()
@@ -492,14 +525,28 @@ func _process(delta: float) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed or event.echo or sim == null or player < 0:
 		return
-	match (event as InputEventKey).keycode:
+	var ke := event as InputEventKey
+	if (ke.keycode == KEY_F and (ke.ctrl_pressed or ke.meta_pressed)) or ke.keycode == KEY_SLASH:
+		if _search != null:
+			_search.grab_focus()
+			get_viewport().set_input_as_handled()
+		return
+	match ke.keycode:
 		KEY_SPACE: _set_speed(0 if speed_idx > 0 else 1)
 		KEY_1: _set_speed(1)
 		KEY_2: _set_speed(2)
 		KEY_3: _set_speed(3)
 		KEY_4: _set_speed(4)
+		KEY_M:
+			if map is EarthMapView and _mode_opt != null:
+				var nxt := (EarthMapView.MODES.size() + _mode_opt.selected + 1) % EarthMapView.MODES.size()
+				_mode_opt.select(nxt)
+				map.set_mode(EarthMapView.MODES[nxt][0])
 		KEY_F5: SaveSystem.save(sim, "quick")
 		KEY_ESCAPE:
+			if _search_panel != null and is_instance_valid(_search_panel):
+				_search_panel.queue_free()
+				_search_panel = null
 			map.selected_army = -1
 			map.selected_fleet = -1
 			map.selected_wing = -1
@@ -550,6 +597,7 @@ func _on_province_clicked(pid: int) -> void:
 	map.selected_army = -1
 	map.selected_fleet = -1
 	map.selected_wing = -1
+	_selected_sett = -1
 	_pending_air = ""
 	map.queue_redraw()
 	_refresh_info()
@@ -557,7 +605,12 @@ func _on_province_clicked(pid: int) -> void:
 
 func _refresh_all() -> void:
 	_refresh_top()
+	_update_dynamic_overlays()
 	_refresh_info()
+	if _generic != null and is_instance_valid(_generic) and sim.day % 3 == 0:
+		_fill_generic(_open_panel_name)
+	if _right_tab != "events" and sim.day % 2 == 0 and _right_body != null:
+		_right_set_tab(_right_tab)
 	if _eco != null and is_instance_valid(_eco):
 		_eco_refresh()
 	if _tech != null and is_instance_valid(_tech):
@@ -573,15 +626,25 @@ func _refresh_all() -> void:
 
 
 func _refresh_top() -> void:
-	if _top_label == null:
+	if _date_label == null or not is_instance_valid(_date_label):
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s | %s | $%d (%+d) | Арм %d  Флот %d  Авиа %d | Стаб %d%%  Влияние %d | Люди %d  Сталь %d  Нефть %d  Еда %d | Войн %d" % [
-		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.wings_of(player).size(), c["stability"], c["pp"],
-		c["manpower"], c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
-	for i in _speed_buttons.size():
-		_speed_buttons[i].disabled = i == speed_idx
+	_name_label.text = c["name"]
+	_date_label.text = sim.date_string()
+	var net: int = c["income"] - c["upkeep"]
+	_chip("coin", "%d (%+d)" % [c["treasury"], net], Color("e8c46a") if net >= 0 else Color("e0675a"))
+	_chip("influence", str(c["pp"]), Color("cfd6df"))
+	var stab_col := Color("7fcf8a") if c["stability"] >= 50 else (Color("e0b45a") if c["stability"] >= 25 else Color("e0675a"))
+	_chip("stability", "%d%%" % c["stability"], stab_col)
+	_chip("manpower", str(c["manpower"]), Color("cfd6df"))
+	_chip("steel", "%d (%+d)" % [c["stock"]["steel"], sim.net_of(player, "steel")], Color("cfd6df") if sim.net_of(player, "steel") >= 0 else Color("e0b45a"))
+	_chip("oil", "%d (%+d)" % [c["stock"]["oil"], sim.net_of(player, "oil")], Color("cfd6df") if sim.net_of(player, "oil") >= 0 else Color("e0b45a"))
+	_chip("food", "%d (%+d)" % [c["stock"]["food"], sim.net_of(player, "food")], Color("cfd6df") if sim.net_of(player, "food") >= 0 else Color("e0675a"))
+	_chip("flag", str(sim.enemies_of(player).size()), Color("e0675a") if not sim.enemies_of(player).is_empty() else Color("8a96a6"))
+	if _bell != null:
+		_bell.set_badge(maxi(0, sim.log_lines.size() - _notif_seen))
+	for k in _speed_btns.size():
+		_speed_btns[k].set_active(k == speed_idx)
 
 
 func _refresh_info() -> void:
@@ -595,6 +658,7 @@ func _refresh_info() -> void:
 		return
 	var p: Dictionary = sim.provinces()[pid]
 	var o := sim.owner[pid]
+	var earth := sim.is_earth_world()
 	var t := "[b]Провинция #%d[/b]\n" % pid
 	if not p["land"]:
 		t += "Море\n"
@@ -614,21 +678,13 @@ func _refresh_info() -> void:
 					_refresh_info())
 				_actions.add_child(fb)
 		return
-	t += "Рельеф: %s\nНаселение: %d тыс.\nПромышленность: %d\n" % [p["terrain"], p["pop"], p["industry"]]
-	var dep := ""
-	for r in p["deposits"]:
-		dep += "%s +%d  " % [_res_name(r), p["deposits"][r]]
-	t += "Добыча: %s\n" % (dep if dep != "" else "—")
-	if o >= 0:
-		var oc: Dictionary = sim.countries[o]
-		t += "Владелец: [color=%s]%s[/color]\n" % [oc["color"], oc["name"]]
-		if o != player:
-			t += "Отношения: %s\n" % ("[color=#d96a5a]ВОЙНА[/color]" if sim.at_war(player, o) else "мир")
+	if earth:
+		t = ""
+		if _selected_sett >= 0 and int(EarthWorld.settlement(_selected_sett)["cell"]) == pid:
+			t += _settlement_card(_selected_sett) + "\n\n"
+		t += _earth_card(pid)
 	else:
-		t += "Владелец: нейтральная\n"
-	t += "Инфраструктура: %d%s\n" % [sim.infra[pid], (" (из-за разрушений %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else ""]
-	if sim.damage[pid] > 0:
-		t += "Разрушения от бомбардировок: %d%%\n" % sim.damage[pid]
+		t += _legacy_card(pid, p, o)
 	var wh := sim.wings_at(pid)
 	if not wh.is_empty():
 		t += "\n[b]Авиация (аэродром %d/%d):[/b]\n" % [wh.size(), sim.air_capacity(pid)]
@@ -653,6 +709,15 @@ func _refresh_info() -> void:
 	_info.text = t
 
 	# actions
+	if earth:
+		for sid in EarthWorld.settlements_in_cell(pid).slice(0, 6):
+			var ss: Dictionary = EarthWorld.settlement(sid)
+			var sbtn := Button.new()
+			var snm: String = str(ss["name_ru"]) if ss.get("name_ru") != null else str(ss["name"])
+			sbtn.text = "%s · %s" % [snm, EarthWorld.settlement_kind(ss)]
+			var sid2: int = sid
+			sbtn.pressed.connect(func(): _select_settlement(sid2))
+			_actions.add_child(sbtn)
 	for a in here:
 		if a["owner"] == player:
 			var b := Button.new()
@@ -741,7 +806,7 @@ func _diplomacy_buttons(o: int) -> void:
 			_cmd_button("Объявить войну: %s" % oname, {"type": "declare_war", "country": player, "target": o})
 
 
-func _cmd_button(label: String, cmd: Dictionary) -> void:
+func _cmd_button(label: String, cmd: Dictionary, parent: Container = null) -> void:
 	var b := Button.new()
 	b.text = label
 	b.pressed.connect(func():
@@ -750,7 +815,7 @@ func _cmd_button(label: String, cmd: Dictionary) -> void:
 		_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", msg])
 		map.queue_redraw()
 		_refresh_all())
-	_actions.add_child(b)
+	(parent if parent != null else _actions).add_child(b)
 
 
 func _res_name(id: String) -> String:
@@ -768,7 +833,7 @@ func _toggle_eco() -> void:
 	_eco = PanelContainer.new()
 	_eco.theme = _theme
 	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_eco.position = Vector2(12, 96)
+	_eco.position = Vector2(68, 56)
 	_eco.custom_minimum_size = Vector2(520, 0)
 	ui.add_child(_eco)
 	var v := VBoxContainer.new()
@@ -940,7 +1005,7 @@ func _toggle_tech() -> void:
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_tech.position = Vector2(12, 96)
+	_tech.position = Vector2(68, 56)
 	_tech.custom_minimum_size = Vector2(900, 560)
 	ui.add_child(_tech)
 	var v := VBoxContainer.new()
@@ -1150,7 +1215,7 @@ func _toggle_pol() -> void:
 	_pol = PanelContainer.new()
 	_pol.theme = _theme
 	_pol.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_pol.position = Vector2(12, 96)
+	_pol.position = Vector2(68, 56)
 	_pol.custom_minimum_size = Vector2(760, 560)
 	ui.add_child(_pol)
 	var v := VBoxContainer.new()
@@ -1300,7 +1365,7 @@ func _toggle_intel() -> void:
 	_intel = PanelContainer.new()
 	_intel.theme = _theme
 	_intel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_intel.position = Vector2(12, 96)
+	_intel.position = Vector2(68, 56)
 	_intel.custom_minimum_size = Vector2(720, 520)
 	ui.add_child(_intel)
 	var v := VBoxContainer.new()
@@ -1417,3 +1482,1119 @@ func _intel_refresh() -> void:
 		chance_txt = "   Шанс успеха: %d%%" % sim.op_chance(player, target, type)
 	desc.text = "%s\nДлительность: %d дн.  Нужна сеть ≥ %d%%.%s" % [d["desc"], d["duration"], d["min_network"], chance_txt]
 	_intel_body.add_child(desc)
+
+
+func _h1(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 20)
+	l.add_theme_color_override("font_color", Color("e8c46a"))
+	return l
+
+
+func _h2(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 15)
+	l.add_theme_color_override("font_color", Color("9fb0c4"))
+	return l
+
+
+func _muted(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color("8a96a6"))
+	return l
+
+
+func _make_chip(kind: String, tip: String) -> HBoxContainer:
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 3)
+	hb.tooltip_text = tip
+	hb.mouse_filter = Control.MOUSE_FILTER_STOP
+	var ic := IconButton.new(kind, tip, Vector2(22, 22))
+	ic.pad = 3.0
+	ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(ic)
+	var l := Label.new()
+	l.add_theme_font_size_override("font_size", 14)
+	hb.add_child(l)
+	_chips[kind] = l
+	return hb
+
+
+func _chip(kind: String, text: String, color: Color) -> void:
+	var l: Label = _chips.get(kind)
+	if l != null and is_instance_valid(l):
+		l.text = text
+		l.add_theme_color_override("font_color", color)
+
+
+func _build_hud() -> void:
+	_clear_ui()
+	_nav.clear()
+	_speed_btns.clear()
+	_speed_buttons.clear()
+	_chips.clear()
+	_right_btns.clear()
+	_search_panel = null
+	_notif_panel = null
+	_generic = null
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.theme = _theme
+	ui.add_child(root)
+
+	# ---- top bar: nation, date, speed, resources, search, notifications, menu
+	_top = PanelContainer.new()
+	_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	root.add_child(_top)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+	_top.add_child(hb)
+	_flag = ColorRect.new()
+	_flag.custom_minimum_size = Vector2(6, 28)
+	_flag.color = Color(sim.countries[player]["color"])
+	hb.add_child(_flag)
+	_name_label = Label.new()
+	_name_label.add_theme_font_size_override("font_size", 17)
+	hb.add_child(_name_label)
+	_date_label = Label.new()
+	_date_label.add_theme_color_override("font_color", Color("9fb0c4"))
+	hb.add_child(_date_label)
+	var speeds := [["pause", "Пауза (Пробел)"], ["play", "Скорость 1 (1)"], ["fast", "Скорость 2 (2)"], ["faster", "Скорость 3 (3)"], ["fastest", "Скорость 4 (4)"]]
+	for i in speeds.size():
+		var b := IconButton.new(speeds[i][0], speeds[i][1], Vector2(34, 34))
+		var idx := i
+		b.pressed.connect(func(): _set_speed(idx))
+		hb.add_child(b)
+		_speed_btns.append(b)
+	hb.add_child(VSeparator.new())
+	for chip in [["coin", "Казна: запас (доход минус расходы в день)"], ["influence", "Политическое влияние (+1 в день)"], ["stability", "Стабильность"],
+			["manpower", "Людские ресурсы"], ["steel", "Сталь: запас (баланс в день)"], ["oil", "Нефть: запас (баланс в день)"], ["food", "Продовольствие: запас (баланс в день)"], ["flag", "Войны, в которых вы участвуете"]]:
+		hb.add_child(_make_chip(chip[0], chip[1]))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(spacer)
+	_search = LineEdit.new()
+	_search.placeholder_text = "Поиск: город, регион, страна"
+	_search.custom_minimum_size = Vector2(200, 0)
+	_search.clear_button_enabled = true
+	_search.text_changed.connect(_on_search_changed)
+	_search.tooltip_text = "Ctrl+F или /"
+	hb.add_child(_search)
+	_bell = IconButton.new("bell", "Уведомления", Vector2(38, 38))
+	_bell.pressed.connect(_toggle_notifications)
+	hb.add_child(_bell)
+	var menu_btn := IconButton.new("menu", "Меню", Vector2(38, 38))
+	menu_btn.pressed.connect(func(): _main_menu.popup(Rect2i(Vector2i(menu_btn.get_screen_position()) + Vector2i(0, 40), Vector2i(1, 1))))
+	hb.add_child(menu_btn)
+
+	# ---- left rail
+	var nav := PanelContainer.new()
+	nav.position = Vector2(8, 56)
+	root.add_child(nav)
+	var nv := VBoxContainer.new()
+	nv.add_theme_constant_override("separation", 2)
+	nav.add_child(nv)
+	for it in NAV_ITEMS:
+		var b2 := IconButton.new(it[0], it[1], Vector2(44, 44))
+		b2.pressed.connect(_nav_pressed.bind(it[0]))
+		nv.add_child(b2)
+		_nav[it[0]] = b2
+
+	# ---- right panel: events / wars / fronts / tasks
+	_right = PanelContainer.new()
+	_right.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
+	_right.offset_left = -352
+	_right.offset_right = -8
+	_right.offset_top = 56
+	_right.offset_bottom = -204
+	root.add_child(_right)
+	var rv := VBoxContainer.new()
+	rv.add_theme_constant_override("separation", 6)
+	_right.add_child(rv)
+	var tabs := HBoxContainer.new()
+	tabs.add_theme_constant_override("separation", 4)
+	rv.add_child(tabs)
+	for t in RIGHT_TABS:
+		var tb := Button.new()
+		tb.text = t[1]
+		tb.toggle_mode = true
+		tb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var tid: String = t[0]
+		tb.pressed.connect(func(): _right_set_tab(tid))
+		tabs.add_child(tb)
+		_right_btns[tid] = tb
+	_right_body = VBoxContainer.new()
+	_right_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	rv.add_child(_right_body)
+	_log = RichTextLabel.new()
+	_log.bbcode_enabled = true
+	_log.scroll_following = true
+	_log.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# ---- bottom card: selected territory / settlement / units + actions
+	_bottom = PanelContainer.new()
+	_bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_bottom.offset_left = 68
+	_bottom.offset_right = -360
+	_bottom.offset_top = -196
+	_bottom.offset_bottom = -8
+	root.add_child(_bottom)
+	var bh := HBoxContainer.new()
+	bh.add_theme_constant_override("separation", 10)
+	_bottom.add_child(bh)
+	var isc := ScrollContainer.new()
+	isc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	isc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	bh.add_child(isc)
+	_info = RichTextLabel.new()
+	_info.bbcode_enabled = true
+	_info.fit_content = true
+	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	isc.add_child(_info)
+	bh.add_child(VSeparator.new())
+	var asc := ScrollContainer.new()
+	asc.custom_minimum_size = Vector2(430, 0)
+	asc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	bh.add_child(asc)
+	var flow := HFlowContainer.new()
+	flow.add_theme_constant_override("h_separation", 6)
+	flow.add_theme_constant_override("v_separation", 6)
+	flow.custom_minimum_size = Vector2(420, 0)
+	asc.add_child(flow)
+	_actions = flow
+
+	# ---- map mode selector (floating, bottom-left of the map)
+	var modes := PanelContainer.new()
+	modes.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	modes.offset_left = 68
+	modes.offset_bottom = -204
+	modes.offset_top = -250
+	modes.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	root.add_child(modes)
+	var mh := HBoxContainer.new()
+	mh.add_theme_constant_override("separation", 6)
+	modes.add_child(mh)
+	var lic := IconButton.new("layers", "Режим карты (M)", Vector2(30, 30))
+	lic.pad = 5.0
+	lic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mh.add_child(lic)
+	_mode_opt = OptionButton.new()
+	_mode_opt.custom_minimum_size = Vector2(190, 0)
+	if map is EarthMapView:
+		for m in EarthMapView.MODES:
+			_mode_opt.add_item(m[1])
+		_mode_opt.select(maxi(0, _mode_index(map.mode)))
+		_mode_opt.item_selected.connect(func(i): map.set_mode(EarthMapView.MODES[i][0]))
+	else:
+		_mode_opt.add_item("Политический")
+		_mode_opt.add_item("Рельеф")
+		_mode_opt.item_selected.connect(func(i):
+			map.map_mode = "terrain" if i == 1 else "political"
+			map.repaint_all())
+	mh.add_child(_mode_opt)
+
+	# ---- popups
+	_ctx = PopupMenu.new()
+	_ctx.theme = _theme
+	_ctx.id_pressed.connect(_ctx_pressed)
+	ui.add_child(_ctx)
+	_main_menu = PopupMenu.new()
+	_main_menu.theme = _theme
+	_main_menu.add_item("Сохранить (F5)", 0)
+	_main_menu.add_item("Загрузить", 1)
+	_main_menu.add_separator()
+	_main_menu.add_item("Масштаб интерфейса +", 2)
+	_main_menu.add_item("Масштаб интерфейса −", 3)
+	_main_menu.add_separator()
+	_main_menu.add_item("В главное меню", 4)
+	_main_menu.id_pressed.connect(_menu_pressed)
+	ui.add_child(_main_menu)
+	_right_set_tab("events")
+	_set_speed(speed_idx)
+
+
+func _mode_index(m: String) -> int:
+	for i in EarthMapView.MODES.size():
+		if EarthMapView.MODES[i][0] == m:
+			return i
+	return 0
+
+
+func _menu_pressed(id: int) -> void:
+	match id:
+		0: SaveSystem.save(sim, "quick")
+		1: _load_game()
+		2: get_window().content_scale_factor = clampf(get_window().content_scale_factor + 0.1, 0.8, 1.8)
+		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
+		4: _show_menu()
+
+
+# ------------------------------------------------------------ navigation rail
+
+func _close_all_panels() -> void:
+	for pn in [_eco, _tech, _pol, _intel, _generic, _notif_panel]:
+		if pn != null and is_instance_valid(pn):
+			pn.queue_free()
+	_eco = null
+	_tech = null
+	_pol = null
+	_intel = null
+	_generic = null
+	_notif_panel = null
+
+
+func _animate_panel(p: Control) -> void:
+	if p == null or not is_instance_valid(p):
+		return
+	var target := p.position
+	p.modulate.a = 0.0
+	p.position = target + Vector2(-16, 0)
+	var tw := create_tween()
+	tw.tween_property(p, "modulate:a", 1.0, 0.18)
+	tw.parallel().tween_property(p, "position", target, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
+func _nav_pressed(name: String) -> void:
+	var was := _open_panel_name == name
+	_close_all_panels()
+	_open_panel_name = ""
+	for k in _nav:
+		_nav[k].set_active(false)
+	if was:
+		return
+	_open_panel_name = name
+	_nav[name].set_active(true)
+	match name:
+		"economy":
+			_toggle_eco()
+			_animate_panel(_eco)
+		"tech":
+			_toggle_tech()
+			_animate_panel(_tech)
+		"politics":
+			_toggle_pol()
+			_animate_panel(_pol)
+		"intel":
+			_toggle_intel()
+			_animate_panel(_intel)
+		_:
+			_open_generic(name)
+
+
+func _open_generic(name: String) -> void:
+	_generic = PanelContainer.new()
+	_generic.theme = _theme
+	_generic.position = Vector2(68, 56)
+	_generic.custom_minimum_size = Vector2(520, 640)
+	ui.add_child(_generic)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_generic.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
+	var title := ""
+	for it in NAV_ITEMS:
+		if it[0] == name:
+			title = it[1]
+	var h := _h1(title)
+	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(h)
+	var x := IconButton.new("close", "Закрыть", Vector2(30, 30))
+	x.pad = 6.0
+	x.pressed.connect(func(): _nav_pressed(name))
+	head.add_child(x)
+	if name == "diplomacy" or name == "stats":
+		var f := LineEdit.new()
+		f.placeholder_text = "Фильтр по названию…"
+		f.clear_button_enabled = true
+		_g_filter = ""
+		f.text_changed.connect(func(t: String):
+			_g_filter = t
+			_fill_generic(name))
+		v.add_child(f)
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(sc)
+	_gbody = VBoxContainer.new()
+	_gbody.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gbody.add_theme_constant_override("separation", 6)
+	sc.add_child(_gbody)
+	_fill_generic(name)
+	_animate_panel(_generic)
+
+
+func _fill_generic(name: String) -> void:
+	if _generic == null or not is_instance_valid(_generic):
+		return
+	for ch in _gbody.get_children():
+		ch.queue_free()
+	match name:
+		"state": _g_state()
+		"build": _g_build()
+		"diplomacy": _g_dip()
+		"army": _g_army()
+		"stats": _g_stats()
+
+
+func _where(cell: int) -> String:
+	if sim.is_earth_world():
+		var p: Dictionary = sim.provinces()[cell]
+		var reg := EarthWorld.region_name(sim.world, int(p.get("region", 0)))
+		return reg if reg != "" else "ячейка %d" % cell
+	return "провинция %d" % cell
+
+
+func _g_state() -> void:
+	var c: Dictionary = sim.countries[player]
+	var ideo: Dictionary = sim.ideo_defs[c["ideology"]]
+	var title := _h2("%s · %s" % [c["name"], ideo["name"]])
+	_gbody.add_child(title)
+	_gbody.add_child(_bar("Стабильность", c["stability"], Color("7fcf8a") if c["stability"] >= 50 else Color("e0b45a")))
+	_gbody.add_child(_bar("Поддержка войны", c["war_support"], Color("c9a23c")))
+	_gbody.add_child(HSeparator.new())
+	_gbody.add_child(_h2("Территория"))
+	var held := sim.cells_of(player).size()
+	var legal_mine := 0
+	var lost := 0
+	var occupied := 0
+	for p in sim.owner.size():
+		if sim.legal[p] == player:
+			legal_mine += 1
+			if sim.owner[p] != player:
+				lost += 1
+		elif sim.owner[p] == player:
+			occupied += 1
+	var t := "Под вашим контролем: %d ячеек\nПризнанных за вами: %d\nУтрачено (оккупировано противником): %d\nЗанято вами у других: %d" % [held, legal_mine, lost, occupied]
+	var tl := Label.new()
+	tl.text = t
+	_gbody.add_child(tl)
+	if sim.is_earth_world():
+		var mixed: Array = []
+		var seen := {}
+		for p in sim.owner.size():
+			if sim.legal[p] == player or sim.owner[p] == player:
+				var r: int = sim.region_of(p)
+				if r > 0 and not seen.has(r):
+					seen[r] = true
+					var ctl := sim.region_control(r)
+					if ctl.size() > 1:
+						mixed.append(r)
+		_gbody.add_child(_h2("Регионы с разделённым контролем: %d" % mixed.size()))
+		for r in mixed.slice(0, 12):
+			var ctl2 := sim.region_control(r)
+			var parts: Array[String] = []
+			for k in ctl2:
+				parts.append("%s %d" % [sim.countries[k]["name"] if k >= 0 else "нейтр.", ctl2[k]])
+			var rl := Label.new()
+			rl.text = "%s: %s" % [EarthWorld.region_name(sim.world, r), ", ".join(parts)]
+			rl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			_gbody.add_child(rl)
+	_gbody.add_child(HSeparator.new())
+	_gbody.add_child(_h2("Силы и экономика"))
+	var u := Label.new()
+	u.text = "Дивизий: %d · армий: %d · флотов: %d · авиагрупп: %d\nДоход: %+d в день · технологий: %d из %d\nСоюзников: %d · войн: %d" % [
+		sim.divisions_of(player), sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.wings_of(player).size(),
+		c["income"] - c["upkeep"], c["techs"].size(), sim.tech_defs.size(), sim.allies_of(player).size(), sim.enemies_of(player).size()]
+	_gbody.add_child(u)
+	var go := Button.new()
+	go.text = "Перейти к столице"
+	go.pressed.connect(func():
+		map.selected_province = c["capital"]
+		_focus_cell(c["capital"], 3.0)
+		_refresh_info())
+	_gbody.add_child(go)
+
+
+func _focus_cell(cell: int, zoom_level: float = 3.0) -> void:
+	if cell < 0:
+		return
+	map.camera.position = sim.provinces()[cell]["center"] * MapView.CELL
+	map.camera.zoom = Vector2.ONE * clampf(zoom_level, map.min_zoom, map.max_zoom)
+	map.queue_redraw()
+
+
+func _g_build() -> void:
+	var c: Dictionary = sim.countries[player]
+	_gbody.add_child(_muted("Заказы выполняются мгновенно за деньги, сталь и людей; результат виден в журнале событий."))
+	_gbody.add_child(_h2("Инфраструктура"))
+	var sel := map.selected_province
+	if sel >= 0 and sim.owner[sel] == player and sim.infra[sel] < Simulation.MAX_INFRA:
+		_cmd_button("Выбранная территория (%s): ур. %d → %d  (%d $, 15 стали)" % [_where(sel), sim.infra[sel], sim.infra[sel] + 1, 60 + 20 * sim.infra[sel]], {"type": "build_infra", "country": player, "province": sel}, _gbody)
+	var cand: Array = []
+	for a in sim.armies_of(player):
+		if sim.owner[a["prov"]] == player and sim.infra[a["prov"]] < Simulation.MAX_INFRA and not cand.has(a["prov"]):
+			cand.append(a["prov"])
+	cand.sort_custom(func(x, y): return sim.infra[x] < sim.infra[y] or (sim.infra[x] == sim.infra[y] and x < y))
+	for cell in cand.slice(0, 8):
+		_cmd_button("Где стоят войска: %s: ур. %d → %d  (%d $)" % [_where(cell), sim.infra[cell], sim.infra[cell] + 1, 60 + 20 * sim.infra[cell]], {"type": "build_infra", "country": player, "province": cell}, _gbody)
+	_gbody.add_child(HSeparator.new())
+	_gbody.add_child(_h2("Производство в столице (%s)" % _where(c["capital"])))
+	for ut in sim.unit_defs:
+		var ud: Dictionary = sim.unit_defs[ut]
+		_cmd_button("Дивизия: %s — %d $, %d стали, %d чел." % [ud["name"], ud["cost"], ud["steel"], ud["manpower"]], {"type": "train_division", "country": player, "unit": ut}, _gbody)
+	var port := sim.port_of(player)
+	if port >= 0:
+		_cmd_button("Флот в порту (%s) — %d $, %d стали" % [_where(port), Simulation.FLEET_COST, Simulation.FLEET_STEEL], {"type": "build_fleet", "country": player}, _gbody)
+	for at in sim.air_defs:
+		var ad: Dictionary = sim.air_defs[at]
+		_cmd_button("Авиагруппа: %s — %d $, %d стали" % [ad["name"], ad["cost"], ad["steel"]], {"type": "build_wing", "country": player, "type_air": at, "base": c["capital"]}, _gbody)
+
+
+func _relation_text(o: int) -> String:
+	if o == player:
+		return "вы"
+	if sim.allied(player, o):
+		return "союзник"
+	if sim.at_war(player, o):
+		return "ВОЙНА"
+	if sim._embargoed(player, o):
+		return "эмбарго"
+	if sim.neighbor_countries(player).has(o):
+		return "сосед"
+	return "—"
+
+
+func _g_dip() -> void:
+	var agg := sim._aggregate()
+	var order: Array = []
+	var q := _g_filter.to_lower()
+	for c in sim.countries:
+		if c["alive"] and c["id"] != player and (q == "" or str(c["name"]).to_lower().contains(q)):
+			order.append(c["id"])
+	var rank := func(o: int) -> int:
+		if sim.at_war(player, o): return 0
+		if sim.allied(player, o): return 1
+		if sim.neighbor_countries(player).has(o): return 2
+		return 3
+	order.sort_custom(func(a, b):
+		var ra: int = rank.call(a)
+		var rb: int = rank.call(b)
+		if ra != rb:
+			return ra < rb
+		var pa: int = agg[a]["pop"] if agg.has(a) else 0
+		var pb: int = agg[b]["pop"] if agg.has(b) else 0
+		return pa > pb or (pa == pb and a < b))
+	_gbody.add_child(_muted("Сначала войны, союзники и соседи, затем крупнейшие страны. Союз принимает только ИИ."))
+	for o in order.slice(0, 40):
+		var c2: Dictionary = sim.countries[o]
+		var card := VBoxContainer.new()
+		var head := HBoxContainer.new()
+		var chip := ColorRect.new()
+		chip.color = Color(c2["color"])
+		chip.custom_minimum_size = Vector2(6, 20)
+		head.add_child(chip)
+		var nl := Label.new()
+		nl.text = "%s" % c2["name"]
+		nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		head.add_child(nl)
+		var rl := Label.new()
+		rl.text = _relation_text(o)
+		rl.add_theme_color_override("font_color", Color("e0675a") if sim.at_war(player, o) else (Color("7fcf8a") if sim.allied(player, o) else Color("8a96a6")))
+		head.add_child(rl)
+		card.add_child(head)
+		var acts := HFlowContainer.new()
+		acts.add_theme_constant_override("h_separation", 4)
+		card.add_child(acts)
+		if sim.allied(player, o):
+			_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o}, acts)
+		elif sim.at_war(player, o):
+			_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": o}, acts)
+		else:
+			_cmd_button("Союз", {"type": "propose_alliance", "country": player, "target": o}, acts)
+			if sim.can_declare_war(player, o):
+				_cmd_button("Объявить войну", {"type": "declare_war", "country": player, "target": o}, acts)
+			if sim._embargoed(player, o):
+				_cmd_button("Снять эмбарго", {"type": "lift_embargo", "country": player, "target": o}, acts)
+			else:
+				_cmd_button("Эмбарго", {"type": "embargo", "country": player, "target": o}, acts)
+		var cap := Button.new()
+		cap.text = "На карте"
+		var capital: int = c2["capital"]
+		cap.pressed.connect(func():
+			map.selected_province = capital
+			_focus_cell(capital, 2.2)
+			_refresh_info())
+		acts.add_child(cap)
+		_gbody.add_child(card)
+		_gbody.add_child(HSeparator.new())
+
+
+func _g_army() -> void:
+	var armies := sim.armies_of(player)
+	_gbody.add_child(_h2("Армии (%d)" % armies.size()))
+	for a in armies:
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		l.text = "#%d  %s · сила %d · снабж. %d%% · %s" % [a["id"], sim.army_label(a), a["strength"], a["supply"], _where(a["prov"])]
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		row.add_child(l)
+		var b := Button.new()
+		b.text = "Выбрать"
+		var aid: int = a["id"]
+		var prov: int = a["prov"]
+		b.pressed.connect(func():
+			map.selected_army = aid
+			map.selected_province = prov
+			_focus_cell(prov, 3.0)
+			_refresh_info())
+		row.add_child(b)
+		_gbody.add_child(row)
+	var fl := sim.fleets_of(player)
+	_gbody.add_child(_h2("Флоты (%d)" % fl.size()))
+	for f in fl:
+		var l2 := Label.new()
+		l2.text = "#%d  сила %d" % [f["id"], f["strength"]]
+		_gbody.add_child(l2)
+	var wl := sim.wings_of(player)
+	_gbody.add_child(_h2("Авиагруппы (%d)" % wl.size()))
+	for w in wl:
+		var l3 := Label.new()
+		l3.text = "#%d  %s ×%d · база: %s" % [w["id"], sim.air_defs[w["type"]]["name"], w["strength"], _where(w["base"])]
+		_gbody.add_child(l3)
+
+
+func _g_stats() -> void:
+	var agg := sim._aggregate()
+	var q := _g_filter.to_lower()
+	var rows: Array = []
+	for c in sim.countries:
+		if not c["alive"] or (q != "" and not str(c["name"]).to_lower().contains(q)):
+			continue
+		var id: int = c["id"]
+		rows.append({"id": id, "name": c["name"], "pop": agg[id]["pop"] if agg.has(id) else 0, "income": c["income"] - c["upkeep"],
+			"army": sim.divisions_of(id), "cells": sim.cells_of(id).size(), "techs": c["techs"].size()})
+	var sort_key := _stats_sort
+	rows.sort_custom(func(a, b): return a[sort_key] > b[sort_key] or (a[sort_key] == b[sort_key] and a["id"] < b["id"]))
+	var bar := HBoxContainer.new()
+	for k in [["pop", "Население"], ["income", "Доход"], ["army", "Дивизии"], ["cells", "Территория"], ["techs", "Технологии"]]:
+		var b := Button.new()
+		b.text = k[1]
+		b.toggle_mode = true
+		b.button_pressed = _stats_sort == k[0]
+		var key: String = k[0]
+		b.pressed.connect(func():
+			_stats_sort = key
+			_fill_generic("stats"))
+		bar.add_child(b)
+	_gbody.add_child(bar)
+	var grid := GridContainer.new()
+	grid.columns = 6
+	grid.add_theme_constant_override("h_separation", 14)
+	for head in ["#", "Страна", "Нас., млн", "Доход", "Див.", "Яч."]:
+		var hl := Label.new()
+		hl.text = head
+		hl.add_theme_color_override("font_color", Color("9fb0c4"))
+		grid.add_child(hl)
+	var place := 0
+	for r in rows.slice(0, 40):
+		place += 1
+		var mine: bool = r["id"] == player
+		var vals := [str(place), r["name"], "%.1f" % (float(r["pop"]) * EarthWorld.POP_UNIT / 1.0e6), "%+d" % r["income"], str(r["army"]), str(r["cells"])]
+		for v in vals:
+			var l := Label.new()
+			l.text = v
+			if mine:
+				l.add_theme_color_override("font_color", Color("e8c46a"))
+			grid.add_child(l)
+	_gbody.add_child(grid)
+	var own_rank := 0
+	var all_sorted: Array = []
+	for c in sim.countries:
+		if c["alive"]:
+			all_sorted.append(c["id"])
+	all_sorted.sort_custom(func(a, b): return (agg[a]["pop"] if agg.has(a) else 0) > (agg[b]["pop"] if agg.has(b) else 0))
+	own_rank = all_sorted.find(player) + 1
+	_gbody.add_child(_muted("Ваше место по населению: %d из %d" % [own_rank, all_sorted.size()]))
+
+
+# ------------------------------------------------------------- right panel
+
+func _right_list() -> VBoxContainer:
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_right_body.add_child(sc)
+	var v := VBoxContainer.new()
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.add_theme_constant_override("separation", 6)
+	sc.add_child(v)
+	return v
+
+
+func _right_set_tab(tab: String) -> void:
+	_right_tab = tab
+	for k in _right_btns:
+		_right_btns[k].button_pressed = k == tab
+	for ch in _right_body.get_children():
+		if ch == _log:
+			_right_body.remove_child(ch)
+		else:
+			ch.queue_free()
+	match tab:
+		"events": _right_body.add_child(_log)
+		"wars": _fill_wars()
+		"fronts": _fill_fronts()
+		"tasks": _fill_tasks()
+
+
+func _fill_wars() -> void:
+	var v := _right_list()
+	var mine: Array = []
+	var others: Array = []
+	for w in sim.wars:
+		if w["a"] == player or w["b"] == player:
+			mine.append(w)
+		else:
+			others.append(w)
+	v.add_child(_h2("Ваши войны (%d)" % mine.size()))
+	if mine.is_empty():
+		v.add_child(_muted("Вы не воюете."))
+	for w in mine:
+		var enemy: int = w["b"] if w["a"] == player else w["a"]
+		var row := VBoxContainer.new()
+		var l := Label.new()
+		l.text = "%s · %d дн. · %s" % [sim.countries[enemy]["name"], sim.day - w["start"], "вы напали" if w["a"] == player else "на вас напали"]
+		l.add_theme_color_override("font_color", Color("e0675a"))
+		row.add_child(l)
+		var acts := HFlowContainer.new()
+		_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": enemy}, acts)
+		row.add_child(acts)
+		v.add_child(row)
+	v.add_child(HSeparator.new())
+	v.add_child(_h2("Другие войны (%d)" % others.size()))
+	for w in others.slice(0, 25):
+		var l2 := Label.new()
+		l2.text = "%s — %s · %d дн." % [sim.countries[w["a"]]["name"], sim.countries[w["b"]]["name"], sim.day - w["start"]]
+		l2.add_theme_font_size_override("font_size", 13)
+		v.add_child(l2)
+
+
+func _centroid(cells: Array) -> int:
+	if cells.is_empty():
+		return -1
+	var sum := Vector2.ZERO
+	for c in cells:
+		sum += sim.provinces()[c]["center"]
+	var mid := sum / cells.size()
+	var best: int = cells[0]
+	for c in cells:
+		if sim.provinces()[c]["center"].distance_squared_to(mid) < sim.provinces()[best]["center"].distance_squared_to(mid):
+			best = c
+	return best
+
+
+func _fill_fronts() -> void:
+	var v := _right_list()
+	var enemies := sim.enemies_of(player)
+	v.add_child(_h2("Фронты (%d)" % enemies.size()))
+	if enemies.is_empty():
+		v.add_child(_muted("Активных фронтов нет."))
+	for e in enemies:
+		var mine := sim.front_cells(player, e)
+		var theirs := sim.front_cells(e, player)
+		var l := Label.new()
+		l.text = "%s\nВаша линия: %d яч. · линия противника: %d яч." % [sim.countries[e]["name"], mine.size(), theirs.size()]
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		v.add_child(l)
+		var mid := _centroid(mine if not mine.is_empty() else theirs)
+		if mid >= 0:
+			var b := Button.new()
+			b.text = "К фронту"
+			b.pressed.connect(func():
+				map.selected_province = mid
+				_focus_cell(mid, 2.6)
+				_refresh_info())
+			v.add_child(b)
+	var cut := sim.cut_off_cells(player)
+	v.add_child(HSeparator.new())
+	v.add_child(_h2("Окружения"))
+	if cut.is_empty():
+		v.add_child(_muted("Ваши земли связаны со столицей."))
+	else:
+		var cl := Label.new()
+		cl.text = "Отрезано от столицы: %d яч. (снабжение армий там падает)" % cut.size()
+		cl.add_theme_color_override("font_color", Color("e0675a"))
+		cl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		v.add_child(cl)
+		var cb := Button.new()
+		cb.text = "К окружённым"
+		var mid2 := _centroid(cut)
+		cb.pressed.connect(func():
+			map.selected_province = mid2
+			_focus_cell(mid2, 2.6)
+			_refresh_info())
+		v.add_child(cb)
+
+
+func _fill_tasks() -> void:
+	var v := _right_list()
+	var c: Dictionary = sim.countries[player]
+	v.add_child(_h2("Исследования"))
+	if c["queue"].is_empty():
+		v.add_child(_muted("Очередь пуста — откройте «Технологии»."))
+	var active := 0
+	for id in c["queue"]:
+		var t: Dictionary = sim.tech_defs[id]
+		var runs: bool = active < sim.research_slots(player) and sim.tech_reqs_met(player, id)
+		if runs:
+			active += 1
+		var row := VBoxContainer.new()
+		var l := Label.new()
+		l.text = ("▶ " if runs else "⏳ ") + t["name"]
+		row.add_child(l)
+		var pb := ProgressBar.new()
+		pb.max_value = t["cost"]
+		pb.value = c["progress"].get(id, 0)
+		pb.show_percentage = false
+		pb.custom_minimum_size = Vector2(0, 12)
+		row.add_child(pb)
+		v.add_child(row)
+	v.add_child(HSeparator.new())
+	v.add_child(_h2("Разведка"))
+	var ops := sim.ops_of(player)
+	if ops.is_empty():
+		v.add_child(_muted("Операций нет."))
+	for op in ops:
+		var l2 := Label.new()
+		l2.text = "%s → %s (%d дн.)" % [sim.intel_defs[op["type"]]["name"], sim.countries[op["target"]]["name"], op["left"]]
+		v.add_child(l2)
+	v.add_child(HSeparator.new())
+	v.add_child(_h2("Торговля и решения"))
+	var deals := sim.trades_of(player)
+	var tl := Label.new()
+	tl.text = "Сделок: %d · эмбарго: %d" % [deals.size(), sim.embargoes.size()]
+	v.add_child(tl)
+	if not c["pending"].is_empty():
+		var pl := Label.new()
+		pl.text = "Ждёт решения событий: %d" % c["pending"].size()
+		pl.add_theme_color_override("font_color", Color("e8c46a"))
+		v.add_child(pl)
+
+
+# ------------------------------------------------------------------ search
+
+func _on_search_changed(text: String) -> void:
+	if _search_panel != null and is_instance_valid(_search_panel):
+		_search_panel.queue_free()
+		_search_panel = null
+	var q := text.strip_edges()
+	if q.length() < 2:
+		return
+	_search_panel = PanelContainer.new()
+	_search_panel.theme = _theme
+	var spos := _search.get_global_rect().position + Vector2(0, _search.size.y + 4)
+	spos.x = minf(spos.x, get_viewport().get_visible_rect().size.x - 396.0)
+	_search_panel.position = spos
+	_search_panel.custom_minimum_size = Vector2(380, 0)
+	ui.add_child(_search_panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 3)
+	_search_panel.add_child(v)
+	var any := false
+	var ql := q.to_lower()
+	var n := 0
+	for c in sim.countries:
+		if c["alive"] and str(c["name"]).to_lower().contains(ql) and n < 5:
+			n += 1
+			any = true
+			var cid: int = c["id"]
+			_search_row(v, "flag", "%s — страна" % c["name"], func(): _search_pick_cell(sim.countries[cid]["capital"], 2.2))
+	if sim.is_earth_world():
+		var seen := {}
+		var rn := 0
+		for r in sim.world["regions"].size():
+			var reg: Dictionary = sim.world["regions"][r]
+			if reg["kind"] != "admin1" or rn >= 5:
+				continue
+			var nm: String = EarthWorld.region_name(sim.world, r + 1)
+			if nm.to_lower().contains(ql) or str(reg["name"]).to_lower().contains(ql):
+				var cells := sim.region_cells(r + 1)
+				if cells.is_empty() or seen.has(nm):
+					continue
+				seen[nm] = true
+				rn += 1
+				any = true
+				var mid := _centroid(cells)
+				_search_row(v, "layers", "%s — регион (%s)" % [nm, sim.countries[sim.legal[cells[0]]]["name"] if sim.legal[cells[0]] >= 0 else "—"], func(): _search_pick_cell(mid, 3.0))
+		for s in EarthWorld.search(q, 10):
+			any = true
+			var sid: int = int(s["id"])
+			var nm2: String = str(s["name_ru"]) if s.get("name_ru") != null else str(s["name"])
+			var pop_txt := ("%.1f млн" % (float(s["pop"]) / 1.0e6)) if int(s["pop"]) >= 1000000 else ("%d тыс." % (int(s["pop"]) / 1000) if int(s["pop"]) > 0 else "нет данных")
+			var ctry := ""
+			var ow: int = sim.legal[int(s["cell"])]
+			if ow >= 0:
+				ctry = sim.countries[ow]["name"]
+			_search_row(v, "state", "%s — %s, %s (%s)" % [nm2, EarthWorld.settlement_kind(s), ctry, pop_txt], func(): _select_settlement(sid))
+	if not any:
+		v.add_child(_muted("Ничего не найдено"))
+
+
+func _search_row(parent: Container, icon: String, text: String, action: Callable) -> void:
+	var b := Button.new()
+	b.text = "   " + text
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.flat = true
+	b.clip_text = true
+	b.custom_minimum_size = Vector2(370, 28)
+	b.pressed.connect(func():
+		action.call()
+		if _search_panel != null and is_instance_valid(_search_panel):
+			_search_panel.queue_free()
+			_search_panel = null)
+	parent.add_child(b)
+	var ic := IconButton.new(icon, "", Vector2(22, 22))
+	ic.pad = 3.0
+	ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ic.position = Vector2(2, 3)
+	b.add_child(ic)
+
+
+func _search_pick_cell(cell: int, zoom_level: float) -> void:
+	if cell < 0:
+		return
+	_selected_sett = -1
+	map.selected_province = cell
+	_focus_cell(cell, zoom_level)
+	_refresh_info()
+
+
+func _select_settlement(sid: int) -> void:
+	var s: Dictionary = EarthWorld.settlement(sid)
+	_selected_sett = sid
+	map.selected_province = int(s["cell"])
+	map.selected_army = -1
+	if map is EarthMapView:
+		map.focus_lonlat(float(s["lon"]), float(s["lat"]), 5.0)
+	_refresh_info()
+
+
+# --------------------------------------------------------- context menu & notes
+
+func _on_province_right_clicked(pid: int, screen_pos: Vector2) -> void:
+	if sim == null or player < 0 or _ctx == null:
+		return
+	_ctx_cell = pid
+	_ctx.clear()
+	_ctx.add_item("Выбрать территорию", 1)
+	_ctx.add_item("Центрировать", 2)
+	var o := sim.owner[pid]
+	if map.selected_army >= 0 and not sim.army_by_id(map.selected_army).is_empty() and sim.provinces()[pid]["land"]:
+		_ctx.add_separator()
+		_ctx.add_item("Приказ армии: идти сюда", 3)
+	if o >= 0 and o != player:
+		_ctx.add_separator()
+		var oname: String = sim.countries[o]["name"]
+		if sim.at_war(player, o):
+			_ctx.add_item("Предложить мир: %s" % oname, 12)
+		else:
+			if sim.can_declare_war(player, o) and not sim.allied(player, o):
+				_ctx.add_item("Объявить войну: %s" % oname, 10)
+			if not sim.allied(player, o):
+				_ctx.add_item("Предложить союз: %s" % oname, 11)
+			_ctx.add_item("Эмбарго: %s" % oname, 13)
+	if sim.is_earth_world() and not EarthWorld.settlements_in_cell(pid).is_empty():
+		_ctx.add_separator()
+		_ctx.add_item("Главный населённый пункт ячейки", 20)
+	_ctx.popup(Rect2i(Vector2i(screen_pos), Vector2i(1, 1)))
+
+
+func _ctx_pressed(id: int) -> void:
+	var pid := _ctx_cell
+	var o := sim.owner[pid]
+	match id:
+		1:
+			_selected_sett = -1
+			map.selected_province = pid
+			_refresh_info()
+		2: _focus_cell(pid, map.camera.zoom.x)
+		3: _on_province_clicked(pid)
+		10: _pol_cmd_log({"type": "declare_war", "country": player, "target": o})
+		11: _pol_cmd_log({"type": "propose_alliance", "country": player, "target": o})
+		12: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o})
+		13: _pol_cmd_log({"type": "embargo", "country": player, "target": o})
+		20:
+			var ids := EarthWorld.settlements_in_cell(pid)
+			if not ids.is_empty():
+				_select_settlement(ids[0])
+
+
+func _pol_cmd_log(cmd: Dictionary) -> void:
+	var r := sim.apply_command(cmd)
+	_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", "Выполнено" if r["ok"] else "Отказ: %s" % _reason(r.get("reason", ""))])
+	_refresh_all()
+
+
+func _toggle_notifications() -> void:
+	if _notif_panel != null and is_instance_valid(_notif_panel):
+		_notif_panel.queue_free()
+		_notif_panel = null
+		return
+	_notif_seen = sim.log_lines.size()
+	_bell.set_badge(0)
+	_notif_panel = PanelContainer.new()
+	_notif_panel.theme = _theme
+	_notif_panel.position = _bell.get_global_rect().position + Vector2(-340, 46)
+	_notif_panel.custom_minimum_size = Vector2(380, 340)
+	ui.add_child(_notif_panel)
+	var v := VBoxContainer.new()
+	_notif_panel.add_child(v)
+	v.add_child(_h2("Уведомления"))
+	var rt := RichTextLabel.new()
+	rt.bbcode_enabled = true
+	rt.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	rt.scroll_following = true
+	var lines: Array = sim.log_lines.slice(maxi(0, sim.log_lines.size() - 40))
+	for ln in lines:
+		rt.append_text(str(ln) + "\n")
+	if lines.is_empty():
+		rt.append_text("Новых уведомлений нет.")
+	v.add_child(rt)
+	_animate_panel(_notif_panel)
+
+
+# ------------------------------------------------------- territory / city card
+
+func _kcolor(cid: int) -> String:
+	return sim.countries[cid]["color"] if cid >= 0 else "#8a96a6"
+
+
+func _cname(cid: int) -> String:
+	return "[color=%s]%s[/color]" % [_kcolor(cid), sim.countries[cid]["name"]] if cid >= 0 else "нейтральная"
+
+
+func _cell_battle(pid: int) -> bool:
+	var first := -1
+	for a in sim.armies:
+		if a["prov"] == pid:
+			if first < 0:
+				first = a["owner"]
+			elif a["owner"] != first and sim.at_war(first, a["owner"]):
+				return true
+	return false
+
+
+func _cell_supply_text(pid: int) -> String:
+	var o := sim.owner[pid]
+	var best := -1
+	for a in sim.armies:
+		if a["prov"] == pid and (a["owner"] == player or sim.allied(player, a["owner"])):
+			best = maxi(best, a["supply"])
+	if best >= 0:
+		return "%d%% (армия на месте)" % best
+	if o == player:
+		var d: int = _player_supply.get(pid, 9999)
+		if d >= 9999:
+			return "[color=#e0675a]нет связи со столицей[/color]"
+		return "%d%% (оценка)" % int(clampf(1.0 - d * 0.01, 0.0, 1.0) * 100.0)
+	return "—"
+
+
+func _earth_card(pid: int) -> String:
+	var p: Dictionary = sim.provinces()[pid]
+	var w := sim.world
+	var o := sim.owner[pid]
+	var lg: int = sim.legal[pid]
+	var region := EarthWorld.region_name(w, int(p["region"]))
+	var ids := EarthWorld.settlements_in_cell(pid)
+	var district := ""
+	var near := "нет данных"
+	if not ids.is_empty():
+		var s0: Dictionary = EarthWorld.settlement(ids[0])
+		district = str(s0.get("district", ""))
+		var nm: String = str(s0["name_ru"]) if s0.get("name_ru") != null else str(s0["name"])
+		near = "%s (%s)" % [nm, EarthWorld.settlement_kind(s0)]
+	var status: Array[String] = []
+	if _cell_battle(pid):
+		status.append("[color=#ff9a4a]идут бои[/color]")
+	elif o >= 0 and not sim.enemies_of(o).is_empty():
+		for q in p["land_neighbors"]:
+			var oq := sim.owner[q]
+			if oq >= 0 and oq != o and sim.at_war(o, oq):
+				status.append("линия фронта")
+				break
+	if _cut_set.has(pid):
+		status.append("[color=#e0675a]в окружении[/color]")
+	if status.is_empty():
+		status.append("спокойно")
+	var dep := ""
+	for r in p["deposits"]:
+		dep += "%s +%d  " % [_res_name(r), p["deposits"][r]]
+	var claim := ""
+	if int(p["dispute"]) > 0:
+		var d: Dictionary = w["disputes"][int(p["dispute"]) - 1]
+		claim = "\n[color=#e0b45a]Спорная территория:[/color] %s — %s" % [d["name"], d["note"] if d["note"] != null else "нет данных"]
+	var t := "[table=3]"
+	t += "[cell][b]%s[/b]\nСтрана (признана): %s\nОбласть/регион: %s\nРайон: %s\nБлижайший населённый пункт: %s\nЯчейка #%d · %d км²[/cell]" % [
+		region if region != "" else "Без названия", _cname(lg), region if region != "" else "—", district if district != "" else "нет данных", near, pid, int(p["area"])]
+	t += "[cell]Владелец (признанный): %s\nКонтролирует: %s%s\nСтатус: %s%s[/cell]" % [
+		_cname(lg), _cname(o), "  [color=#e0b45a](оккупирована)[/color]" if o != lg else "", ", ".join(status), claim]
+	t += "[cell]Рельеф: %s · высота ≈ %d м\nНаселение: %s\nПромышленность: %d · инфраструктура: %d%s\nСнабжение: %s\nДобыча: %s[/cell]" % [
+		p["terrain"], int(p["elev"]), ("%d тыс." % (int(p["pop_real"]) / 1000)) if int(p["pop_real"]) > 0 else "нет данных",
+		int(p["industry"]), sim.infra[pid], (" (с разрушениями %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else "",
+		_cell_supply_text(pid), dep if dep != "" else "—"]
+	t += "[/table]\n"
+	return t
+
+
+func _settlement_card(sid: int) -> String:
+	var s: Dictionary = EarthWorld.settlement(sid)
+	var cell := int(s["cell"])
+	var st := sim.settlement_status(s)
+	var nm: String = str(s["name_ru"]) if s.get("name_ru") != null else str(s["name"])
+	var alts: Array = []
+	if s.get("name_ru") != null:
+		alts.append(str(s["name"]))
+	alts.append_array(s["alt"].slice(0, 3))
+	var pop := int(s["pop"])
+	var region := EarthWorld.region_name(sim.world, int(s["region"]))
+	var t := "[b][font_size=18]%s[/font_size][/b]  [color=#8a96a6]%s[/color]\n" % [nm, EarthWorld.settlement_kind(s)]
+	t += "Другие названия: %s\n" % (", ".join(alts) if not alts.is_empty() else "нет данных")
+	t += "Население: %s\n" % (("%d" % pop) if pop > 0 else "нет данных")
+	t += "Регион: %s · район: %s\n" % [region if region != "" else "—", s["district"] if s.get("district") != "" else "нет данных"]
+	t += "Дороги: %s · железная дорога: %s\n" % ["да" if s.get("on_road", 0) == 1 else "нет данных", "да" if s.get("on_rail", 0) == 1 else "нет данных"]
+	t += "Признана за: %s · контролирует: %s%s\n" % [_cname(st["legal"]), _cname(st["controller"]), "  [color=#ff9a4a]идут бои[/color]" if st["contested"] else ""]
+	t += "Значение: экономика ×%d, стратегическое: %s" % [sim.provinces()[cell]["industry"], "высокое" if pop >= 1000000 or int(s["capital"]) == 1 else "обычное"]
+	return t
+
+
+func _legacy_card(pid: int, p: Dictionary, o: int) -> String:
+	var t := "Рельеф: %s\nНаселение: %d тыс.\nПромышленность: %d\n" % [p["terrain"], p["pop"], p["industry"]]
+	var dep := ""
+	for r in p["deposits"]:
+		dep += "%s +%d  " % [_res_name(r), p["deposits"][r]]
+	t += "Добыча: %s\n" % (dep if dep != "" else "—")
+	if o >= 0:
+		var oc: Dictionary = sim.countries[o]
+		t += "Владелец: [color=%s]%s[/color]\n" % [oc["color"], oc["name"]]
+		if o != player:
+			t += "Отношения: %s\n" % ("[color=#d96a5a]ВОЙНА[/color]" if sim.at_war(player, o) else "мир")
+	else:
+		t += "Владелец: нейтральная\n"
+	t += "Инфраструктура: %d%s\n" % [sim.infra[pid], (" (из-за разрушений %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else ""]
+	if sim.damage[pid] > 0:
+		t += "Разрушения от бомбардировок: %d%%\n" % sim.damage[pid]
+	return t
+
+
+func _update_dynamic_overlays() -> void:
+	# cut-off cells and supply estimate for the player, refreshed every few days
+	if sim.day - _cut_cache_day < 5:
+		return
+	_cut_cache_day = sim.day
+	var cut := sim.cut_off_cells(player)
+	_cut_set = {}
+	for c in cut:
+		_cut_set[c] = true
+	_player_supply = sim._supply_dist(player)
+	if map is EarthMapView:
+		map.set_cut_off(cut)
