@@ -50,4 +50,4 @@ if not gen.get("first") or not gen.get("last"):
 
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units["units"])} units)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units)")
