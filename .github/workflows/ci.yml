@@ -87,7 +87,7 @@ jobs:
           echo "SDK=$SDK" >> "$GITHUB_ENV"
           yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$SDK/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.1.0" "platforms;android-36"
-      - name: Debug keystore and Godot editor settings (nothing secret: debug key only)
+      - name: Debug keystore and Godot editor settings (debug key only, no secrets)
         run: |
           keytool -genkeypair -keystore "$HOME/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           mkdir -p "$HOME/.config/godot"
