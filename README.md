@@ -21,4 +21,5 @@ python3 tools/validate_data.py                   # проверка данных
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура и правила для всех платформ
 - [docs/ROADMAP.md](docs/ROADMAP.md) — фазы и реальный статус
 - [docs/HANDOFF.md](docs/HANDOFF.md) — состояние и следующие шаги
+- [docs/SCENARIOS.md](docs/SCENARIOS.md) — сценарии, редактор, моды
 - [ASSET_LICENSES.md](ASSET_LICENSES.md) — лицензии ассетов

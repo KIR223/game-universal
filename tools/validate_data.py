@@ -168,6 +168,35 @@ for need in ("build_network", "sabotage", "destabilize", "steal_tech", "disinfor
     if need not in iops:
         errors.append(f"intel.json must define {need}")
 
+idx = json.loads((root / "game/scenarios/index.json").read_text(encoding="utf-8"))
+nscen = 0
+for fname in idx["scenarios"]:
+    scn = json.loads((root / "game/scenarios" / fname).read_text(encoding="utf-8"))
+    nscen += 1
+    sid = scn.get("id", fname)
+    if scn.get("schema_version") != 1:
+        errors.append(f"scenario {sid}: bad schema_version")
+    if not isinstance(scn.get("seed"), int):
+        errors.append(f"scenario {sid}: seed must be int")
+    stags = {c["tag"] for c in scn["countries"]}
+    if len(stags) != len(scn["countries"]) or len(stags) < 2:
+        errors.append(f"scenario {sid}: need >=2 unique country tags")
+    for c in scn["countries"]:
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
+            errors.append(f"scenario {sid}: bad color for {c.get('tag')}")
+        for t in c.get("techs", []):
+            if t not in tmap:
+                errors.append(f"scenario {sid}: unknown tech {t}")
+        if "ideology" in c and c["ideology"] not in ideo_ids:
+            errors.append(f"scenario {sid}: unknown ideology {c['ideology']}")
+    for key in ("alliances", "wars"):
+        for a, b in scn.get(key, []):
+            if a not in stags or b not in stags:
+                errors.append(f"scenario {sid}: unknown tag in {key}")
+    for e in scn.get("disabled_events", []):
+        if e not in eids:
+            errors.append(f"scenario {sid}: unknown event {e}")
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions, {len(iops)} intel ops)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions, {len(iops)} intel ops, {nscen} scenarios)")

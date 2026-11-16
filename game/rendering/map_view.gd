@@ -45,7 +45,9 @@ func bind(sim_: Simulation) -> void:
 	_image = Image.create(w, h, false, Image.FORMAT_RGBA8)
 	_texture = ImageTexture.create_from_image(_image)
 	camera.position = Vector2(w, h) * CELL * 0.5
-	var vp := get_viewport_rect().size
+	var vp := get_viewport_rect().size if is_inside_tree() else Vector2.ZERO
+	if vp.x < 1.0 or vp.y < 1.0:
+		vp = Vector2(1600, 900)
 	camera.zoom = Vector2.ONE * minf(vp.x / (w * CELL), vp.y / (h * CELL)) * 0.95
 	repaint_all()
 
