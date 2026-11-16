@@ -1,0 +1,442 @@
+{
+ "schema_version": 1,
+ "categories": [
+  {
+   "id": "industry",
+   "name": "Промышленность"
+  },
+  {
+   "id": "energy",
+   "name": "Энергетика"
+  },
+  {
+   "id": "agriculture",
+   "name": "Сельское хозяйство"
+  },
+  {
+   "id": "medicine",
+   "name": "Медицина"
+  },
+  {
+   "id": "economy",
+   "name": "Экономика"
+  },
+  {
+   "id": "weapons",
+   "name": "Вооружение"
+  },
+  {
+   "id": "armor",
+   "name": "Бронетехника"
+  },
+  {
+   "id": "navy",
+   "name": "Флот"
+  },
+  {
+   "id": "logistics",
+   "name": "Логистика"
+  },
+  {
+   "id": "communications",
+   "name": "Связь"
+  },
+  {
+   "id": "computing",
+   "name": "Вычислительная техника"
+  }
+ ],
+ "techs": [
+  {
+   "id": "ind1",
+   "category": "industry",
+   "name": "Конвейерное производство",
+   "cost": 200,
+   "requires": [],
+   "effects": {
+    "steel_pct": 10
+   }
+  },
+  {
+   "id": "ind2",
+   "category": "industry",
+   "name": "Автоматизация",
+   "cost": 350,
+   "requires": [
+    "ind1"
+   ],
+   "effects": {
+    "steel_pct": 15,
+    "income_pct": 3,
+    "research_slots": 1
+   }
+  },
+  {
+   "id": "ind3",
+   "category": "industry",
+   "name": "Роботизированные линии",
+   "cost": 700,
+   "requires": [
+    "ind2",
+    "cp1"
+   ],
+   "effects": {
+    "steel_pct": 25,
+    "income_pct": 5
+   }
+  },
+  {
+   "id": "en1",
+   "category": "energy",
+   "name": "Угольные электростанции",
+   "cost": 200,
+   "requires": [],
+   "effects": {
+    "coal_pct": 10,
+    "iron_pct": 5
+   }
+  },
+  {
+   "id": "en2",
+   "category": "energy",
+   "name": "Нефтедобыча",
+   "cost": 350,
+   "requires": [
+    "en1"
+   ],
+   "effects": {
+    "oil_pct": 20
+   }
+  },
+  {
+   "id": "en3",
+   "category": "energy",
+   "name": "Атомная энергетика",
+   "cost": 800,
+   "requires": [
+    "en2"
+   ],
+   "effects": {
+    "oil_pct": 10,
+    "coal_pct": 10,
+    "income_pct": 5
+   }
+  },
+  {
+   "id": "ag1",
+   "category": "agriculture",
+   "name": "Механизация сельского хозяйства",
+   "cost": 200,
+   "requires": [],
+   "effects": {
+    "food_pct": 15
+   }
+  },
+  {
+   "id": "ag2",
+   "category": "agriculture",
+   "name": "Удобрения",
+   "cost": 350,
+   "requires": [
+    "ag1"
+   ],
+   "effects": {
+    "food_pct": 20
+   }
+  },
+  {
+   "id": "ag3",
+   "category": "agriculture",
+   "name": "Агротехнологии",
+   "cost": 650,
+   "requires": [
+    "ag2"
+   ],
+   "effects": {
+    "food_pct": 25,
+    "manpower_pct": 5
+   }
+  },
+  {
+   "id": "med1",
+   "category": "medicine",
+   "name": "Полевая медицина",
+   "cost": 250,
+   "requires": [],
+   "effects": {
+    "attrition_pct": 20
+   }
+  },
+  {
+   "id": "med2",
+   "category": "medicine",
+   "name": "Антибиотики",
+   "cost": 450,
+   "requires": [
+    "med1"
+   ],
+   "effects": {
+    "attrition_pct": 30,
+    "manpower_pct": 10
+   }
+  },
+  {
+   "id": "med3",
+   "category": "medicine",
+   "name": "Эвакуация раненых",
+   "cost": 700,
+   "requires": [
+    "med2"
+   ],
+   "effects": {
+    "attrition_pct": 20,
+    "manpower_pct": 10
+   }
+  },
+  {
+   "id": "eco1",
+   "category": "economy",
+   "name": "Банковская система",
+   "cost": 250,
+   "requires": [],
+   "effects": {
+    "income_pct": 5
+   }
+  },
+  {
+   "id": "eco2",
+   "category": "economy",
+   "name": "Государственное планирование",
+   "cost": 450,
+   "requires": [
+    "eco1"
+   ],
+   "effects": {
+    "income_pct": 7,
+    "upkeep_pct": -5
+   }
+  },
+  {
+   "id": "eco3",
+   "category": "economy",
+   "name": "Мировая торговля",
+   "cost": 700,
+   "requires": [
+    "eco2"
+   ],
+   "effects": {
+    "income_pct": 8,
+    "upkeep_pct": -5
+   }
+  },
+  {
+   "id": "wp1",
+   "category": "weapons",
+   "name": "Автоматические винтовки",
+   "cost": 250,
+   "requires": [],
+   "effects": {
+    "atk_infantry_pct": 10
+   }
+  },
+  {
+   "id": "wp2",
+   "category": "weapons",
+   "name": "Пулемёты",
+   "cost": 450,
+   "requires": [
+    "wp1"
+   ],
+   "effects": {
+    "def_pct": 8,
+    "atk_infantry_pct": 5
+   }
+  },
+  {
+   "id": "wp3",
+   "category": "weapons",
+   "name": "Тяжёлая артиллерия",
+   "cost": 500,
+   "requires": [],
+   "effects": {
+    "atk_artillery_pct": 15
+   }
+  },
+  {
+   "id": "wp4",
+   "category": "weapons",
+   "name": "Реактивная артиллерия",
+   "cost": 900,
+   "requires": [
+    "wp3"
+   ],
+   "effects": {
+    "atk_artillery_pct": 20
+   }
+  },
+  {
+   "id": "wp5",
+   "category": "weapons",
+   "name": "Штурмовые отряды",
+   "cost": 800,
+   "requires": [
+    "wp2"
+   ],
+   "effects": {
+    "atk_infantry_pct": 15,
+    "def_pct": 5
+   }
+  },
+  {
+   "id": "ar1",
+   "category": "armor",
+   "name": "Лёгкие танки",
+   "cost": 300,
+   "requires": [],
+   "effects": {
+    "atk_armor_pct": 10
+   }
+  },
+  {
+   "id": "ar2",
+   "category": "armor",
+   "name": "Средние танки",
+   "cost": 550,
+   "requires": [
+    "ar1"
+   ],
+   "effects": {
+    "atk_armor_pct": 15,
+    "def_armor_pct": 10
+   }
+  },
+  {
+   "id": "ar3",
+   "category": "armor",
+   "name": "Тяжёлые танки",
+   "cost": 900,
+   "requires": [
+    "ar2"
+   ],
+   "effects": {
+    "atk_armor_pct": 20,
+    "def_armor_pct": 10
+   }
+  },
+  {
+   "id": "nv1",
+   "category": "navy",
+   "name": "Дальнобойные орудия",
+   "cost": 300,
+   "requires": [],
+   "effects": {
+    "fleet_pct": 10
+   }
+  },
+  {
+   "id": "nv2",
+   "category": "navy",
+   "name": "Радар",
+   "cost": 500,
+   "requires": [
+    "nv1"
+   ],
+   "effects": {
+    "fleet_pct": 15
+   }
+  },
+  {
+   "id": "nv3",
+   "category": "navy",
+   "name": "Эсминцы-эскортники",
+   "cost": 650,
+   "requires": [
+    "nv2"
+   ],
+   "effects": {
+    "fleet_pct": 20
+   }
+  },
+  {
+   "id": "lg1",
+   "category": "logistics",
+   "name": "Грузовики",
+   "cost": 250,
+   "requires": [],
+   "effects": {
+    "supply_pct": 15
+   }
+  },
+  {
+   "id": "lg2",
+   "category": "logistics",
+   "name": "Железнодорожные батальоны",
+   "cost": 450,
+   "requires": [
+    "lg1"
+   ],
+   "effects": {
+    "supply_decay_pct": 20
+   }
+  },
+  {
+   "id": "lg3",
+   "category": "logistics",
+   "name": "Система снабжения",
+   "cost": 750,
+   "requires": [
+    "lg2"
+   ],
+   "effects": {
+    "supply_pct": 20,
+    "supply_decay_pct": 25
+   }
+  },
+  {
+   "id": "cm1",
+   "category": "communications",
+   "name": "Полевая радиосвязь",
+   "cost": 300,
+   "requires": [],
+   "effects": {
+    "atk_pct": 5
+   }
+  },
+  {
+   "id": "cm2",
+   "category": "communications",
+   "name": "Шифрование",
+   "cost": 550,
+   "requires": [
+    "cm1"
+   ],
+   "effects": {
+    "atk_pct": 5,
+    "def_pct": 5
+   }
+  },
+  {
+   "id": "cp1",
+   "category": "computing",
+   "name": "Счётные машины",
+   "cost": 350,
+   "requires": [],
+   "effects": {
+    "research_pct": 15
+   }
+  },
+  {
+   "id": "cp2",
+   "category": "computing",
+   "name": "Электронные вычисления",
+   "cost": 700,
+   "requires": [
+    "cp1"
+   ],
+   "effects": {
+    "research_pct": 25,
+    "research_slots": 1
+   }
+  }
+ ]
+}

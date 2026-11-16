@@ -341,3 +341,58 @@ func test_supply_hurts() -> void:
 	a["prov"] = far_p
 	sim._supply()
 	check(a["supply"] < 80, "far-away army has reduced supply (%d)" % a["supply"])
+
+
+func test_technology() -> void:
+	var sim := _make(42)
+	check(sim.tech_defs.size() == 33, "tech defs loaded")
+	var c: Dictionary = sim.countries[0]
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "nope"})["ok"], "unknown tech rejected")
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "ind3"})["ok"], "missing prerequisites rejected")
+	check(sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})["ok"], "queue ag1")
+	check(not sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})["ok"], "no duplicate queue")
+	check(sim.apply_command({"type": "research", "country": 0, "tech": "ag2"})["ok"], "can queue behind queued prerequisite")
+	check(sim.apply_command({"type": "unqueue_tech", "country": 0, "tech": "ag1"})["ok"], "unqueue")
+	check(c["queue"].is_empty(), "dependents removed with their prerequisite")
+	# research finishes and its effect applies
+	sim.apply_command({"type": "research", "country": 0, "tech": "ag1"})
+	var days := 0
+	while not c["techs"].has("ag1") and days < 200:
+		sim.tick_day()
+		days += 1
+	check(c["techs"].has("ag1"), "ag1 researched in %d days" % days)
+	check(days > 5 and days < 120, "research takes a sensible time (%d days)" % days)
+	check(sim.mod(0, "food_pct") == 15, "effect applied to modifiers")
+	# slots: only `slots` techs progress at once
+	var s2 := _make(42)
+	for id in ["ag1", "en1", "wp1", "lg1"]:
+		s2.apply_command({"type": "research", "country": 0, "tech": id})
+	s2.tick_day()
+	check(s2.countries[0]["progress"].size() == s2.research_slots(0), "only %d techs progress at once" % s2.research_slots(0))
+	# real effects
+	var a := _make(42)
+	var b := _make(42)
+	b.countries[0]["techs"] = ["wp1", "ar1", "lg1", "eco1"]
+	b._recalc_mods(0)
+	var inf := {"owner": 0, "prov": 0, "div": [a._make_div("infantry")], "strength": 500, "gen": -1, "supply": 100, "path": [], "move": 0, "id": -1}
+	check(b.army_power(inf, true) > a.army_power(inf, true) * 1.09, "weapons tech boosts infantry attack")
+	a.tick_day()
+	b.tick_day()
+	check(b.countries[0]["income"] > a.countries[0]["income"], "economy tech raises income")
+	var dist_a := a._supply_dist(0)
+	check(dist_a.size() > 0, "supply hubs exist")
+	# AI researches and everything stays deterministic
+	var x := _make(7)
+	var y := _make(7)
+	for i in 300:
+		x.tick_day()
+		y.tick_day()
+	check(x.checksum() == y.checksum(), "deterministic with research")
+	var total := 0
+	for cc in x.countries:
+		total += cc["techs"].size()
+	check(total > 8, "AI countries research technologies (%d done)" % total)
+	# save/load keeps research
+	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == x.checksum(), "research survives save/load")
+	check(r.mod(0, "income_pct") == x.mod(0, "income_pct"), "modifiers rebuilt after load")
