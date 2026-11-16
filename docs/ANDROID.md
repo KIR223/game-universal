@@ -7,6 +7,10 @@
 - Симуляция: ~100 дней на скорости 3 без `SCRIPT ERROR`, память ≈ 424 МБ PSS и не растёт.
 - Сохранение в `files/saves/quick.sav` и загрузка через меню: после сохранения на 10 апреля игра дошла до 22 мая, загрузка вернула 10 апреля.
 
+## Сборка в CI
+Задача `android debug APK` в `.github/workflows/ci.yml` (ubuntu-latest): JDK 17, Android SDK (`build-tools;36.1.0`, `platforms;android-36`), Godot export templates, временный debug-ключ (создаётся `keytool` прямо в задаче, секретов нет), экспорт двух debug APK, проверка `apksigner verify` и размера (> 36 МБ; без `data/world` APK ≈ 28 МБ), артефакт `IRON-DOMINION-ANDROID-DEBUG` (`IronDominion-debug.apk` arm64, 37.8 МБ; `IronDominion-debug-x86_64.apk` для эмулятора, 40.4 МБ).
+Проверено: артефакт скачан, x86_64-APK из CI установлен на эмулятор и открыл «Современный мир» с картой всех стран. Ключ CI отличается от локального: при смене сборки на эмуляторе нужен `adb uninstall com.kir223.irondominion` (иначе `INSTALL_FAILED_UPDATE_INCOMPATIBLE`). arm64-APK из CI на устройстве не запускался.
+
 ## Не проверено / не сделано
 - Щипок двумя пальцами: код обрабатывает `InputEventMagnifyGesture`, но `adb input` его не посылает, на эмуляторе не проверялось.
 - Один раз при выборе страны тап по списку, похоже, ещё и выбрал ячейку карты под пальцем (клик «сквозь» экран); повторить не удалось, причина не выяснена.
