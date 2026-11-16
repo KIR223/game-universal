@@ -313,12 +313,23 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_F5: SaveSystem.save(sim, "quick")
 		KEY_ESCAPE:
 			map.selected_army = -1
+			map.selected_fleet = -1
 			map.queue_redraw()
 			_refresh_info()
 
 
 func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
+		return
+	if map.selected_fleet >= 0 and not sim.fleet_by_id(map.selected_fleet).is_empty():
+		var fl := sim.fleet_by_id(map.selected_fleet)
+		var rf := sim.apply_command({"type": "move_fleet", "country": player, "fleet": fl["id"], "target": pid})
+		if not rf["ok"]:
+			_log.append_text("[color=#d9a05a]Приказ флоту отклонён: %s[/color]\n" % rf["reason"])
+		map.selected_fleet = -1
+		map.selected_province = pid
+		map.queue_redraw()
+		_refresh_info()
 		return
 	if map.selected_army >= 0 and not sim.army_by_id(map.selected_army).is_empty():
 		var a := sim.army_by_id(map.selected_army)
@@ -333,6 +344,7 @@ func _on_province_clicked(pid: int) -> void:
 			return
 	map.selected_province = pid
 	map.selected_army = -1
+	map.selected_fleet = -1
 	map.queue_redraw()
 	_refresh_info()
 
@@ -349,9 +361,9 @@ func _refresh_top() -> void:
 	if _top_label == null:
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Войн: %d" % [
+	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Войн: %d" % [
 		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.enemies_of(player).size()]
+		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.enemies_of(player).size()]
 	for i in _speed_buttons.size():
 		_speed_buttons[i].disabled = i == speed_idx
 
@@ -369,8 +381,22 @@ func _refresh_info() -> void:
 	var o := sim.owner[pid]
 	var t := "[b]Провинция #%d[/b]\n" % pid
 	if not p["land"]:
-		t += "Море"
+		t += "Море\n"
+		var sf := sim.fleets_in(pid)
+		for f in sf:
+			var m := " ◀" if f["id"] == map.selected_fleet else ""
+			t += "Флот #%d  [color=%s]%s[/color]  сила %d%s\n" % [f["id"], sim.countries[f["owner"]]["color"], sim.countries[f["owner"]]["name"], f["strength"], m]
 		_info.text = t
+		for f in sf:
+			if f["owner"] == player:
+				var fb := Button.new()
+				fb.text = "Выбрать флот #%d (затем клик по морю)" % f["id"]
+				fb.pressed.connect(func():
+					map.selected_fleet = f["id"]
+					map.selected_army = -1
+					map.queue_redraw()
+					_refresh_info())
+				_actions.add_child(fb)
 		return
 	t += "Рельеф: %s\nНаселение: %d тыс.\nПромышленность: %d\n" % [p["terrain"], p["pop"], p["industry"]]
 	if o >= 0:
@@ -407,12 +433,40 @@ func _refresh_info() -> void:
 			map.queue_redraw()
 			_refresh_all())
 		_actions.add_child(rb)
-	if o >= 0 and o != player and not sim.at_war(player, o) and sim.neighbor_countries(player).has(o):
-		var wb := Button.new()
-		wb.text = "Объявить войну: %s" % sim.countries[o]["name"]
-		wb.pressed.connect(func():
-			var r := sim.apply_command({"type": "declare_war", "country": player, "target": o})
-			if not r["ok"]:
-				_log.append_text("[color=#d9a05a]%s[/color]\n" % r["reason"])
+	if o == player and sim.is_coastal(pid) and pid == sim.port_of(player):
+		var nb := Button.new()
+		nb.text = "Построить флот (%d)" % Simulation.FLEET_COST
+		nb.disabled = sim.countries[player]["treasury"] < Simulation.FLEET_COST
+		nb.pressed.connect(func():
+			var rr := sim.apply_command({"type": "build_fleet", "country": player})
+			if not rr["ok"]:
+				_log.append_text("[color=#d9a05a]%s[/color]\n" % rr["reason"])
+			map.queue_redraw()
 			_refresh_all())
-		_actions.add_child(wb)
+		_actions.add_child(nb)
+	if o >= 0 and o != player:
+		_diplomacy_buttons(o)
+
+
+func _diplomacy_buttons(o: int) -> void:
+	var oname: String = sim.countries[o]["name"]
+	if sim.allied(player, o):
+		_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o})
+	elif sim.at_war(player, o):
+		_cmd_button("Предложить мир: %s" % oname, {"type": "propose_peace", "country": player, "target": o})
+	else:
+		_cmd_button("Предложить союз: %s" % oname, {"type": "propose_alliance", "country": player, "target": o})
+		if sim.can_declare_war(player, o):
+			_cmd_button("Объявить войну: %s" % oname, {"type": "declare_war", "country": player, "target": o})
+
+
+func _cmd_button(label: String, cmd: Dictionary) -> void:
+	var b := Button.new()
+	b.text = label
+	b.pressed.connect(func():
+		var r := sim.apply_command(cmd)
+		var msg := "Выполнено: %s" % label if r["ok"] else "Отказ (%s): %s" % [r["reason"], label]
+		_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", msg])
+		map.queue_redraw()
+		_refresh_all())
+	_actions.add_child(b)

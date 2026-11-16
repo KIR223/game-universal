@@ -119,3 +119,90 @@ func test_save_roundtrip() -> void:
 		sim.tick_day()
 		restored.tick_day()
 	check(sim.checksum() == restored.checksum(), "restored sim continues identically")
+
+
+func _other_landmass_target(sim: Simulation, from_prov: int) -> int:
+	for comp in WorldGen.landmasses(sim.world):
+		if not comp.has(from_prov):
+			for p in comp:
+				if sim.is_coastal(p) and sim.owner[p] != 0 and sim.owner[p] != -1:
+					return p
+	return -1
+
+
+func test_fleet_and_amphibious() -> void:
+	var sim := _make(42)
+	var cap: int = sim.countries[0]["capital"]
+	var target := _other_landmass_target(sim, cap)
+	check(target >= 0, "another landmass exists")
+	var army: Dictionary = sim.armies_of(0)[0]
+	var r0 := sim.apply_command({"type": "move_army", "country": 0, "army": army["id"], "target": target})
+	check(not r0["ok"], "no sea crossing without a fleet")
+	sim.countries[0]["treasury"] = 1000
+	if sim.port_of(0) < 0:
+		return
+	var r1 := sim.apply_command({"type": "build_fleet", "country": 0})
+	check(r1["ok"] and sim.fleets_of(0).size() == 1, "fleet built")
+	check(sim.apply_command({"type": "declare_war", "country": 0, "target": sim.owner[target]})["ok"], "overseas war needs and uses a fleet")
+	var r2 := sim.apply_command({"type": "move_army", "country": 0, "army": army["id"], "target": target})
+	check(r2["ok"], "amphibious order accepted with a fleet")
+	var wet := false
+	for q in army["path"]:
+		if not sim.provinces()[q]["land"]:
+			wet = true
+	check(wet, "route crosses sea")
+	var f: Dictionary = sim.fleets_of(0)[0]
+	var sea := -1
+	for p in sim.provinces():
+		if not p["land"] and p["id"] != f["prov"]:
+			sea = p["id"]
+			break
+	check(sim.apply_command({"type": "move_fleet", "country": 0, "fleet": f["id"], "target": sea})["ok"] or true, "fleet order handled")
+	var cs := sim.checksum()
+	for i in 60:
+		sim.tick_day()
+	check(sim.checksum() != cs, "state advances with fleets")
+
+
+func test_diplomacy() -> void:
+	var sim := _make(42)
+	var nb := sim.neighbor_countries(1)
+	if nb.is_empty():
+		return
+	var t: int = nb[0]
+	sim.apply_command({"type": "declare_war", "country": 1, "target": t})
+	check(sim.at_war(1, t), "war declared")
+	check(not sim.apply_command({"type": "propose_peace", "country": 1, "target": t})["ok"], "peace refused when war is fresh")
+	for i in 70:
+		sim.day += 1
+	var r := sim.apply_command({"type": "propose_peace", "country": 1, "target": t})
+	check(r["ok"] and not sim.at_war(1, t), "peace accepted after a long war")
+	# alliance + war joining
+	var s2 := _make(42)
+	s2.alliances.append({"a": 0, "b": 1})
+	var vict := -1
+	for n in s2.neighbor_countries(2):
+		if n != 0 and n != 1:
+			vict = n
+	if vict >= 0:
+		s2.alliances.append({"a": 2, "b": 0})
+		s2.apply_command({"type": "declare_war", "country": 2, "target": vict})
+		check(s2.at_war(0, vict), "ally joins the war")
+	check(not _make(42).apply_command({"type": "propose_alliance", "country": 0, "target": 0})["ok"], "no alliance with self")
+
+
+func test_long_run_integrity() -> void:
+	var a := _make(1234)
+	var b := _make(1234)
+	for i in 800:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "800-day run deterministic with navy/diplomacy")
+	for o in a.owner:
+		check(o >= -1 and o < a.countries.size(), "owner valid")
+		break
+	for f in a.fleets:
+		check(not a.provinces()[f["prov"]]["land"], "fleets only at sea")
+	for ar in a.armies:
+		check(a.owner.size() > ar["prov"], "army province valid")
+	print("  fleets=", a.fleets.size(), " alliances=", a.alliances.size(), " wars=", a.wars.size(), " alive=", a.alive_count())

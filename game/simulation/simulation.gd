@@ -3,9 +3,12 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 1
+const SAVE_VERSION := 2
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
+const FLEET_COST := 90
+const FLEET_STRENGTH := 1500
+const TRANSPORT_PER_FLEET := 2
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -21,6 +24,9 @@ var countries: Array = []
 var armies: Array = []
 var wars: Array = []  # each: {"a": int, "b": int, "start": int}
 var next_army_id := 1
+var fleets: Array = []
+var next_fleet_id := 1
+var alliances: Array = []  # each: {"a": int, "b": int}
 var command_log: Array = []
 var log_lines: Array = []
 var dirty_provinces: Array[int] = []
@@ -114,6 +120,107 @@ func neighbor_countries(cid: int) -> Array[int]:
 	return out
 
 
+func allied(a: int, b: int) -> bool:
+	for al in alliances:
+		if (al["a"] == a and al["b"] == b) or (al["a"] == b and al["b"] == a):
+			return true
+	return false
+
+
+func allies_of(cid: int) -> Array[int]:
+	var out: Array[int] = []
+	for al in alliances:
+		if al["a"] == cid:
+			out.append(al["b"])
+		elif al["b"] == cid:
+			out.append(al["a"])
+	return out
+
+
+func is_coastal(p: int) -> bool:
+	var provs := provinces()
+	if not provs[p]["land"]:
+		return false
+	for q in provs[p]["neighbors"]:
+		if not provs[q]["land"]:
+			return true
+	return false
+
+
+func sea_next_to(p: int) -> int:
+	for q in provinces()[p]["neighbors"]:
+		if not provinces()[q]["land"]:
+			return q
+	return -1
+
+
+## Preferred port of a country: capital if coastal, else the first coastal province it owns.
+func port_of(cid: int) -> int:
+	var cap: int = countries[cid]["capital"]
+	if owner[cap] == cid and is_coastal(cap):
+		return cap
+	for p in owner.size():
+		if owner[p] == cid and is_coastal(p):
+			return p
+	return -1
+
+
+func fleets_of(cid: int) -> Array:
+	var out: Array = []
+	for f in fleets:
+		if f["owner"] == cid:
+			out.append(f)
+	return out
+
+
+func fleet_by_id(fid: int) -> Dictionary:
+	for f in fleets:
+		if f["id"] == fid:
+			return f
+	return {}
+
+
+func fleets_in(prov: int) -> Array:
+	var out: Array = []
+	for f in fleets:
+		if f["prov"] == prov:
+			out.append(f)
+	return out
+
+
+## Armies currently at sea or ordered across it.
+func sea_load(cid: int) -> int:
+	var provs := provinces()
+	var n := 0
+	for a in armies:
+		if a["owner"] != cid:
+			continue
+		var wet: bool = not provs[a["prov"]]["land"]
+		for q in a["path"]:
+			if not provs[q]["land"]:
+				wet = true
+		if wet:
+			n += 1
+	return n
+
+
+func transport_free(cid: int) -> bool:
+	return sea_load(cid) < fleets_of(cid).size() * TRANSPORT_PER_FLEET
+
+
+func can_reach_overseas(cid: int, target: int) -> bool:
+	if fleets_of(cid).is_empty():
+		return false
+	for p in owner.size():
+		if owner[p] == target and is_coastal(p):
+			return true
+	return false
+
+
+func can_declare_war(cid: int, target: int) -> bool:
+	return neighbor_countries(cid).has(target) or can_reach_overseas(cid, target)
+
+
 func army_strength(cid: int) -> int:
 	var s := 0
 	for a in armies:
@@ -166,9 +273,63 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 				return _fail("invalid target")
 			if at_war(cid, target):
 				return _fail("already at war")
-			if not neighbor_countries(cid).has(target):
+			if allied(cid, target):
+				return _fail("ally")
+			if not can_declare_war(cid, target):
 				return _fail("no common border")
 			_declare_war(cid, target)
+			return {"ok": true}
+		"build_fleet":
+			var c2: Dictionary = countries[cid]
+			var port := port_of(cid)
+			if port < 0:
+				return _fail("no port")
+			if c2["treasury"] < FLEET_COST:
+				return _fail("not enough funds")
+			c2["treasury"] -= FLEET_COST
+			_spawn_fleet(cid, sea_next_to(port))
+			return {"ok": true}
+		"move_fleet":
+			var f := fleet_by_id(cmd.get("fleet", -1))
+			if f.is_empty() or f["owner"] != cid:
+				return _fail("invalid fleet")
+			var sea: int = cmd.get("target", -1)
+			if sea < 0 or sea >= owner.size() or provinces()[sea]["land"]:
+				return _fail("invalid destination")
+			var sp := _sea_path(f["prov"], sea)
+			if sp.is_empty() and f["prov"] != sea:
+				return _fail("no route")
+			f["path"] = sp
+			f["move"] = 0
+			return {"ok": true}
+		"propose_alliance":
+			var t2: int = cmd.get("target", -1)
+			if t2 < 0 or t2 >= countries.size() or t2 == cid or not countries[t2]["alive"]:
+				return _fail("invalid target")
+			if allied(cid, t2) or at_war(cid, t2):
+				return _fail("not possible")
+			if not countries[t2]["ai"]:
+				return _fail("human target")
+			if not _ai_accepts_alliance(t2, cid):
+				return _fail("refused")
+			alliances.append({"a": cid, "b": t2})
+			_log("%s: союз %s — %s" % [date_string(), countries[cid]["name"], countries[t2]["name"]])
+			return {"ok": true}
+		"break_alliance":
+			var t3: int = cmd.get("target", -1)
+			if not allied(cid, t3):
+				return _fail("not allied")
+			_break_alliance(cid, t3)
+			return {"ok": true}
+		"propose_peace":
+			var t4: int = cmd.get("target", -1)
+			if t4 < 0 or t4 >= countries.size() or not at_war(cid, t4):
+				return _fail("not at war")
+			if not countries[t4]["ai"]:
+				return _fail("human target")
+			if not _ai_accepts_peace(t4, cid):
+				return _fail("refused")
+			_end_war(cid, t4, "мирный договор")
 			return {"ok": true}
 		"move_army":
 			var a := army_by_id(cmd.get("army", -1))
@@ -180,11 +341,26 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			var path := _find_path(a["prov"], cid, dest)
 			if path.is_empty() and a["prov"] != dest:
 				return _fail("no route")
+			var wet := false
+			for q in path:
+				if not provinces()[q]["land"]:
+					wet = true
+			if wet and sea_load(cid) - (1 if _army_is_wet(a) else 0) >= fleets_of(cid).size() * TRANSPORT_PER_FLEET:
+				return _fail("no transport")
 			a["path"] = path
 			a["move"] = 0
 			return {"ok": true}
 		_:
 			return _fail("unknown command")
+
+
+func _army_is_wet(a: Dictionary) -> bool:
+	if not provinces()[a["prov"]]["land"]:
+		return true
+	for q in a["path"]:
+		if not provinces()[q]["land"]:
+			return true
+	return false
 
 
 func _fail(reason: String) -> Dictionary:
@@ -197,6 +373,7 @@ func tick_day() -> void:
 	day += 1
 	_economy()
 	_move_armies()
+	_move_fleets()
 	_battles()
 	_occupation()
 	if day % 5 == 0:
@@ -218,6 +395,8 @@ func _economy() -> void:
 			countries[o]["income"] += provs[p]["pop"] * provs[p]["industry"] / 100
 	for a in armies:
 		countries[a["owner"]]["upkeep"] += a["strength"] / 200
+	for f in fleets:
+		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
 		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
@@ -240,14 +419,66 @@ func _move_armies() -> void:
 		var nxt: int = a["path"][0]
 		var o := owner[nxt]
 		var cid: int = a["owner"]
-		if o != cid and o >= 0 and not at_war(cid, o):
+		if o != cid and o >= 0 and not at_war(cid, o) and not allied(cid, o):
 			a["path"] = []  # blocked by a neutral foreign border
 			continue
 		a["path"].remove_at(0)
 		a["prov"] = nxt
 
 
+func _move_fleets() -> void:
+	for f in fleets:
+		if f["path"].is_empty():
+			continue
+		f["move"] += 1
+		if f["move"] < 2:
+			continue
+		f["move"] = 0
+		f["prov"] = f["path"][0]
+		f["path"].remove_at(0)
+
+
+func _naval_battles() -> void:
+	var provs := provinces()
+	var by_prov := {}
+	for f in fleets:
+		if not by_prov.has(f["prov"]):
+			by_prov[f["prov"]] = []
+		by_prov[f["prov"]].append(f)
+	var keys: Array = by_prov.keys()
+	keys.sort()
+	for p in keys:
+		var group: Array = by_prov[p]
+		for i in group.size():
+			for j in range(i + 1, group.size()):
+				var x: Dictionary = group[i]
+				var y: Dictionary = group[j]
+				if x["strength"] <= 0 or y["strength"] <= 0 or not at_war(x["owner"], y["owner"]):
+					continue
+				var px: float = x["strength"] * rng.randf_range(0.8, 1.2)
+				var py: float = y["strength"] * rng.randf_range(0.8, 1.2)
+				x["strength"] -= int(py * 0.15)
+				y["strength"] -= int(px * 0.15)
+	# transports without escort are sunk by enemy fleets
+	for a in armies:
+		if provs[a["prov"]]["land"]:
+			continue
+		var enemy_here := false
+		var friend_here := false
+		for f in fleets_in(a["prov"]):
+			if f["strength"] <= 0:
+				continue
+			if f["owner"] == a["owner"] or allied(f["owner"], a["owner"]):
+				friend_here = true
+			elif at_war(f["owner"], a["owner"]):
+				enemy_here = true
+		if enemy_here and not friend_here:
+			a["strength"] -= int(a["strength"] * 0.35) + 1
+	fleets = fleets.filter(func(f): return f["strength"] > 100)
+
+
 func _battles() -> void:
+	_naval_battles()
 	var by_prov := {}
 	for a in armies:
 		if not by_prov.has(a["prov"]):
@@ -285,6 +516,8 @@ func _battles() -> void:
 func _occupation() -> void:
 	for a in armies:
 		var p: int = a["prov"]
+		if not provinces()[p]["land"]:
+			continue
 		var o := owner[p]
 		var cid: int = a["owner"]
 		if o == cid:
@@ -339,11 +572,18 @@ func _eliminate() -> void:
 			_log("%s: государство %s уничтожено" % [date_string(), c["name"]])
 			wars = wars.filter(func(w): return w["a"] != c["id"] and w["b"] != c["id"])
 			armies = armies.filter(func(a): return a["owner"] != c["id"])
+			fleets = fleets.filter(func(f): return f["owner"] != c["id"])
+			alliances = alliances.filter(func(al): return al["a"] != c["id"] and al["b"] != c["id"])
 
 
 func _declare_war(a: int, b: int) -> void:
 	wars.append({"a": a, "b": b, "start": day})
 	_log("%s: %s объявляет войну %s" % [date_string(), countries[a]["name"], countries[b]["name"]])
+	for side in [[a, b], [b, a]]:
+		for x in allies_of(side[0]):
+			if x != side[1] and countries[x]["alive"] and not allied(x, side[1]) and not at_war(x, side[1]):
+				wars.append({"a": x, "b": side[1], "start": day})
+				_log("%s: %s вступает в войну на стороне %s" % [date_string(), countries[x]["name"], countries[side[0]]["name"]])
 
 
 func _spawn_army(cid: int, prov: int) -> void:
@@ -352,6 +592,49 @@ func _spawn_army(cid: int, prov: int) -> void:
 		"strength": ARMY_BASE_STRENGTH, "path": [], "move": 0,
 	})
 	next_army_id += 1
+
+
+func _spawn_fleet(cid: int, sea: int) -> void:
+	fleets.append({
+		"id": next_fleet_id, "owner": cid, "prov": sea,
+		"strength": FLEET_STRENGTH, "path": [], "move": 0,
+	})
+	next_fleet_id += 1
+
+
+func _break_alliance(a: int, b: int) -> void:
+	alliances = alliances.filter(func(al): return not ((al["a"] == a and al["b"] == b) or (al["a"] == b and al["b"] == a)))
+	_log("%s: союз %s — %s расторгнут" % [date_string(), countries[a]["name"], countries[b]["name"]])
+
+
+func _common_enemy(a: int, b: int) -> bool:
+	var ea := enemies_of(a)
+	for e in enemies_of(b):
+		if ea.has(e):
+			return true
+	return false
+
+
+func _common_threat(a: int, b: int) -> bool:
+	var nb := neighbor_countries(b)
+	for n in neighbor_countries(a):
+		if n != b and nb.has(n) and army_strength(n) > army_strength(a) and army_strength(n) > army_strength(b):
+			return true
+	return false
+
+
+## Would AI country `ai` agree to ally with `other`?
+func _ai_accepts_alliance(ai: int, other: int) -> bool:
+	return _common_enemy(ai, other) or _common_threat(ai, other)
+
+
+## Would AI country `ai` agree to peace with `other`?
+func _ai_accepts_peace(ai: int, other: int) -> bool:
+	var age := 0
+	for w in wars:
+		if (w["a"] == ai and w["b"] == other) or (w["a"] == other and w["b"] == ai):
+			age = day - w["start"]
+	return age >= 20 and (army_strength(ai) <= army_strength(other) * 1.2 or age >= 60)
 
 
 func _log(text: String) -> void:
@@ -364,10 +647,38 @@ func _log(text: String) -> void:
 
 ## BFS over land. Passable: own, enemy-owned or unowned provinces.
 func _find_path(from: int, cid: int, goal: int) -> Array:
-	return _bfs(from, cid, func(p): return p == goal)
+	return _route(from, cid, func(p): return p == goal)
 
 
-func _bfs(from: int, cid: int, is_goal: Callable) -> Array:
+## Land-only route first; if none, a route that may use sea hops (needs a fleet).
+func _route(from: int, cid: int, is_goal: Callable) -> Array:
+	var path := _bfs(from, cid, is_goal, false)
+	if path.is_empty() and not fleets_of(cid).is_empty():
+		path = _bfs(from, cid, is_goal, true)
+	return path
+
+
+func _sea_path(from: int, goal: int) -> Array:
+	var provs := provinces()
+	var prev := {from: -1}
+	var queue: Array[int] = [from]
+	while not queue.is_empty():
+		var cur: int = queue.pop_front()
+		if cur == goal:
+			var path: Array = []
+			var n := cur
+			while n != from:
+				path.push_front(n)
+				n = prev[n]
+			return path
+		for q in provs[cur]["neighbors"]:
+			if not prev.has(q) and not provs[q]["land"]:
+				prev[q] = cur
+				queue.append(q)
+	return []
+
+
+func _bfs(from: int, cid: int, is_goal: Callable, allow_sea: bool) -> Array:
 	var provs := provinces()
 	var enemies := enemies_of(cid)
 	var prev := {from: -1}
@@ -381,11 +692,18 @@ func _bfs(from: int, cid: int, is_goal: Callable) -> Array:
 				path.push_front(n)
 				n = prev[n]
 			return path
-		for q in provs[cur]["land_neighbors"]:
+		for q in provs[cur]["neighbors"]:
 			if prev.has(q):
 				continue
+			if not provs[q]["land"]:
+				if allow_sea and not _enemy_fleet_in(q, enemies):
+					prev[q] = cur
+					queue.append(q)
+				continue
+			if not provs[cur]["land"] and q == from:
+				continue
 			var o := owner[q]
-			if o == cid or o == -1 or enemies.has(o):
+			if o == cid or o == -1 or enemies.has(o) or allied(cid, o):
 				prev[q] = cur
 				queue.append(q)
 	return []
@@ -404,7 +722,14 @@ func _ai() -> void:
 		if enemies.is_empty() and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2:
 			var victim := -1
 			var weakest := 1 << 30
-			for n in neighbor_countries(cid):
+			var targets := neighbor_countries(cid)
+			if fleets_of(cid).size() >= 2:
+				for o2 in countries:
+					if o2["alive"] and o2["id"] != cid and not targets.has(o2["id"]) and can_reach_overseas(cid, o2["id"]):
+						targets.append(o2["id"])
+			for n in targets:
+				if allied(cid, n):
+					continue
 				var s := army_strength(n)
 				if s < weakest:
 					weakest = s
@@ -412,6 +737,22 @@ func _ai() -> void:
 			if victim >= 0 and my_str > weakest * 1.3:
 				_declare_war(cid, victim)
 				enemies = enemies_of(cid)
+		# diplomacy: seek an ally every 30 days
+		if day % 30 == 0 and allies_of(cid).is_empty() and enemies.is_empty():
+			for n in neighbor_countries(cid):
+				if not allied(cid, n) and not at_war(cid, n) and _ai_accepts_alliance(n, cid) and countries[n]["ai"]:
+					alliances.append({"a": cid, "b": n})
+					_log("%s: союз %s — %s" % [date_string(), c["name"], countries[n]["name"]])
+					break
+		# peace: tired of losing
+		for e in enemies.duplicate():
+			if day - _war_start(cid, e) >= 90 and my_str < army_strength(e) and countries[e]["ai"]:
+				_end_war(cid, e, "усталость от войны")
+				enemies = enemies_of(cid)
+		# naval: build fleets
+		if c["treasury"] >= FLEET_COST * 3 and port_of(cid) >= 0 and fleets_of(cid).size() < mini(4, 1 + country_provinces(cid).size() / 10):
+			c["treasury"] -= FLEET_COST
+			_spawn_fleet(cid, sea_next_to(port_of(cid)))
 		# economic: build armies
 		if c["treasury"] >= ARMY_COST * 2 and armies_of(cid).size() < 3 + country_provinces(cid).size() / 4:
 			c["treasury"] -= ARMY_COST
@@ -422,7 +763,7 @@ func _ai() -> void:
 		for a in armies_of(cid):
 			if not a["path"].is_empty():
 				continue
-			var path := _bfs(a["prov"], cid, func(p):
+			var path := _route(a["prov"], cid, func(p):
 				var o := owner[p]
 				if enemies.has(o):
 					return true
@@ -431,8 +772,28 @@ func _ai() -> void:
 						return true
 				return false)
 			if not path.is_empty():
+				var wet := false
+				for q in path:
+					if not provinces()[q]["land"]:
+						wet = true
+				if wet and not transport_free(cid):
+					continue
 				a["path"] = path
 				a["move"] = 0
+
+
+func _enemy_fleet_in(p: int, enemies: Array) -> bool:
+	for f in fleets:
+		if f["prov"] == p and enemies.has(f["owner"]):
+			return true
+	return false
+
+
+func _war_start(a: int, b: int) -> int:
+	for w in wars:
+		if (w["a"] == a and w["b"] == b) or (w["a"] == b and w["b"] == a):
+			return w["start"]
+	return day
 
 
 func armies_of(cid: int) -> Array:
@@ -449,7 +810,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -463,6 +824,9 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.armies = d["armies"]
 	sim.wars = d["wars"]
 	sim.next_army_id = d["next_army_id"]
+	sim.fleets = d["fleets"]
+	sim.next_fleet_id = d["next_fleet_id"]
+	sim.alliances = d["alliances"]
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
@@ -471,4 +835,4 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, wars, rng.state]).hash()
+	return var_to_str([day, owner, countries, armies, fleets, alliances, wars, rng.state]).hash()
