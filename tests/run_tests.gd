@@ -1360,3 +1360,57 @@ func test_earth_determinism_and_performance() -> void:
 	check(a.checksum() == b.checksum(), "real-world simulation is deterministic")
 	check(per_day < 400.0, "a day costs %.0f ms (budget 400)" % per_day)
 	print("  earth: setup %d ms, %.0f ms/day, %d countries, %d wars" % [setup_ms, per_day, a.countries.size(), a.wars.size()])
+
+
+## Peace treaty with the "annex" term is the only war outcome that changes legal[]: control already held becomes
+## recognised, land the loser held of ours is handed back, and an AI only agrees when clearly outmatched.
+func test_peace_treaty_annexes_occupied_land() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var cell: int = f["cell"]
+	check(not sim.apply_command({"type": "propose_peace", "country": a, "target": b, "terms": "bogus"})["ok"], "unknown peace terms are rejected")
+	sim.wars.append({"a": b, "b": a, "start": -100})   # an old war: b attacks a
+	check(sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"}).get("reason", "") == "nothing to annex", "nothing held -> nothing to annex")
+	# b occupies one cell of a
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+	sim._add_army(b, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[cell] == b and sim.legal[cell] == a, "cell occupied: controlled by b, still legally a's")
+	check(sim.cells_held_from(b, a) == [cell], "cells_held_from lists exactly the occupied cell")
+	# a hold one of b's cells too (it must be handed back)
+	var other := -1
+	for q in sim.cells_of(b):
+		if sim.legal[q] == b and not sim.provinces()[q]["land_neighbors"].has(cell) and q != sim.countries[b]["capital"]:
+			other = q
+			break
+	sim.set_owner(other, a)
+	check(sim.legal[other] == b and sim.owner[other] == a, "a holds one of b's cells")
+	# AI a refuses to cede land to an enemy that is not clearly stronger (it would still agree to a plain peace)
+	sim.armies = sim.armies.filter(func(x): return x["owner"] != a)
+	if sim.army_strength(b) >= sim.army_strength(a) * 1.5:
+		sim._add_army(a, sim.countries[a]["capital"], [sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor")])
+	var weak := sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"})
+	check(not weak["ok"] and weak.get("reason", "") == "refused terms", "AI refuses to cede land to an enemy that is not clearly stronger (%s)" % str(weak))
+	check(sim.at_war(a, b) and sim.legal[cell] == a, "a refused treaty changes nothing")
+	# b becomes clearly stronger: the same treaty is accepted
+	sim.armies = sim.armies.filter(func(x): return x["owner"] != a)
+	var expected := sim.cells_held_from(b, a).size()
+	var legal_before := sim.legal.duplicate()
+	var res := sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"})
+	check(res["ok"], "a clearly weaker AI accepts the annexation treaty (%s)" % str(res))
+	check(not sim.at_war(a, b), "the war is over")
+	check(sim.legal[cell] == b and sim.owner[cell] == b, "occupied cell is legally b's now; control is unchanged")
+	check(sim.owner[other] == b, "land a held of b's is handed back (control)")
+	var changed := 0
+	for i in sim.legal.size():
+		if sim.legal[i] != legal_before[i]:
+			changed += 1
+	check(changed == expected, "exactly the annexed cells changed legal title (%d of %d)" % [changed, expected])
+	check(sim.owner[sim.countries[a]["capital"]] == a, "the loser's capital is still on its own land")
+	# survives a save/load
+	check(SaveSystem.save(sim, "peacetest"), "save after treaty")
+	var loaded := SaveSystem.load_slot("peacetest")
+	check(loaded != null and loaded.legal == sim.legal and loaded.checksum() == sim.checksum(), "legal[] after the treaty survives save/load")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/peacetest.sav"))
