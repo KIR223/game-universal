@@ -50,6 +50,7 @@ var _vec_done := false
 var _qpos := 0
 var _vectors_started := false
 var _sett_chunks: Dictionary = {}
+var _cap_chunks: Dictionary = {}   # chunk key -> capital settlement ids (drawn regardless of the population threshold)
 var _prep_thread: Thread
 var _data_ready := false
 var _preload_started := false
@@ -465,6 +466,18 @@ func _preload_work() -> void:
 		var arr: PackedInt32Array = _sett_chunks[key]
 		arr.append(i)
 		_sett_chunks[key] = arr
+		if EarthWorld.S_CAP[i] == 1:
+			var caps: PackedInt32Array = _cap_chunks.get(key, PackedInt32Array())
+			caps.append(i)
+			_cap_chunks[key] = caps
+	# population-descending order lets the draw loop stop at the zoom threshold instead of scanning every settlement
+	for key in _sett_chunks.keys():
+		var ids: Array = Array(_sett_chunks[key])
+		ids.sort_custom(func(a: int, b: int) -> bool:
+			var pa: int = EarthWorld.S_POP[a]
+			var pb: int = EarthWorld.S_POP[b]
+			return pa > pb if pa != pb else a < b)
+		_sett_chunks[key] = PackedInt32Array(ids)
 
 
 func _exit_tree() -> void:
@@ -638,11 +651,21 @@ func _draw_settlements(z: float) -> void:
 	for k in _visible_chunk_keys():
 		if not _sett_chunks.has(k):
 			continue
-		for i in _sett_chunks[k]:
+		var ids: PackedInt32Array = _sett_chunks[k]
+		if z >= 0.25 and _cap_chunks.has(k):
+			# capitals below the threshold: not reached by the sorted scan below
+			for i in _cap_chunks[k]:
+				if EarthWorld.S_POP[i] < thr:
+					var cpos := world_pos_of(EarthWorld.S_LON[i], EarthWorld.S_LAT[i])
+					if cull.has_point(cpos):
+						caps.append(cpos)
+						if z > 0.45:
+							jobs.append([cpos, i, true])
+		for i in ids:
 			var pop: int = EarthWorld.S_POP[i]
+			if pop < thr:
+				break
 			var cap: bool = EarthWorld.S_CAP[i] == 1
-			if pop < thr and not (cap and z >= 0.25):
-				continue
 			var pos := world_pos_of(EarthWorld.S_LON[i], EarthWorld.S_LAT[i])
 			if not cull.has_point(pos):
 				continue
