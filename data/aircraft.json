@@ -1,0 +1,8 @@
+{
+	"schema_version": 1,
+	"aircraft": [
+		{"id": "fighter", "name": "Истребители", "cost": 50, "steel": 25, "manpower": 5, "range": 3},
+		{"id": "bomber", "name": "Бомбардировщики", "cost": 70, "steel": 35, "manpower": 6, "range": 6},
+		{"id": "attacker", "name": "Штурмовики", "cost": 60, "steel": 30, "manpower": 5, "range": 3}
+	]
+}

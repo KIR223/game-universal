@@ -44,6 +44,10 @@
   {
    "id": "computing",
    "name": "Вычислительная техника"
+  },
+  {
+   "id": "aviation",
+   "name": "Авиация"
   }
  ],
  "techs": [
@@ -436,6 +440,67 @@
    "effects": {
     "research_pct": 25,
     "research_slots": 1
+   }
+  },
+  {
+   "id": "av1",
+   "category": "aviation",
+   "name": "Усиленные двигатели",
+   "cost": 300,
+   "requires": [],
+   "effects": {
+    "air_fighter_pct": 10
+   }
+  },
+  {
+   "id": "av2",
+   "category": "aviation",
+   "name": "Радиолокационное наведение",
+   "cost": 500,
+   "requires": [
+    "av1"
+   ],
+   "effects": {
+    "air_fighter_pct": 15
+   }
+  },
+  {
+   "id": "av3",
+   "category": "aviation",
+   "name": "Тяжёлые бомбардировщики",
+   "cost": 650,
+   "requires": [
+    "av1"
+   ],
+   "effects": {
+    "air_bomber_pct": 20,
+    "air_range": 1
+   }
+  },
+  {
+   "id": "av4",
+   "category": "aviation",
+   "name": "Бронированные штурмовики",
+   "cost": 550,
+   "requires": [
+    "av1"
+   ],
+   "effects": {
+    "air_attacker_pct": 20
+   }
+  },
+  {
+   "id": "av5",
+   "category": "aviation",
+   "name": "Реактивные двигатели",
+   "cost": 950,
+   "requires": [
+    "av2"
+   ],
+   "effects": {
+    "air_fighter_pct": 25,
+    "air_bomber_pct": 10,
+    "air_attacker_pct": 10
    }
   }
  ]
