@@ -880,3 +880,188 @@ func test_logistics_long_run() -> void:
 	check(upgraded > 0, "infrastructure exists")
 	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
 	check(r.checksum() == x.checksum() and r.infra == x.infra, "infrastructure survives save/load")
+
+
+func test_scenarios_builtin() -> void:
+	var all := ScenarioLoader.list_all()
+	check(all.size() >= 3, "built-in scenarios listed (%d)" % all.size())
+	for entry in all:
+		var scn: Dictionary = entry["data"]
+		var sim := Simulation.new()
+		var problems := sim.setup_scenario(scn)
+		check(problems.is_empty(), "scenario %s loads cleanly %s" % [scn.get("id"), str(problems)])
+		check(sim.countries.size() == scn["countries"].size(), "%s: country count" % scn.get("id"))
+		for c in sim.countries:
+			check(not sim.country_provinces(c["id"]).is_empty(), "%s: %s owns land" % [scn.get("id"), c["tag"]])
+		for i in 30:
+			sim.tick_day()
+		check(sim.day == 30, "%s: runs" % scn.get("id"))
+	var cold := Simulation.new()
+	cold.setup_scenario(ScenarioLoader.read_file("res://game/scenarios/cold_blocs.json"))
+	check(cold.allied(0, 2) and cold.allied(0, 3), "bloc alliances preset")
+	check(cold.date_string() == "1950-03-01", "scenario start date")
+	check(cold.countries[0]["techs"].has("wp1") and cold.mod(0, "atk_infantry_pct") >= 10, "starting techs apply modifiers")
+	check(cold.countries[0]["laws"]["economy"] == "partial", "starting laws")
+	var chaos := Simulation.new()
+	chaos.setup_scenario(ScenarioLoader.read_file("res://game/scenarios/chaos.json"))
+	check(chaos.wars.size() == 3 and chaos.at_war(0, 1), "preset wars")
+	check(chaos.grace_days == 0, "scenario grace period")
+
+
+func test_scenario_overrides() -> void:
+	var base := ScenarioLoader.blank(42)
+	var sim0 := Simulation.new()
+	check(sim0.setup_scenario(base.duplicate(true)).is_empty(), "blank scenario loads")
+	var scn := base.duplicate(true)
+	var target_p: int = sim0.country_provinces(0)[0]
+	var other_p: int = sim0.country_provinces(1)[0]
+	scn["owners"] = {str(target_p): "SLV", str(other_p): null}
+	scn["deposits"] = {str(target_p): {"oil": 9}}
+	scn["capitals"] = {"SLV": sim0.countries[1]["capital"]}
+	scn["countries"][0]["ideology"] = "communism"
+	scn["countries"][0]["treasury"] = 777
+	scn["countries"][0]["stock"] = {"steel": 321}
+	scn["armies_mode"] = "replace"
+	scn["armies"] = [{"tag": "NRM", "province": sim0.countries[0]["capital"], "divisions": ["armor", "armor", "artillery"]}]
+	scn["disabled_events"] = ["strike"]
+	var sim := Simulation.new()
+	var problems := sim.setup_scenario(scn)
+	check(problems.is_empty(), "overrides load %s" % str(problems))
+	check(sim.owner[target_p] == 1 and sim.owner[other_p] == -1, "province ownership overridden")
+	check(sim.provinces()[target_p]["deposits"].get("oil", 0) == 9, "deposit overridden")
+	check(sim.countries[0]["ideology"] == "communism", "ideology overridden")
+	check(sim.countries[0]["treasury"] == 777 and sim.countries[0]["stock"]["steel"] == 321, "treasury and stock overridden")
+	check(sim.armies.size() == 1 and sim.armies[0]["div"].size() == 3, "armies replaced")
+	check(sim.disabled_events.has("strike"), "disabled events stored")
+	var total := 0
+	for i in sim.ideo_order:
+		total += sim.countries[0]["party_pop"][i]
+	check(total == 100, "popularity still sums to 100 after ideology override")
+	# deposits survive save/load (world is regenerated from the seed)
+	var r := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r.provinces()[target_p]["deposits"].get("oil", 0) == 9, "deposit override survives save/load")
+	check(r.checksum() == sim.checksum() and r.start_date == sim.start_date, "scenario state survives save/load")
+	# a disabled event never fires
+	for i in 800:
+		sim.tick_day()
+	for c in sim.countries:
+		check(not c["ev_seen"].has("strike"), "disabled event never fires")
+		break
+
+
+func test_scenario_validation() -> void:
+	var ok := ScenarioLoader.blank(42)
+	check(Simulation.validate_scenario(ok).is_empty(), "valid scenario passes")
+	var bad := ok.duplicate(true)
+	bad["countries"] = [bad["countries"][0]]
+	check(not Simulation.validate_scenario(bad).is_empty(), "single-country scenario rejected")
+	bad = ok.duplicate(true)
+	bad["countries"][1]["tag"] = bad["countries"][0]["tag"]
+	check(not Simulation.validate_scenario(bad).is_empty(), "duplicate tags rejected")
+	bad = ok.duplicate(true)
+	bad["countries"][0]["color"] = "nonsense"
+	check(not Simulation.validate_scenario(bad).is_empty(), "bad colour rejected")
+	bad = ok.duplicate(true)
+	bad["alliances"] = [["NRM", "XXX"]]
+	check(not Simulation.validate_scenario(bad).is_empty(), "unknown tag in alliance rejected")
+	bad = ok.duplicate(true)
+	bad["schema_version"] = 99
+	check(not Simulation.validate_scenario(bad).is_empty(), "unknown schema version rejected")
+	# semantic problems found while building
+	bad = ok.duplicate(true)
+	bad["countries"][0]["techs"] = ["no_such_tech"]
+	bad["countries"][1]["ideology"] = "no_such_ideology"
+	var sim := Simulation.new()
+	check(sim.setup_scenario(bad).size() >= 2, "unknown tech and ideology are reported")
+	# every province taken from a country => reported
+	var sim0 := Simulation.new()
+	sim0.setup_scenario(ok.duplicate(true))
+	var wipe := ok.duplicate(true)
+	wipe["owners"] = {}
+	for p in sim0.country_provinces(2):
+		wipe["owners"][str(p)] = "NRM"
+	var s2 := Simulation.new()
+	var pr := s2.setup_scenario(wipe)
+	check(not pr.is_empty(), "country without land is reported")
+
+
+func test_scenario_files_and_mods() -> void:
+	var scn := ScenarioLoader.blank(7)
+	scn["name"] = "Тест сценария"
+	scn["id"] = "unit_test_scenario"
+	var path := ScenarioLoader.save_user(scn)
+	check(path != "" and FileAccess.file_exists(path), "scenario saved to user dir")
+	var back := ScenarioLoader.read_file(path)
+	check(back.get("seed") == 7 and back.get("name") == "Тест сценария", "scenario round-trips through JSON")
+	var found := false
+	for e in ScenarioLoader.list_all():
+		if e["data"].get("id") == "unit_test_scenario":
+			found = not e["builtin"]
+	check(found, "user scenario appears in the list")
+	check(ScenarioLoader.delete_user(path) and not FileAccess.file_exists(path), "user scenario deleted")
+	check(not ScenarioLoader.delete_user("res://project.godot"), "refuses to delete outside user dir")
+	check(ScenarioLoader.slug("Мой Сценарий 1") != "", "slug never empty")
+	# data mods: user://mods/data overrides built-in data
+	DirAccess.make_dir_recursive_absolute("user://mods/data")
+	var mf := FileAccess.open("user://mods/data/countries.json", FileAccess.WRITE)
+	mf.store_string('{"schema_version":1,"countries":[{"tag":"AAA","name":"Мод-А","color":"#112233"},{"tag":"BBB","name":"Мод-Б","color":"#445566"}]}')
+	mf.close()
+	var defs := Simulation.load_country_defs()
+	check(defs.size() == 2 and defs[0]["tag"] == "AAA", "mod data overrides the built-in file")
+	DirAccess.remove_absolute("user://mods/data/countries.json")
+	check(Simulation.load_country_defs().size() == 8, "removing the mod restores built-in data")
+
+
+func test_scenario_editor_logic() -> void:
+	var map := MapView.new()
+	root.add_child(map)
+	var ed := ScenarioEditor.new()
+	root.add_child(ed)
+	ed.start(map, Theme.new(), ScenarioLoader.blank(42))
+	check(ed.sim != null and ed.problems.is_empty(), "editor builds a preview game")
+	# every tab builds without errors
+	for i in ScenarioEditor.TOOLS.size():
+		ed._set_tool(i)
+	# paint a border
+	ed._set_tool(1)
+	ed.brush = 2  # second country
+	var pid: int = ed.sim.country_provinces(0)[0]
+	ed._on_province(pid)
+	check(ed.sim.owner[pid] == 1, "painting changes the preview owner")
+	check(ed.scn["owners"][str(pid)] == "SLV", "painting is stored in the scenario")
+	# neutral brush
+	ed.brush = 0
+	ed._on_province(pid)
+	check(ed.sim.owner[pid] == -1 and ed.scn["owners"][str(pid)] == null, "neutral brush clears ownership")
+	# armies: first edit freezes armies, then add one
+	ed._set_tool(2)
+	ed.brush = 1
+	ed.unit_kind = "armor"
+	ed.unit_count = 3
+	ed.sel_province = ed.sim.countries[0]["capital"]
+	var before: int = ed.sim.armies.size()
+	ed._materialize_armies()
+	ed.scn["armies"].append({"tag": "NRM", "province": ed.sel_province, "divisions": ["armor", "armor", "armor"]})
+	ed._rebuild()
+	check(ed.sim.armies.size() == before + 1, "scenario army appears in the preview")
+	# resource edit
+	ed._set_tool(3)
+	ed.scn["deposits"] = {str(pid): {"oil": 7}}
+	ed._rebuild()
+	check(ed.sim.provinces()[pid]["deposits"].get("oil", 0) == 7, "deposit edit applies")
+	# the edited scenario is playable and valid
+	var s2 := Simulation.new()
+	var probs := s2.setup_scenario(ed.scn.duplicate(true))
+	check(probs.is_empty(), "edited scenario loads: %s" % str(probs))
+	# adding/removing countries
+	ed._set_tool(0)
+	var n0: int = ed.scn["countries"].size()
+	ed.scn["countries"].append({"tag": "ZZZ", "name": "Тест", "color": "#aabbcc"})
+	ed._rebuild()
+	check(ed.sim.countries.size() == n0 + 1, "new country appears")
+	ed._drop_tag("ZZZ")
+	ed.scn["countries"].pop_back()
+	ed._rebuild()
+	check(ed.sim.countries.size() == n0, "country removed")
+	ed.queue_free()
+	map.queue_free()

@@ -1,0 +1,85 @@
+{
+ "schema_version": 1,
+ "id": "chaos",
+ "name": "Хаос",
+ "description": "Шесть государств, четыре войны с первого дня. Выживает сильнейший.",
+ "seed": 5,
+ "start_date": "1936-09-01",
+ "countries": [
+  {
+   "tag": "NRM",
+   "name": "Северная Марка",
+   "color": "#4a7fb5",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  },
+  {
+   "tag": "SLV",
+   "name": "Союз Славии",
+   "color": "#b5483f",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  },
+  {
+   "tag": "AUR",
+   "name": "Аурелийская Республика",
+   "color": "#c9a23c",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  },
+  {
+   "tag": "ZEL",
+   "name": "Зелёная Федерация",
+   "color": "#4f9a57",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  },
+  {
+   "tag": "KRS",
+   "name": "Красногорский Союз",
+   "color": "#9a4fa0",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  },
+  {
+   "tag": "ALB",
+   "name": "Альбийская Империя",
+   "color": "#d9792e",
+   "treasury": 300,
+   "laws": {
+    "conscription": "extended",
+    "economy": "war"
+   }
+  }
+ ],
+ "wars": [
+  [
+   "NRM",
+   "SLV"
+  ],
+  [
+   "AUR",
+   "KRS"
+  ],
+  [
+   "ZEL",
+   "ALB"
+  ]
+ ],
+ "grace_days": 0
+}
