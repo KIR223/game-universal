@@ -95,6 +95,7 @@ var _t_amount := 3
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
+	get_window().content_scale_factor = TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
 	_theme = _make_theme()
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
@@ -255,7 +256,10 @@ func _show_menu() -> void:
 	credits.add_theme_font_size_override("font_size", 12)
 	credits.add_theme_color_override("font_color", Color("6f7c8e"))
 	credits.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	credits.offset_top = -30
+	credits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # wraps instead of being cut off at large UI scale
+	credits.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	credits.offset_top = -8
+	credits.offset_bottom = -8
 	credits.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(credits)
 
@@ -302,13 +306,21 @@ func _show_scenarios(message: Variant = "") -> void:
 	bg.color = Color("0b1119")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.add_child(bg)
+	# scrollable and centred: at a large UI scale (phones) the list is taller than the screen
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(scroll)
+	var outer := VBoxContainer.new()
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.alignment = BoxContainer.ALIGNMENT_CENTER
+	scroll.add_child(outer)
 	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
 	box.custom_minimum_size = Vector2(620, 0)
-	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	box.add_theme_constant_override("separation", 10)
-	root.add_child(box)
+	outer.add_child(box)
 	var title := Label.new()
 	title.text = "Сценарии"
 	title.add_theme_font_size_override("font_size", 32)
@@ -402,7 +414,7 @@ func _show_country_select() -> void:
 	var panel := PanelContainer.new()
 	panel.position = Vector2(16, 16)
 	panel.custom_minimum_size = Vector2(430, 0)
-	panel.size = Vector2(430, 868)
+	panel.size = Vector2(430, minf(868.0, get_viewport().get_visible_rect().size.y - 32.0))   # fits small virtual viewports (phones at a larger UI scale)
 	root.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
