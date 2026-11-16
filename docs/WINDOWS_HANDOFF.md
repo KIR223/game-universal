@@ -5,8 +5,8 @@
 **Окружение:** Godot — `%LOCALAPPDATA%\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_*\`; templates — `%APPDATA%\Godot\export_templates\4.7.2.stable`; Python — `%LOCALAPPDATA%\Programs\Python\Python312`.
 
 **Следующие шаги:**
-1. Ручная проверка реального мира в окне: выбор страны, захват ячеек, F5/загрузка.
-2. Разрешения 1366×768…3840×2160, DPI, fullscreen/borderless.
+1. Исправить центрирование карты на экране выбора страны (см. WINDOWS_TEST_REPORT.md, дефект 1); дальше: захват ячеек вручную, fullscreen/borderless, ввод.
+2. Настоящий 4K и DPI-масштаб (окно ОС ограничило 4K до 1924×1061), fullscreen/borderless.
 3. Профилирование: ~50 FPS камеры при 1085 draw calls на RTX 5060 Ti.
 4. Совместимость сохранений и world_hash Windows ↔ macOS.
 5. Проверка скачанного артефакта CI на чистой Windows.
