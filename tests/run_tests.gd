@@ -1360,3 +1360,60 @@ func test_earth_determinism_and_performance() -> void:
 	check(a.checksum() == b.checksum(), "real-world simulation is deterministic")
 	check(per_day < 400.0, "a day costs %.0f ms (budget 400)" % per_day)
 	print("  earth: setup %d ms, %.0f ms/day, %d countries, %d wars" % [setup_ms, per_day, a.countries.size(), a.wars.size()])
+
+
+## End-to-end war on the real map driven ONLY through public commands (as a player or a network client would):
+## declare_war -> move_army -> days pass. Control (owner[]) changes cell by cell while legal ownership (legal[]) does not;
+## the whole run is deterministic and survives a save/load in the middle of the war.
+func _war_run(a: int, b: int, target: int, days: int) -> Simulation:
+	var sim := _earth()
+	check(sim.apply_command({"type": "declare_war", "country": a, "target": b})["ok"], "declare_war accepted")
+	var moved := 0
+	for army in sim.armies_of(a):
+		if sim.apply_command({"type": "move_army", "country": a, "army": army["id"], "target": target})["ok"]:
+			moved += 1
+	check(moved > 0, "at least one army accepted a move order (%d)" % moved)
+	for i in days:
+		sim.tick_day()
+	return sim
+
+
+func test_war_flow_via_commands() -> void:
+	var probe := _earth()
+	var f := _find_border(probe)
+	check(not f.is_empty(), "border pair for the war flow test")
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var target := -1
+	for q in probe.provinces()[f["cell"]]["land_neighbors"]:
+		if probe.owner[q] == b:
+			target = q
+			break
+	check(target >= 0, "a cell of the enemy next to the border")
+	var legal0 := probe.legal.duplicate()
+	var sim := _war_run(a, b, target, 40)
+	var controlled_by_other := 0
+	var legal_changed := 0
+	for i in sim.owner.size():
+		if sim.legal[i] != legal0[i]:
+			legal_changed += 1
+		if sim.legal[i] >= 0 and sim.owner[i] != sim.legal[i]:
+			controlled_by_other += 1
+	print("  war flow: ", controlled_by_other, " cells under foreign control, legal changed: ", legal_changed, ", wars: ", sim.wars.size())
+	check(legal_changed == 0, "legal[] untouched by occupation (%d changed)" % legal_changed)
+	check(controlled_by_other < sim.cells_of(b).size() + sim.cells_of(a).size(), "war did not flip whole countries at once")
+	# deterministic: an identical command sequence gives an identical state
+	var twin := _war_run(a, b, target, 40)
+	check(twin.checksum() == sim.checksum(), "identical commands -> identical checksum")
+	check(twin.owner == sim.owner and twin.legal == sim.legal, "identical owner[] and legal[]")
+	# save/load in the middle of the war keeps owner[] and legal[] separate and exact
+	check(SaveSystem.save(sim, "wartest"), "save mid-war")
+	var loaded := SaveSystem.load_slot("wartest")
+	check(loaded != null and loaded.checksum() == sim.checksum(), "load mid-war: same checksum")
+	check(loaded != null and loaded.owner == sim.owner and loaded.legal == sim.legal, "load mid-war: owner[] and legal[] restored")
+	if loaded != null:
+		for i in 20:
+			sim.tick_day()
+			loaded.tick_day()
+		check(loaded.checksum() == sim.checksum(), "loaded game continues identically for 20 more days")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/wartest.sav"))
