@@ -4,6 +4,7 @@ extends Node2D
 ## Pure view: reads Simulation, never mutates it. Camera: drag / wheel / trackpad.
 
 signal province_clicked(province_id: int)
+signal province_right_clicked(province_id: int, screen_pos: Vector2)
 
 const CELL := 4.0
 const MIN_ZOOM := 0.5
@@ -19,6 +20,11 @@ var selected_army := -1
 var selected_fleet := -1
 var selected_wing := -1
 var player_country := -1
+var min_zoom := 0.5
+var max_zoom := 6.0
+var cull := Rect2(-1e9, -1e9, 2e9, 2e9)   # world-space rectangle that is actually visible (units outside are skipped)
+var lod_compact := false                    # far zoom: draw units as small markers without text
+var ui_scale := 1.0                         # world units per screen pixel (markers keep a constant on-screen size)
 var map_mode := "political"  # political | terrain
 
 var _image: Image
@@ -27,6 +33,7 @@ var _border_country := PackedVector2Array()
 var _border_prov := PackedVector2Array()
 var _labels: Array = []
 var _drag_start := Vector2.ZERO
+var _rc_start := Vector2.ZERO
 var _dragging := false
 var _drag_moved := false
 
@@ -36,6 +43,14 @@ func _ready() -> void:
 	camera.position_smoothing_enabled = true
 	camera.position_smoothing_speed = 14.0
 	camera.make_current()
+
+
+func set_active(on: bool) -> void:
+	visible = on
+	camera.enabled = on
+	set_process_unhandled_input(on)
+	if on and camera.is_inside_tree():
+		camera.make_current()
 
 
 func bind(sim_: Simulation) -> void:
@@ -149,6 +164,12 @@ func _edge(a: int, b: int, p0: Vector2, p1: Vector2, provs: Array) -> void:
 func _draw() -> void:
 	if sim == null:
 		return
+	_draw_base()
+	_draw_units()
+	_draw_labels()
+
+
+func _draw_base() -> void:
 	var size_px := Vector2(sim.world["w"], sim.world["h"]) * CELL
 	draw_texture_rect(_texture, Rect2(Vector2.ZERO, size_px), false)
 	if not _border_prov.is_empty():
@@ -158,38 +179,53 @@ func _draw() -> void:
 	var provs := sim.provinces()
 	if selected_province >= 0:
 		draw_arc(provs[selected_province]["center"] * CELL, 14.0, 0, TAU, 32, Color("ffe08a"), 2.0)
-	# armies
-	var slot := {}
+
+
+func _draw_units() -> void:
+	var provs := sim.provinces()
+	var us := ui_scale
 	var font := ThemeDB.fallback_font
+	var fsz := maxi(int(round(8.0)), 1)
+	# armies (drawn in a local frame anchored at the cell centre so sizes stay constant on screen)
+	var slot := {}
 	for a in sim.armies:
 		var p: int = a["prov"]
 		var i: int = slot.get(p, 0)
 		slot[p] = i + 1
-		var pos: Vector2 = provs[p]["center"] * CELL + Vector2(-9 + i * 15, -4)
+		var base: Vector2 = provs[p]["center"] * CELL
+		if not cull.has_point(base):
+			continue
 		var col := Color(sim.countries[a["owner"]]["color"])
-		var rect := Rect2(pos, Vector2(14, 9))
-		draw_rect(rect.grow(1.5), Color(0, 0, 0, 0.85))
-		draw_rect(rect, col)
-		if a["id"] == selected_army:
-			draw_rect(rect.grow(3.0), Color("ffe08a"), false, 1.5)
-		if a["supply"] < 30:
-			draw_rect(rect.grow(2.5), Color("e04a3a"), false, 1.5)
-		var known := player_country < 0 or sim.intel_visible(player_country, a)
-		draw_string(font, pos + Vector2(0, 19), ("%d·%d" % [a["div"].size(), sim.perceived_strength(player_country, a) / 100]) if known and player_country >= 0 else ("%d·%d" % [a["div"].size(), a["strength"] / 100] if known else "?"), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
+		var pos := Vector2(-9 + i * 15, -4)
+		draw_set_transform(base, 0.0, Vector2(us, us))
+		if lod_compact:
+			draw_rect(Rect2(pos, Vector2(9, 6)).grow(1.0), Color(0, 0, 0, 0.8))
+			draw_rect(Rect2(pos, Vector2(9, 6)), col)
+		else:
+			var rect := Rect2(pos, Vector2(14, 9))
+			draw_rect(rect.grow(1.5), Color(0, 0, 0, 0.85))
+			draw_rect(rect, col)
+			if a["id"] == selected_army:
+				draw_rect(rect.grow(3.0), Color("ffe08a"), false, 1.5)
+			if a["supply"] < 30:
+				draw_rect(rect.grow(2.5), Color("e04a3a"), false, 1.5)
+			var known := player_country < 0 or sim.intel_visible(player_country, a)
+			draw_string(font, pos + Vector2(0, 19), ("%d·%d" % [a["div"].size(), sim.perceived_strength(player_country, a) / 100]) if known and player_country >= 0 else ("%d·%d" % [a["div"].size(), a["strength"] / 100] if known else "?"), HORIZONTAL_ALIGNMENT_LEFT, -1, fsz, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		# movement arrow
-		if not a["path"].is_empty():
-			var pts := PackedVector2Array([provs[p]["center"] * CELL])
+		if not a["path"].is_empty() and not lod_compact:
+			var pts := PackedVector2Array([base])
 			for q in a["path"]:
 				pts.append(provs[q]["center"] * CELL)
-			draw_polyline(pts, Color(1, 0.85, 0.4, 0.9), 2.0, true)
+			draw_polyline(pts, Color(1, 0.85, 0.4, 0.9), 2.0 * us, true)
 			var end: Vector2 = pts[pts.size() - 1]
 			var dir := (end - pts[pts.size() - 2]).normalized()
 			var nrm := dir.orthogonal()
-			draw_colored_polygon(PackedVector2Array([end, end - dir * 9 + nrm * 5, end - dir * 9 - nrm * 5]), Color(1, 0.85, 0.4))
+			draw_colored_polygon(PackedVector2Array([end, end - dir * 9 * us + nrm * 5 * us, end - dir * 9 * us - nrm * 5 * us]), Color(1, 0.85, 0.4))
 	# bombing damage
 	for p in sim.damage.size():
-		if sim.damage[p] > 0:
-			draw_circle(provs[p]["center"] * CELL, 5.0 + sim.damage[p] * 0.12, Color(0.85, 0.2, 0.1, 0.12 + sim.damage[p] * 0.003))
+		if sim.damage[p] > 0 and cull.has_point(provs[p]["center"] * CELL):
+			draw_circle(provs[p]["center"] * CELL, (5.0 + sim.damage[p] * 0.12) * us, Color(0.85, 0.2, 0.1, 0.12 + sim.damage[p] * 0.003))
 	# aircraft: wings at their bases, mission lines to targets
 	var wslot := {}
 	var mission_col := {"air_superiority": Color(0.55, 0.8, 1.0, 0.85), "bomb": Color(1.0, 0.45, 0.3, 0.85), "cas": Color(0.7, 1.0, 0.5, 0.85)}
@@ -198,35 +234,49 @@ func _draw() -> void:
 		var bp: int = w["base"]
 		var wi: int = wslot.get(bp, 0)
 		wslot[bp] = wi + 1
-		var wpos: Vector2 = provs[bp]["center"] * CELL + Vector2(-9 + wi * 11, -17)
+		var wbase: Vector2 = provs[bp]["center"] * CELL
+		if not cull.has_point(wbase) or lod_compact:
+			continue
+		var wpos := Vector2(-9 + wi * 11, -17)
 		var wcol := Color(sim.countries[w["owner"]]["color"])
+		draw_set_transform(wbase, 0.0, Vector2(us, us))
 		var plane := PackedVector2Array([wpos + Vector2(0, -5), wpos + Vector2(4, 3), wpos + Vector2(0, 1), wpos + Vector2(-4, 3)])
 		draw_colored_polygon(plane, wcol)
 		draw_polyline(PackedVector2Array([plane[0], plane[1], plane[2], plane[3], plane[0]]), Color("ffe08a") if w["id"] == selected_wing else Color.BLACK, 1.2)
 		draw_string(font, wpos + Vector2(-3, 12), "%s%d" % [letters.get(w["type"], "?"), w["strength"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		if w["mission"] != "idle" and w["target"] >= 0:
 			var tpos: Vector2 = provs[w["target"]]["center"] * CELL
-			var col: Color = mission_col.get(w["mission"], Color.WHITE)
-			draw_dashed_line(wpos, tpos, col, 1.5, 5.0)
-			draw_arc(tpos, 9.0, 0, TAU, 20, col, 1.5)
+			var mc: Color = mission_col.get(w["mission"], Color.WHITE)
+			draw_dashed_line(wbase + wpos * us, tpos, mc, 1.5 * us, 5.0 * us)
+			draw_arc(tpos, 9.0 * us, 0, TAU, 20, mc, 1.5 * us)
 	# fleets
 	var fslot := {}
 	for f in sim.fleets:
 		var fp: int = f["prov"]
 		var fi: int = fslot.get(fp, 0)
 		fslot[fp] = fi + 1
-		var fpos: Vector2 = provs[fp]["center"] * CELL + Vector2(fi * 14 - 6, 6)
+		var fbase: Vector2 = provs[fp]["center"] * CELL
+		if not cull.has_point(fbase):
+			continue
+		var fpos := Vector2(fi * 14 - 6, 6)
 		var fcol := Color(sim.countries[f["owner"]]["color"])
+		draw_set_transform(fbase, 0.0, Vector2(us, us))
 		var tri := PackedVector2Array([fpos + Vector2(0, -7), fpos + Vector2(8, 6), fpos + Vector2(-8, 6)])
 		draw_colored_polygon(tri, fcol)
 		draw_polyline(PackedVector2Array([tri[0], tri[1], tri[2], tri[0]]), Color.BLACK if f["id"] != selected_fleet else Color("ffe08a"), 1.5)
-		draw_string(font, fpos + Vector2(-6, 17), str(f["strength"] / 100), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color.WHITE)
-		if not f["path"].is_empty():
-			var fpts := PackedVector2Array([provs[fp]["center"] * CELL])
+		if not lod_compact:
+			draw_string(font, fpos + Vector2(-6, 17), str(f["strength"] / 100), HORIZONTAL_ALIGNMENT_LEFT, -1, fsz, Color.WHITE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		if not f["path"].is_empty() and not lod_compact:
+			var fpts := PackedVector2Array([fbase])
 			for q in f["path"]:
 				fpts.append(provs[q]["center"] * CELL)
-			draw_polyline(fpts, Color(0.6, 0.85, 1.0, 0.9), 2.0, true)
-	# country names
+			draw_polyline(fpts, Color(0.6, 0.85, 1.0, 0.9), 2.0 * us, true)
+
+
+func _draw_labels() -> void:
+	var font := ThemeDB.fallback_font
 	for l in _labels:
 		var fs: int = l["size"]
 		var text: String = l["name"]
@@ -257,6 +307,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_zoom_at(1.12)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_zoom_at(1.0 / 1.12)
+		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+			if mb.pressed:
+				_rc_start = mb.position
+			elif mb.position.distance_to(_rc_start) < 6.0:
+				var rid := province_at(get_global_mouse_position())
+				if rid >= 0:
+					province_right_clicked.emit(rid, get_viewport().get_mouse_position())
 		elif mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
 			if mb.pressed:
 				_dragging = true
@@ -285,7 +342,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _zoom_at(factor: float) -> void:
-	var z := clampf(camera.zoom.x * factor, 0.5, 6.0)
+	var z := clampf(camera.zoom.x * factor, min_zoom, max_zoom)
 	camera.zoom = Vector2.ONE * z
 
 
