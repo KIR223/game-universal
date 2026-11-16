@@ -96,6 +96,67 @@ for need in ("fighter", "bomber", "attacker"):
     if need not in air_ids:
         errors.append(f"aircraft.json must define {need}")
 
+pol = json.loads((root / "data/politics.json").read_text(encoding="utf-8"))
+ideo_ids = {i["id"] for i in pol["ideologies"]}
+for i in pol["ideologies"]:
+    for k in ("id", "name", "color", "stability_base", "mods", "elections"):
+        if k not in i:
+            errors.append(f"ideology {i.get('id')}: missing {k}")
+    for k in i.get("mods", {}):
+        if k not in EFFECTS:
+            errors.append(f"ideology {i['id']}: unknown mod {k}")
+for cat, ld in pol["laws"].items():
+    oids = {o["id"] for o in ld["options"]}
+    if pol["defaults"].get(cat) not in oids:
+        errors.append(f"law {cat}: default missing")
+    for o in ld["options"]:
+        for k in o.get("mods", {}):
+            if k not in EFFECTS:
+                errors.append(f"law {cat}/{o['id']}: unknown mod {k}")
+EFFECT_TYPES = {"stability", "war_support", "treasury", "treasury_pct", "stock", "manpower", "pp", "popularity",
+                "popularity_ruling", "modifier", "tech_progress", "army_exp"}
+COND_TYPES = {"min_day", "stability_below", "stability_above", "war_support_below", "war_support_above", "at_war",
+              "not_at_war", "ideology", "not_ideology", "has_tech", "treasury_above", "treasury_below", "short", "provinces_min"}
+def check_effects(owner_id, effects):
+    for ef in effects:
+        if ef["type"] not in EFFECT_TYPES:
+            errors.append(f"{owner_id}: unknown effect type {ef['type']}")
+        if ef["type"] == "popularity" and ef.get("ideology") not in ideo_ids:
+            errors.append(f"{owner_id}: bad ideology {ef.get('ideology')}")
+        if ef["type"] == "stock" and ef.get("res") not in ids:
+            errors.append(f"{owner_id}: bad resource {ef.get('res')}")
+        if ef["type"] == "modifier" and (ef.get("key") not in EFFECTS or "days" not in ef):
+            errors.append(f"{owner_id}: bad modifier")
+def check_conds(owner_id, conds):
+    for cd in conds:
+        if cd["type"] not in COND_TYPES:
+            errors.append(f"{owner_id}: unknown condition {cd['type']}")
+        if cd["type"] in ("ideology", "not_ideology") and cd.get("value") not in ideo_ids:
+            errors.append(f"{owner_id}: bad ideology in condition")
+        if cd["type"] == "has_tech" and cd.get("value") not in tmap:
+            errors.append(f"{owner_id}: bad tech in condition")
+        if cd["type"] == "short" and cd.get("value") not in ids:
+            errors.append(f"{owner_id}: bad resource in condition")
+evs = json.loads((root / "data/events.json").read_text(encoding="utf-8"))["events"]
+eids = set()
+for e in evs:
+    if e["id"] in eids:
+        errors.append(f"duplicate event {e['id']}")
+    eids.add(e["id"])
+    if not e["options"]:
+        errors.append(f"event {e['id']}: no options")
+    check_conds("event " + e["id"], e["conditions"])
+    for o in e["options"]:
+        check_effects("event " + e["id"], o["effects"])
+decs = json.loads((root / "data/decisions.json").read_text(encoding="utf-8"))["decisions"]
+dids = set()
+for d in decs:
+    if d["id"] in dids:
+        errors.append(f"duplicate decision {d['id']}")
+    dids.add(d["id"])
+    check_conds("decision " + d["id"], d["requires"] + d["ai_conditions"])
+    check_effects("decision " + d["id"], d["effects"])
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions)")

@@ -523,3 +523,162 @@ func test_air_long_run() -> void:
 	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
 	check(r.checksum() == x.checksum() and r.wings.size() == x.wings.size(), "aviation survives save/load")
 	print("  wings=", x.wings.size(), " peak=", peak)
+
+
+func test_politics_basics() -> void:
+	var sim := _make(42)
+	check(sim.ideo_order.size() == 4 and sim.event_defs.size() == 14 and sim.decision_defs.size() == 11, "politics data loaded")
+	for c in sim.countries:
+		var total := 0
+		for i in sim.ideo_order:
+			total += c["party_pop"][i]
+		check(total == 100, "party popularity sums to 100 (%d)" % total)
+		check(c["stability"] >= 0 and c["stability"] <= 100, "stability in range")
+	var c0: Dictionary = sim.countries[0]
+	# laws
+	c0["pp"] = 10
+	check(not sim.apply_command({"type": "set_law", "country": 0, "category": "conscription", "law": "extended"})["ok"], "law needs influence")
+	c0["pp"] = 300
+	var m0 := sim.mod(0, "manpower_pct")
+	check(sim.apply_command({"type": "set_law", "country": 0, "category": "conscription", "law": "extended"})["ok"], "law adopted")
+	check(sim.mod(0, "manpower_pct") == m0 + 30 - sim.law_option("conscription", "limited").get("mods", {}).get("manpower_pct", 0), "law changes modifiers")
+	check(c0["pp"] == 200, "law cost deducted")
+	check(not sim.apply_command({"type": "set_law", "country": 0, "category": "conscription", "law": "extended"})["ok"], "no duplicate law")
+	# decisions
+	c0["treasury"] = 1000
+	var st: int = c0["stability"]
+	check(sim.apply_command({"type": "decision", "country": 0, "id": "propaganda"})["ok"], "decision executed")
+	check(c0["stability"] == mini(100, st + 8), "decision effect applied")
+	check(not sim.apply_command({"type": "decision", "country": 0, "id": "propaganda"})["ok"], "decision cooldown")
+	check(not sim.apply_command({"type": "decision", "country": 0, "id": "emergency"})["ok"], "decision requirements enforced")
+	# popularity shift keeps the sum
+	sim._shift_popularity(c0, "democracy", 15)
+	sim._shift_popularity(c0, "autocracy", -7)
+	var tot := 0
+	for i in sim.ideo_order:
+		tot += c0["party_pop"][i]
+		check(c0["party_pop"][i] >= 0, "popularity non-negative")
+	check(tot == 100, "popularity sum preserved after shifts")
+	# low stability hurts the economy
+	c0["stability"] = 50
+	sim._recalc_mods(0)
+	var income_ok := sim.mod(0, "income_pct")
+	c0["stability"] = 10
+	sim._recalc_mods(0)
+	check(sim.mod(0, "income_pct") < income_ok, "low stability lowers income modifier")
+
+
+func test_events_and_timed_modifiers() -> void:
+	var sim := _make(42)
+	var c: Dictionary = sim.countries[0]
+	c["ai"] = false
+	var ev := sim.event_def("strike")
+	sim._fire_event(c, ev)
+	check(c["pending"].size() == 1, "player gets a pending event")
+	var uid: int = c["pending"][0]["uid"]
+	check(not sim.apply_command({"type": "event_choice", "country": 0, "uid": 999, "option": 0})["ok"], "unknown event rejected")
+	check(not sim.apply_command({"type": "event_choice", "country": 0, "uid": uid, "option": 9})["ok"], "bad option rejected")
+	var t0: int = c["treasury"]
+	check(sim.apply_command({"type": "event_choice", "country": 0, "uid": uid, "option": 0})["ok"], "event resolved")
+	check(c["pending"].is_empty() and c["treasury"] == maxi(0, t0 - 60), "option effects applied")
+	# unanswered event resolves itself
+	sim._fire_event(c, ev)
+	sim.day += 25
+	sim._politics()
+	check(c["pending"].is_empty(), "stale events resolve automatically")
+	# AI resolves immediately
+	var ai_c: Dictionary = sim.countries[1]
+	sim._fire_event(ai_c, ev)
+	check(ai_c["pending"].is_empty(), "AI events resolve instantly")
+	# timed modifier
+	var s2 := _make(42)
+	s2._apply_effect(s2.countries[0], {"type": "modifier", "key": "oil_pct", "value": 25, "days": 10})
+	s2._recalc_mods(0)
+	check(s2.mod(0, "oil_pct") >= 25, "timed modifier active")
+	for i in 12:
+		s2.tick_day()
+	check(s2.mod(0, "oil_pct") < 25, "timed modifier expires")
+
+
+func test_government_changes() -> void:
+	var sim := _make(42)
+	var c: Dictionary = sim.countries[0]
+	# election
+	c["ideology"] = "democracy"
+	c["party_pop"] = {"democracy": 20, "monarchy": 15, "communism": 50, "autocracy": 15}
+	sim.day = 100 + 40 * 0 + 365 - 1
+	sim.tick_day()
+	check(c["ideology"] == "communism", "election hands power to the most popular party (%s)" % c["ideology"])
+	# coup in a non-democracy
+	var changed := false
+	var s2 := _make(42)
+	var c2: Dictionary = s2.countries[0]
+	c2["ideology"] = "autocracy"
+	c2["party_pop"] = {"democracy": 40, "monarchy": 20, "communism": 20, "autocracy": 20}
+	for i in 60:
+		c2["stability"] = 5
+		c2["crisis"] = 0
+		s2.day = 10 * (i + 1)
+		s2._politics()
+		if c2["ideology"] != "autocracy":
+			changed = true
+			break
+	check(changed, "unstable dictatorship eventually suffers a coup")
+
+
+func test_civil_war() -> void:
+	var sim := _make(42)
+	var big := 0
+	for c in sim.countries:
+		if sim.country_provinces(c["id"]).size() > sim.country_provinces(big).size():
+			big = c["id"]
+	var c: Dictionary = sim.countries[big]
+	var n_before := sim.countries.size()
+	var provs_before := sim.country_provinces(big).size()
+	check(provs_before >= 6, "test country is large enough (%d)" % provs_before)
+	c["stability"] = 0
+	c["crisis"] = 19
+	sim.day += 1
+	sim._politics()
+	check(sim.countries.size() == n_before + 1, "civil war creates a new state")
+	var rebels: Dictionary = sim.countries[n_before]
+	check(sim.at_war(big, rebels["id"]), "rebels fight the government")
+	check(sim.country_provinces(rebels["id"]).size() >= 3, "rebels hold provinces")
+	check(sim.country_provinces(big).size() + sim.country_provinces(rebels["id"]).size() == provs_before, "no provinces lost in the split")
+	check(sim.owner[rebels["capital"]] == rebels["id"], "rebel capital is rebel-held")
+	check(sim.armies_of(rebels["id"]).size() >= 2, "rebels have armies")
+	check(sim.dirty_provinces.size() >= 3, "map is told to repaint")
+	for i in 120:
+		sim.tick_day()
+	for o in sim.owner:
+		check(o >= -1 and o < sim.countries.size(), "owner ids valid after the split")
+		break
+	# determinism incl. new country
+	var a := _make(42)
+	var b := _make(42)
+	for s in [a, b]:
+		s.countries[big]["stability"] = 0
+		s.countries[big]["crisis"] = 19
+		s.day += 1
+		s._politics()
+		for i in 150:
+			s.tick_day()
+	check(a.checksum() == b.checksum(), "civil war is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == a.checksum() and r.countries.size() == a.countries.size(), "save/load keeps new states")
+
+
+func test_politics_long_run() -> void:
+	var x := _make(11)
+	var y := _make(11)
+	for i in 700:
+		x.tick_day()
+		y.tick_day()
+	check(x.checksum() == y.checksum(), "politics deterministic over 700 days")
+	var events := 0
+	for c in x.countries:
+		events += c["ev_seen"].size()
+		check(c["stability"] >= 0 and c["stability"] <= 100, "stability stays in range")
+		check(c["pp"] >= 0 and c["pp"] <= Simulation.PP_CAP, "influence stays in range")
+	check(events > 0, "events fire during a long game (%d)" % events)
+	print("  countries=", x.countries.size(), " events=", events, " log=", x.log_lines.size())
