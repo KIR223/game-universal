@@ -1,0 +1,10 @@
+{
+	"schema_version": 1,
+	"resources": [
+		{"id": "food", "name": "Продовольствие", "price": 1, "color": "#8fbf5a"},
+		{"id": "coal", "name": "Уголь", "price": 2, "color": "#6b6b6b"},
+		{"id": "iron", "name": "Железо", "price": 2, "color": "#b0653c"},
+		{"id": "oil", "name": "Нефть", "price": 6, "color": "#2b2b3c"},
+		{"id": "steel", "name": "Сталь", "price": 5, "color": "#9fb4c7"}
+	]
+}

@@ -1,0 +1,11 @@
+.godot/
+.import/
+*.translation
+export/
+builds/
+*.tmp
+.DS_Store
+.env
+*.key
+*.p12
+*.mobileprovision

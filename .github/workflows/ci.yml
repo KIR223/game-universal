@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main, "platform/**"]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate data and licenses
+        run: |
+          python3 tools/validate_data.py
+          python3 tools/check_licenses.py
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.2
+          use-dotnet: false
+      - name: Import project
+        run: godot --headless --path . --import
+      - name: Unit + integration tests (headless)
+        run: godot --headless --path . -s tests/run_tests.gd
