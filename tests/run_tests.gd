@@ -763,3 +763,120 @@ func test_intelligence_long_run() -> void:
 	check(nets > 0 or x.ops.size() > 0, "AI runs intelligence work (networks %d, ops %d)" % [nets, x.ops.size()])
 	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
 	check(r.checksum() == x.checksum() and r.ops.size() == x.ops.size(), "intelligence survives save/load")
+
+
+func _sea_trade_pair(sim: Simulation) -> Array:
+	for a in sim.countries:
+		for b in sim.countries:
+			if a["id"] < b["id"] and sim.can_trade(a["id"], b["id"]) and not sim.trade_route(a["id"], b["id"]).is_empty():
+				return [a["id"], b["id"]]
+	return []
+
+
+func test_infrastructure() -> void:
+	var sim := _make(42)
+	for p in sim.provinces():
+		if p["land"]:
+			check(sim.infra[p["id"]] >= 1 and sim.infra[p["id"]] <= Simulation.MAX_INFRA, "infra in range")
+		else:
+			check(sim.infra[p["id"]] == 0, "sea has no infra")
+	var c: Dictionary = sim.countries[0]
+	c["treasury"] = 5000
+	c["stock"]["steel"] = 500
+	var prov := -1
+	for p in sim.country_provinces(0):
+		if sim.infra[p] < Simulation.MAX_INFRA:
+			prov = p
+			break
+	var lvl: int = sim.infra[prov]
+	var t0: int = c["treasury"]
+	check(sim.apply_command({"type": "build_infra", "country": 0, "province": prov})["ok"], "infrastructure upgraded")
+	check(sim.infra[prov] == lvl + 1 and c["treasury"] == t0 - (60 + 20 * lvl), "level and cost correct")
+	check(not sim.apply_command({"type": "build_infra", "country": 0, "province": sim.country_provinces(1)[0]})["ok"], "cannot build abroad")
+	sim.infra[prov] = Simulation.MAX_INFRA
+	check(not sim.apply_command({"type": "build_infra", "country": 0, "province": prov})["ok"], "max level enforced")
+	# bombing degrades infrastructure
+	sim.damage[prov] = 90
+	check(sim.eff_infra(prov) < Simulation.MAX_INFRA, "bomb damage lowers effective infrastructure")
+	# better infrastructure => shorter supply distance
+	var s2 := _make(42)
+	var far := 0
+	var d0 := s2._supply_dist(0)
+	for p in d0:
+		if d0[p] > d0.get(far, 0):
+			far = p
+	for p in s2.country_provinces(0):
+		s2.infra[p] = Simulation.MAX_INFRA
+	var d1 := s2._supply_dist(0)
+	check(d1[far] < d0[far], "railways shorten the supply line (%d -> %d)" % [d0[far], d1[far]])
+
+
+func test_blockade_and_convoys() -> void:
+	var sim := _make(42)
+	var port := -1
+	var victim := -1
+	for c in sim.countries:
+		if sim.port_of(c["id"]) >= 0:
+			victim = c["id"]
+			port = sim.port_of(victim)
+			break
+	check(victim >= 0, "found a coastal country")
+	var attacker := 0 if victim != 0 else 1
+	var sea := sim.sea_next_to(port)
+	sim.wars.append({"a": attacker, "b": victim, "start": 0})
+	sim.fleets.append({"id": 900, "owner": attacker, "prov": sea, "strength": 1500, "path": [], "move": 0})
+	check(sim.port_blockaded(port, victim), "enemy fleet blockades the port")
+	check(sim.blockade_level(victim) > 0, "blockade level positive")
+	sim.fleets.append({"id": 901, "owner": victim, "prov": sea, "strength": 1500, "path": [], "move": 0})
+	check(not sim.port_blockaded(port, victim), "a defending fleet breaks the blockade")
+	# income falls under blockade
+	var s2 := _make(42)
+	s2.tick_day()
+	var inc: int = s2.countries[victim]["income"]
+	s2.countries[victim]["blockade"] = 100
+	s2._economy()
+	check(s2.countries[victim]["income"] < inc, "blockade cuts income")
+	# sea trade: raiders sink convoys, escorts protect them
+	var pair := _sea_trade_pair(_make(42))
+	if pair.is_empty():
+		return
+	var s3 := _make(42)
+	var b: int = pair[0]
+	var sl: int = pair[1]
+	var third := 0
+	for c in s3.countries:
+		if c["id"] != b and c["id"] != sl:
+			third = c["id"]
+			break
+	s3.countries[b]["treasury"] = 100000
+	s3.countries[sl]["stock"]["food"] = 1000
+	s3.countries[sl]["prod"]["food"] = 50
+	check(s3.apply_command({"type": "propose_trade", "country": b, "target": sl, "res": "food", "amount": 5})["ok"], "sea trade deal made")
+	var route := s3.trade_route(b, sl)
+	s3.wars.append({"a": third, "b": b, "start": 0})
+	s3.fleets.append({"id": 910, "owner": third, "prov": route[route.size() / 2], "strength": 1500, "path": [], "move": 0})
+	var stock0: int = s3.countries[sl]["stock"]["food"]
+	var buyer0: int = s3.countries[b]["stock"]["food"]
+	s3._trade()
+	check(s3.countries[sl]["stock"]["food"] == stock0 - 5, "seller loses the sunk shipment")
+	check(s3.countries[b]["stock"]["food"] == buyer0, "buyer receives nothing")
+	s3.fleets.append({"id": 911, "owner": b, "prov": route[route.size() / 2], "strength": 3000, "path": [], "move": 0})
+	var stock1: int = s3.countries[sl]["stock"]["food"]
+	s3._trade()
+	check(s3.countries[b]["stock"]["food"] == buyer0 + 5 and s3.countries[sl]["stock"]["food"] == stock1 - 5, "escorted convoy gets through")
+
+
+func test_logistics_long_run() -> void:
+	var x := _make(21)
+	var y := _make(21)
+	for i in 500:
+		x.tick_day()
+		y.tick_day()
+	check(x.checksum() == y.checksum(), "logistics deterministic over 500 days")
+	var upgraded := 0
+	for p in x.owner.size():
+		if x.infra[p] > 0:
+			upgraded += x.infra[p]
+	check(upgraded > 0, "infrastructure exists")
+	var r := Simulation.from_dict(str_to_var(var_to_str(x.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == x.checksum() and r.infra == x.infra, "infrastructure survives save/load")

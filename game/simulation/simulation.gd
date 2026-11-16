@@ -3,7 +3,7 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 8
+const SAVE_VERSION := 9
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
@@ -22,6 +22,7 @@ const BASE_SLOTS := 2
 const WING_SIZE := 50
 const PP_CAP := 300
 const MAX_NET := 100
+const MAX_INFRA := 5
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -62,6 +63,7 @@ var next_event_uid := 1
 var intel_defs: Dictionary = {}
 var ops: Array = []  # {"id","owner","target","type","left","total"}
 var next_op_id := 1
+var infra := PackedInt32Array()  # per-province railway/road level 1..5
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -85,6 +87,12 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 	owner = WorldGen.assign_owners(world, caps)
 	damage.resize(owner.size())
 	damage.fill(0)
+	infra.resize(owner.size())
+	for p in owner.size():
+		var pv: Dictionary = world["provinces"][p]
+		infra[p] = clampi(1 + pv["pop"] / 80, 1, 4) if pv["land"] else 0
+	for cap_p in caps:
+		infra[cap_p] = mini(MAX_INFRA, infra[cap_p] + 1)
 	countries.clear()
 	for i in caps.size():
 		var d: Dictionary = country_defs[i]
@@ -531,6 +539,7 @@ func _new_country(tag: String, cname: String, color: String, capital: int) -> Di
 		"laws": law_defaults.duplicate(), "done": {}, "timed": [], "crisis": 0,
 		"ev_seen": {}, "pending": [],
 		"intel": {"level": 1, "xp": 0, "net": {}, "counter": 0, "disinfo_until": -1},
+		"blockade": 0,
 	}
 	countries.append(c)
 	return c
@@ -1163,6 +1172,65 @@ func _ai_intel(cid: int) -> void:
 				return
 
 
+func _ai_navy(cid: int) -> void:
+	var enemies := enemies_of(cid)
+	var mine := fleets_of(cid)
+	var idx := 0
+	for f in mine:
+		idx += 1
+		if not f["path"].is_empty():
+			continue
+		var goals: Array[int] = []
+		if not enemies.is_empty() and idx % 2 == 1:
+			# blockade / raid: enemy ports and the lanes of their sea trade
+			for p in owner.size():
+				if enemies.has(owner[p]) and is_coastal(p):
+					var sn := sea_next_to(p)
+					if sn >= 0 and not goals.has(sn):
+						goals.append(sn)
+			for t in trades:
+				if enemies.has(t["buyer"]) or enemies.has(t["seller"]):
+					for q in trade_route(t["buyer"], t["seller"]):
+						if not goals.has(q):
+							goals.append(q)
+		else:
+			# escort: sit on the lane of our own sea trade, else at home
+			for t in trades:
+				if t["buyer"] == cid or t["seller"] == cid:
+					var r := trade_route(t["buyer"], t["seller"])
+					if not r.is_empty():
+						goals.append(r[r.size() / 2])
+						break
+			if goals.is_empty() and port_of(cid) >= 0:
+				goals.append(sea_next_to(port_of(cid)))
+		var best: Array = []
+		for g in goals:
+			if g == f["prov"]:
+				best = []
+				break
+			var path := _sea_path(f["prov"], g)
+			if not path.is_empty() and (best.is_empty() or path.size() < best.size()):
+				best = path
+		if not best.is_empty():
+			f["path"] = best
+			f["move"] = 0
+
+
+func _ai_infra(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	if c["treasury"] < 300 or c["stock"]["steel"] < 60:
+		return
+	var best := -1
+	for a in armies_of(cid):
+		var p: int = a["prov"]
+		if owner[p] == cid and infra[p] < MAX_INFRA and (best < 0 or infra[p] < infra[best]):
+			best = p
+	if best < 0 and owner[c["capital"]] == cid and infra[c["capital"]] < MAX_INFRA:
+		best = c["capital"]
+	if best >= 0:
+		apply_command({"type": "build_infra", "country": cid, "province": best})
+
+
 static func load_unit_defs() -> Dictionary:
 	var out := {}
 	var f := FileAccess.open("res://data/units.json", FileAccess.READ)
@@ -1424,6 +1492,22 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 					ops = ops.filter(func(x): return x["id"] != oid)
 					return {"ok": true}
 			return _fail("no such operation")
+		"build_infra":
+			var ip: int = cmd.get("province", -1)
+			if ip < 0 or ip >= owner.size() or owner[ip] != cid or not provinces()[ip]["land"]:
+				return _fail("invalid province")
+			if infra[ip] >= MAX_INFRA:
+				return _fail("already maximal")
+			var ic: Dictionary = countries[cid]
+			var icost := 60 + 20 * infra[ip]
+			if ic["treasury"] < icost:
+				return _fail("not enough funds")
+			if ic["stock"]["steel"] < 15:
+				return _fail("not enough steel")
+			ic["treasury"] -= icost
+			ic["stock"]["steel"] -= 15
+			infra[ip] += 1
+			return {"ok": true}
 		"set_law":
 			var cat: String = cmd.get("category", "")
 			var lid: String = cmd.get("law", "")
@@ -1663,6 +1747,7 @@ func _fail(reason: String) -> Dictionary:
 
 func tick_day() -> void:
 	day += 1
+	_logistics()
 	_economy()
 	_trade()
 	_resources()
@@ -1702,7 +1787,7 @@ func _economy() -> void:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
 		if c["alive"]:
-			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) / 100
+			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) / 10000
 			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
 	for c in countries:
 		if c["alive"]:
@@ -1764,6 +1849,72 @@ func _try_trade(buyer: int, seller: int, res: String, amount: int) -> Dictionary
 	return {"ok": true}
 
 
+## A port province is blockaded when an enemy fleet sits in an adjacent sea and no friendly fleet contests it.
+func port_blockaded(p: int, cid: int) -> bool:
+	var provs := provinces()
+	var enemy_here := false
+	var friend_here := false
+	for q in provs[p]["neighbors"]:
+		if provs[q]["land"]:
+			continue
+		for f in fleets:
+			if f["prov"] != q or f["strength"] <= 0:
+				continue
+			if f["owner"] == cid or allied(cid, f["owner"]):
+				friend_here = true
+			elif at_war(cid, f["owner"]):
+				enemy_here = true
+	return enemy_here and not friend_here
+
+
+func blockade_level(cid: int) -> int:
+	var ports := 0
+	var blocked := 0
+	for p in owner.size():
+		if owner[p] == cid and is_coastal(p):
+			ports += 1
+			if port_blockaded(p, cid):
+				blocked += 1
+	return blocked * 100 / ports if ports > 0 else 0
+
+
+## Sea lane between two trading partners (empty if they share a land border).
+func trade_route(buyer: int, seller: int) -> Array:
+	if neighbor_countries(buyer).has(seller):
+		return []
+	var pb := port_of(buyer)
+	var ps := port_of(seller)
+	if pb < 0 or ps < 0:
+		return []
+	var a := sea_next_to(pb)
+	var b := sea_next_to(ps)
+	if a < 0 or b < 0:
+		return []
+	var path := _sea_path(a, b)
+	path.push_front(a)
+	return path
+
+
+func _lane_forces(route: Array, buyer: int, seller: int) -> Vector2:
+	var raiders := 0.0
+	var escorts := 0.0
+	for f in fleets:
+		if f["strength"] <= 0 or not route.has(f["prov"]):
+			continue
+		var o: int = f["owner"]
+		if o == buyer or o == seller or allied(o, buyer) or allied(o, seller):
+			escorts += f["strength"]
+		elif at_war(o, buyer) or at_war(o, seller):
+			raiders += f["strength"]
+	return Vector2(raiders, escorts)
+
+
+func _logistics() -> void:
+	for c in countries:
+		if c["alive"]:
+			c["blockade"] = blockade_level(c["id"])
+
+
 func _trade() -> void:
 	var kept: Array = []
 	for t in trades:
@@ -1772,6 +1923,20 @@ func _trade() -> void:
 		if not b["alive"] or not s["alive"] or at_war(t["buyer"], t["seller"]) or _embargoed(t["buyer"], t["seller"]):
 			continue
 		var cost: int = t["amount"] * t["price"]
+		var route := trade_route(t["buyer"], t["seller"])
+		if not route.is_empty():
+			if b["blockade"] >= 50 or s["blockade"] >= 50:
+				t["fails"] += 1
+				if t["fails"] <= 15:
+					kept.append(t)
+				continue
+			var forces := _lane_forces(route, t["buyer"], t["seller"])
+			if forces.x > forces.y and s["stock"][t["res"]] >= t["amount"]:
+				s["stock"][t["res"]] -= t["amount"]  # shipment sunk
+				if day % 10 == 0:
+					_log("%s: конвой %s → %s потоплен рейдерами" % [date_string(), s["name"], b["name"]])
+				kept.append(t)
+				continue
 		if s["stock"][t["res"]] >= t["amount"] and b["treasury"] >= cost:
 			s["stock"][t["res"]] -= t["amount"]
 			b["stock"][t["res"]] = mini(b["stock"][t["res"]] + t["amount"], STOCK_CAP)
@@ -2206,11 +2371,16 @@ func _train(cid: int, t: String, army_id: int = -1) -> Dictionary:
 # ---- supply
 
 ## Supply distance from hubs (capital; ports too when a fleet provides naval supply).
+func eff_infra(p: int) -> int:
+	return maxi(1, infra[p] - damage[p] / 30)
+
+
+## Supply distance from hubs. Cost per step depends on infrastructure (own land ~5-9, hostile ~20-24).
 func _supply_dist(cid: int) -> Dictionary:
 	var provs := provinces()
 	var dist := {}
 	var buckets: Array = []
-	for _i in 160:
+	for _i in 600:
 		buckets.append([])
 	var cap: int = countries[cid]["capital"]
 	if owner[cap] == cid:
@@ -2219,23 +2389,23 @@ func _supply_dist(cid: int) -> Dictionary:
 	else:
 		for p in owner.size():
 			if owner[p] == cid:
-				dist[p] = 6
-				buckets[6].append(p)
+				dist[p] = 60
+				buckets[60].append(p)
 				break
 	if not fleets_of(cid).is_empty():
 		for p in owner.size():
-			if owner[p] == cid and is_coastal(p) and not dist.has(p):
-				dist[p] = 8
-				buckets[8].append(p)
-	for d in 160:
+			if owner[p] == cid and is_coastal(p) and not dist.has(p) and not port_blockaded(p, cid):
+				dist[p] = 80
+				buckets[80].append(p)
+	for d in 600:
 		for p in buckets[d]:
 			if dist[p] != d:
 				continue
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
-				var cost := 1 if (o == cid or allied(cid, o)) else 3
+				var cost: int = (10 - eff_infra(q)) if (o == cid or allied(cid, o)) else (25 - eff_infra(q))
 				var nd := d + cost
-				if nd < 160 and nd < dist.get(q, 999):
+				if nd < 600 and nd < dist.get(q, 9999):
 					dist[q] = nd
 					buckets[nd].append(q)
 	return dist
@@ -2261,10 +2431,10 @@ func _supply() -> void:
 			demand += a["div"].size()
 		var factor := minf(1.0, float(6 + industry[c["id"]]) * (100 + mod(c["id"], "supply_pct")) / 100.0 / maxf(demand, 1.0))
 		for a in mine:
-			var d: int = dist.get(a["prov"], 999)
+			var d: int = dist.get(a["prov"], 9999)
 			if not provs[a["prov"]]["land"]:
-				d = 8
-			a["supply"] = int(clampf(1.0 - d * 0.1 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
+				d = 80
+			a["supply"] = int(clampf(1.0 - d * 0.01 * (100 - mini(mod(c["id"], "supply_decay_pct"), 80)) / 100.0, 0.0, 1.0) * factor * 100.0)
 			if a["supply"] < 20:
 				_hurt(a, a["strength"] / 100)
 
@@ -2460,6 +2630,10 @@ func _ai() -> void:
 		if day % 15 == 0:
 			_ai_intel(cid)
 		if day % 10 == 0:
+			_ai_navy(cid)
+		if day % 20 == 0:
+			_ai_infra(cid)
+		if day % 10 == 0:
 			_ai_research(cid)
 		if day % 10 == 0:
 			_ai_merge(cid)
@@ -2551,7 +2725,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "next_general_id": next_general_id, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "next_general_id": next_general_id, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -2576,6 +2750,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
+	sim.infra = d["infra"]
 	sim.ops = d["ops"]
 	sim.next_op_id = d["next_op_id"]
 	sim._load_intel()
@@ -2593,4 +2768,4 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, fleets, wings, damage, alliances, trades, embargoes, wars, rng.state]).hash()
+	return var_to_str([day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]).hash()
