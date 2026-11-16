@@ -3058,7 +3058,7 @@ func _settle_annex(winner: int, loser: int) -> void:
 		var rest := cells_of(loser)
 		if not rest.is_empty():
 			countries[loser]["capital"] = rest[0]
-	_log("%s: договор — %s получает признание %d ячеек у %s%s" % [date_string(), countries[winner]["name"], annexed.size(), countries[loser]["name"], ", возвращено %d" % returned.size() if not returned.is_empty() else ""])
+	_log("%s: договор — %s: признано за ним %d яч. государства %s%s" % [date_string(), countries[winner]["name"], annexed.size(), countries[loser]["name"], ", возвращено ему %d яч." % returned.size() if not returned.is_empty() else ""])
 
 
 ## An AI only accepts losing recognised land to a clearly stronger enemy (on top of the normal peace conditions).
