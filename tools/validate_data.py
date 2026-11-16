@@ -157,6 +157,17 @@ for d in decs:
     check_conds("decision " + d["id"], d["requires"] + d["ai_conditions"])
     check_effects("decision " + d["id"], d["effects"])
 
+intel = json.loads((root / "data/intel.json").read_text(encoding="utf-8"))
+iops = set()
+for o in intel["operations"]:
+    for k in ("id", "name", "cost", "duration", "min_network", "desc"):
+        if k not in o:
+            errors.append(f"intel op {o.get('id')}: missing {k}")
+    iops.add(o.get("id"))
+for need in ("build_network", "sabotage", "destabilize", "steal_tech", "disinformation", "counter_intel"):
+    if need not in iops:
+        errors.append(f"intel.json must define {need}")
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources, {len(units['units'])} units, {len(tmap)} techs, {len(evs)} events, {len(decs)} decisions, {len(iops)} intel ops)")

@@ -26,7 +26,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -44,6 +44,10 @@ var _tech: PanelContainer
 var _tech_buttons := {}
 var _tech_queue_box: VBoxContainer
 var _pending_air := ""
+var _intel: PanelContainer
+var _intel_body: VBoxContainer
+var _i_op := 0
+var _i_target := 0
 var _pol: PanelContainer
 var _pol_body: VBoxContainer
 var _event_panel: PanelContainer
@@ -275,6 +279,10 @@ func _build_hud() -> void:
 		mode.text = "Рельеф" if map.map_mode == "terrain" else "Карта"
 		map.repaint_all())
 	hb.add_child(mode)
+	var intb := Button.new()
+	intb.text = "Разведка"
+	intb.pressed.connect(_toggle_intel)
+	hb.add_child(intb)
 	var polb := Button.new()
 	polb.text = "Политика"
 	polb.pressed.connect(_toggle_pol)
@@ -438,6 +446,8 @@ func _refresh_all() -> void:
 		_tech_refresh()
 	if _pol != null and is_instance_valid(_pol) and sim.day != _pol_day and sim.day % 5 == 0:
 		_pol_refresh()
+	if _intel != null and is_instance_valid(_intel) and sim.day % 2 == 0:
+		_intel_refresh()
 	_check_events()
 	while log_seen < sim.log_lines.size():
 		_log.append_text(sim.log_lines[log_seen] + "\n")
@@ -511,8 +521,14 @@ func _refresh_info() -> void:
 		t += "\n[b]Армии:[/b]\n"
 		for a in here:
 			var mark := " ◀" if a["id"] == map.selected_army else ""
-			t += "#%d  [color=%s]%s[/color]  %s  сила %d  снабж. %d%%%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), a["strength"], a["supply"], mark]
-			if a["gen"] >= 0:
+			var seen := sim.perceived_strength(player, a)
+			if seen < 0:
+				t += "#%d  [color=%s]%s[/color]  состав и сила неизвестны (нужна разведка)%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], mark]
+			elif a["owner"] == player or sim.allied(player, a["owner"]):
+				t += "#%d  [color=%s]%s[/color]  %s  сила %d  снабж. %d%%%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), a["strength"], a["supply"], mark]
+			else:
+				t += "#%d  [color=%s]%s[/color]  %s  сила ≈%d%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), seen, mark]
+			if a["gen"] >= 0 and seen >= 0:
 				var gg: Dictionary = sim._general(a["owner"], a["gen"])
 				t += "   генерал %s (ур. %d)\n" % [gg["name"], gg["skill"]]
 	_info.text = t
@@ -1146,3 +1162,132 @@ func _pol_cmd(cmd: Dictionary) -> void:
 		_log.append_text("[color=#d9a05a]Отказ: %s[/color]\n" % _reason(r["reason"]))
 	_pol_refresh()
 	_refresh_top()
+
+
+# ------------------------------------------------------------ intelligence UI
+
+func _toggle_intel() -> void:
+	if _intel != null and is_instance_valid(_intel):
+		_intel.queue_free()
+		_intel = null
+		return
+	_intel = PanelContainer.new()
+	_intel.theme = _theme
+	_intel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_intel.position = Vector2(12, 96)
+	_intel.custom_minimum_size = Vector2(720, 520)
+	ui.add_child(_intel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_intel.add_child(v)
+	var head := HBoxContainer.new()
+	v.add_child(head)
+	var h := Label.new()
+	h.text = "Разведка"
+	h.add_theme_font_size_override("font_size", 20)
+	h.add_theme_color_override("font_color", Color("e0c070"))
+	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(h)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(_toggle_intel)
+	head.add_child(close)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(scroll)
+	_intel_body = VBoxContainer.new()
+	_intel_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_intel_body.add_theme_constant_override("separation", 6)
+	scroll.add_child(_intel_body)
+	_intel_refresh()
+
+
+func _intel_cmd(cmd: Dictionary) -> void:
+	var r := sim.apply_command(cmd)
+	_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", "Операция начата" if r["ok"] else "Отказ: %s" % _reason(r["reason"])])
+	_intel_refresh()
+	_refresh_top()
+
+
+func _intel_refresh() -> void:
+	for ch in _intel_body.get_children():
+		ch.queue_free()
+	var c: Dictionary = sim.countries[player]
+	var it: Dictionary = c["intel"]
+	var info := Label.new()
+	info.text = "Агентство: уровень %d (опыт %d)   Агентов: %d/%d   Контрразведка: %d%%%s" % [it["level"], it["xp"], sim.ops_of(player).size(), sim.intel_slots(player), it["counter"], "   Дезинформация активна" if it["disinfo_until"] > sim.day else ""]
+	_intel_body.add_child(info)
+	var sl := Label.new()
+	sl.text = "Агентурные сети"
+	sl.add_theme_color_override("font_color", Color("e0c070"))
+	_intel_body.add_child(sl)
+	var partner_ids: Array[int] = []
+	for o in sim.countries:
+		if o["alive"] and o["id"] != player:
+			partner_ids.append(o["id"])
+			_intel_body.add_child(_bar("%s (его контрразведка %d%%)" % [o["name"], o["intel"]["counter"]], sim.net_of_agent(player, o["id"]), Color(o["color"])))
+	var al := Label.new()
+	al.text = "Активные операции"
+	al.add_theme_color_override("font_color", Color("e0c070"))
+	_intel_body.add_child(al)
+	for op in sim.ops_of(player):
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		var tname: String = sim.countries[op["target"]]["name"]
+		l.text = "%s → %s" % [sim.intel_defs[op["type"]]["name"], tname]
+		l.custom_minimum_size = Vector2(330, 0)
+		row.add_child(l)
+		var pb := ProgressBar.new()
+		pb.max_value = op["total"]
+		pb.value = op["total"] - op["left"]
+		pb.show_percentage = false
+		pb.custom_minimum_size = Vector2(200, 18)
+		row.add_child(pb)
+		var cb := Button.new()
+		cb.text = "Отменить"
+		var oid: int = op["id"]
+		cb.pressed.connect(func(): _intel_cmd({"type": "cancel_op", "country": player, "op_id": oid}))
+		row.add_child(cb)
+		_intel_body.add_child(row)
+	var nl := Label.new()
+	nl.text = "Новая операция"
+	nl.add_theme_color_override("font_color", Color("e0c070"))
+	_intel_body.add_child(nl)
+	var ids: Array = sim.intel_defs.keys()
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 6)
+	_intel_body.add_child(row2)
+	var ob := OptionButton.new()
+	for id in ids:
+		ob.add_item(sim.intel_defs[id]["name"])
+	_i_op = clampi(_i_op, 0, ids.size() - 1)
+	ob.select(_i_op)
+	ob.item_selected.connect(func(i):
+		_i_op = i
+		_intel_refresh())
+	row2.add_child(ob)
+	var tb := OptionButton.new()
+	for pid in partner_ids:
+		tb.add_item(sim.countries[pid]["name"])
+	_i_target = clampi(_i_target, 0, maxi(partner_ids.size() - 1, 0))
+	if not partner_ids.is_empty():
+		tb.select(_i_target)
+	tb.item_selected.connect(func(i):
+		_i_target = i
+		_intel_refresh())
+	row2.add_child(tb)
+	var type: String = ids[_i_op]
+	var d: Dictionary = sim.intel_defs[type]
+	var target: int = partner_ids[_i_target] if not partner_ids.is_empty() else -1
+	var go := Button.new()
+	go.text = "Начать (%d $)" % d["cost"]
+	go.pressed.connect(func(): _intel_cmd({"type": "intel_op", "country": player, "op": type, "target": target}))
+	row2.add_child(go)
+	var desc := Label.new()
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var chance_txt := ""
+	if target >= 0:
+		chance_txt = "   Шанс успеха: %d%%" % sim.op_chance(player, target, type)
+	desc.text = "%s\nДлительность: %d дн.  Нужна сеть ≥ %d%%.%s" % [d["desc"], d["duration"], d["min_network"], chance_txt]
+	_intel_body.add_child(desc)
