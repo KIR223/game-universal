@@ -1,0 +1,82 @@
+{
+ "world_version": 2,
+ "built": "2026-11-16",
+ "raster": {
+  "w": 1800,
+  "h": 720,
+  "res_deg": 0.2,
+  "lat_top": 84.0,
+  "lat_bottom": -60.0
+ },
+ "counts": {
+  "cells_land": 14299,
+  "cells_sea": 480,
+  "regions": 4851,
+  "countries": 257,
+  "settlements": 70039,
+  "ports": 1081,
+  "airports": 893,
+  "road_lines": 36863,
+  "rail_lines": 25413
+ },
+ "notes": "terrain, per-cell population/industry/infrastructure and resource allocation inside countries are estimates derived from the sources (see docs/DATA_SOURCES.md)",
+ "files": {
+  "adj.bin": {
+   "sha256": "7384197600bab4e931f93fef5e3b105637b17bb1f640d0692708f3ebf1d34b39",
+   "bytes": 147801
+  },
+  "cells.json.z": {
+   "sha256": "910cffcdeafee87bbb8e6c5d8ab4ac4b337acebf07e03b3f20dba18c1241f1a9",
+   "bytes": 340433
+  },
+  "countries.json.z": {
+   "sha256": "43b3bdbe88b4259436706927ebc7f9ad8b989c0db8777b78297d4aad145e3d05",
+   "bytes": 21909
+  },
+  "facilities.json.z": {
+   "sha256": "c9a241533ddba0871da84277a46787c66b83d80dbee6e94e54e2ffb63c04690b",
+   "bytes": 46335
+  },
+  "lines.json.z": {
+   "sha256": "e9e7d7eda64c1141ed4dd738d9237405f56814a0f73cbd381d0aa0a334398859",
+   "bytes": 2108856
+  },
+  "links.bin": {
+   "sha256": "1e6f9130b005e6e378ff9a632b80f14043ab9ccd01301a782643128294eff6cc",
+   "bytes": 63527
+  },
+  "raster_cells.bin": {
+   "sha256": "18ca605dd2182ac7da7d695ed2a9c1ea301cf7f3b3f13b84e0339a22fb4e11ad",
+   "bytes": 196881
+  },
+  "raster_elev.bin": {
+   "sha256": "027b69b0d5c15c123f23ac5cfdfe49bafeb8143702e0cdee8bf2225014bf3791",
+   "bytes": 2426880
+  },
+  "raster_ids.bin": {
+   "sha256": "a3c853fac0a33e34049ecc3d36ae08d79bf9b49d296c51b64a2706065ee3ff0f",
+   "bytes": 182489
+  },
+  "raster_order.bin": {
+   "sha256": "a10d64b2a24c591c71bd57a0819ba8e718f5689493f4554e1145be8e9f757444",
+   "bytes": 1936381
+  },
+  "raster_region.bin": {
+   "sha256": "1560a6e0607be07ba392c21b458388dd792847cc46956cc56996a1cf6be5f6a7",
+   "bytes": 89279
+  },
+  "raster_relief.bin": {
+   "sha256": "c651b6163dc35efe80ddb4a67d9748cb0f69025a6ead4701d108edda9756bdb8",
+   "bytes": 1366530
+  },
+  "regions.json.z": {
+   "sha256": "81c25b970b46e33ac225b765fc33a4818f6ca56712b9aacbc529cecde849b9a3",
+   "bytes": 115936
+  },
+  "settlements.json.z": {
+   "sha256": "2b18868d92fcb36070ea282b53b3f2469ef331abd496aa1f4e8e80bf480e3b69",
+   "bytes": 3205288
+  }
+ },
+ "world_hash": "7b0225e198cffbe074180257248599271cc886e553b03f51b46acbae922ec060"
+}

@@ -2,3 +2,5 @@
 *.png binary
 *.ogg binary
 *.wav binary
+*.bin binary
+*.z binary
