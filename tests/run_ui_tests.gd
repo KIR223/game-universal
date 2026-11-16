@@ -107,6 +107,14 @@ func run_checks() -> void:
 	check(TouchSupport.is_long_press(500, false, true), "held touch is a long press")
 	check(not TouchSupport.is_long_press(200, false, true) and not TouchSupport.is_long_press(900, true, true), "short or moving touch is not a long press")
 	check(not TouchSupport.is_long_press(900, false, false), "a long mouse click on desktop is never a context menu")
+	# autosave when the app goes to the background (mobile): written, loadable, identical state
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/auto.sav"))
+	check(not SaveSystem.exists("auto"), "no autosave before the app is paused")
+	main._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
+	check(SaveSystem.exists("auto"), "pausing the app writes the autosave slot")
+	var auto_sim := SaveSystem.load_slot("auto")
+	check(auto_sim != null and auto_sim.checksum() == main.sim.checksum(), "autosave restores the exact game state")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/auto.sav"))
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])
