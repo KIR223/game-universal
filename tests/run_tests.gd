@@ -206,3 +206,61 @@ func test_long_run_integrity() -> void:
 	for ar in a.armies:
 		check(a.owner.size() > ar["prov"], "army province valid")
 	print("  fleets=", a.fleets.size(), " alliances=", a.alliances.size(), " wars=", a.wars.size(), " alive=", a.alive_count())
+
+
+func test_resources_and_trade() -> void:
+	var defs := Simulation.load_resource_defs()
+	check(defs.size() == 5, "resource defs loaded")
+	var sim := _make(42)
+	var deposits := 0
+	for p in sim.provinces():
+		if p["land"] and not p["deposits"].is_empty():
+			deposits += 1
+	check(deposits > 20, "land provinces have deposits (%d)" % deposits)
+	sim.tick_day()
+	var c: Dictionary = sim.countries[0]
+	check(c["prod"]["food"] > 0, "food is produced")
+	check(c["cons"]["food"] > 0, "food is consumed")
+	# steel gates recruitment
+	c["treasury"] = 10000
+	c["stock"]["steel"] = Simulation.ARMY_STEEL - 1
+	check(not sim.apply_command({"type": "recruit", "country": 0})["ok"], "recruit needs steel")
+	c["stock"]["steel"] = Simulation.ARMY_STEEL
+	check(sim.apply_command({"type": "recruit", "country": 0})["ok"] and c["stock"]["steel"] == 0, "recruit consumes steel")
+	# trade: find a seller with surplus and a trade route
+	var seller := -1
+	for o in sim.countries:
+		if o["id"] != 0 and sim.can_trade(0, o["id"]) and sim.net_of(o["id"], "food") > 3:
+			seller = o["id"]
+	if seller < 0:
+		for o in sim.countries:
+			if o["id"] != 0 and sim.can_trade(0, o["id"]):
+				seller = o["id"]
+				sim.countries[seller]["stock"]["food"] = 1000
+				break
+	check(seller >= 0, "found a trade partner")
+	var money0: int = c["treasury"]
+	var food0: int = c["stock"]["food"]
+	var r := sim.apply_command({"type": "propose_trade", "country": 0, "target": seller, "res": "food", "amount": 2})
+	check(r["ok"] and sim.trades.size() == 1, "trade deal accepted")
+	sim.tick_day()
+	check(c["treasury"] < money0 + c["income"], "buyer pays")
+	check(sim.countries[seller]["alive"], "seller alive")
+	# embargo cancels and blocks
+	check(sim.apply_command({"type": "embargo", "country": 0, "target": seller})["ok"], "embargo imposed")
+	check(sim.trades.is_empty(), "embargo cancels deals")
+	check(not sim.apply_command({"type": "propose_trade", "country": 0, "target": seller, "res": "food", "amount": 1})["ok"], "no trade under embargo")
+	check(sim.apply_command({"type": "lift_embargo", "country": 0, "target": seller})["ok"], "embargo lifted")
+	# save roundtrip keeps trades
+	sim.apply_command({"type": "propose_trade", "country": 0, "target": seller, "res": "food", "amount": 1})
+	var restored := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(restored.checksum() == sim.checksum() and restored.trades.size() == sim.trades.size(), "trades survive save/load")
+	# war cancels deals
+	var s2 := _make(42)
+	s2.countries[0]["treasury"] = 10000
+	var nb := s2.neighbor_countries(0)
+	if not nb.is_empty():
+		s2.countries[nb[0]]["stock"]["food"] = 1000
+		s2.apply_command({"type": "propose_trade", "country": 0, "target": nb[0], "res": "food", "amount": 2})
+		s2.apply_command({"type": "declare_war", "country": 0, "target": nb[0]})
+		check(s2.trades.is_empty(), "war cancels trade deals")

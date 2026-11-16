@@ -19,6 +19,21 @@ for c in data["countries"]:
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
         errors.append(f"{c.get('tag')}: bad color")
 
+res = json.loads((root / "data/resources.json").read_text(encoding="utf-8"))
+ids = set()
+for r in res["resources"]:
+    for k in ("id", "name", "price", "color"):
+        if k not in r:
+            errors.append(f"resource {r}: missing {k}")
+    if r.get("id") in ids:
+        errors.append(f"duplicate resource {r.get('id')}")
+    ids.add(r.get("id"))
+    if not isinstance(r.get("price"), int) or r["price"] < 1:
+        errors.append(f"{r.get('id')}: bad price")
+for need in ("food", "oil", "steel", "iron", "coal"):
+    if need not in ids:
+        errors.append(f"missing required resource {need}")
+
 if errors:
     print("\n".join(errors)); sys.exit(1)
-print(f"data OK ({len(tags)} countries)")
+print(f"data OK ({len(tags)} countries, {len(ids)} resources)")

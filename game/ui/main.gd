@@ -22,6 +22,20 @@ var _speed_buttons: Array[Button] = []
 var _theme: Theme
 var _seed_edit: LineEdit
 var _menu_root: Control
+const REASONS := {
+	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
+	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
+	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
+	"human target": "партнёр — игрок", "refused": "отказано", "no common border": "нет границы",
+	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
+	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
+	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
+}
+var _eco: PanelContainer
+var _eco_dyn: VBoxContainer
+var _t_res := 0
+var _t_partner := 0
+var _t_amount := 3
 
 
 func _ready() -> void:
@@ -233,6 +247,10 @@ func _build_hud() -> void:
 		mode.text = "Карта: рельеф" if map.map_mode == "terrain" else "Карта: политика"
 		map.repaint_all())
 	hb.add_child(mode)
+	var eco := Button.new()
+	eco.text = "Экономика"
+	eco.pressed.connect(_toggle_eco)
+	hb.add_child(eco)
 	var save := Button.new()
 	save.text = "Сохранить"
 	save.pressed.connect(func(): SaveSystem.save(sim, "quick"))
@@ -325,7 +343,7 @@ func _on_province_clicked(pid: int) -> void:
 		var fl := sim.fleet_by_id(map.selected_fleet)
 		var rf := sim.apply_command({"type": "move_fleet", "country": player, "fleet": fl["id"], "target": pid})
 		if not rf["ok"]:
-			_log.append_text("[color=#d9a05a]Приказ флоту отклонён: %s[/color]\n" % rf["reason"])
+			_log.append_text("[color=#d9a05a]Приказ флоту отклонён: %s[/color]\n" % _reason(rf["reason"]))
 		map.selected_fleet = -1
 		map.selected_province = pid
 		map.queue_redraw()
@@ -336,7 +354,7 @@ func _on_province_clicked(pid: int) -> void:
 		if a["prov"] != pid:
 			var r := sim.apply_command({"type": "move_army", "country": player, "army": a["id"], "target": pid})
 			if not r["ok"]:
-				_log.append_text("[color=#d9a05a]Приказ отклонён: %s[/color]\n" % r["reason"])
+				_log.append_text("[color=#d9a05a]Приказ отклонён: %s[/color]\n" % _reason(r["reason"]))
 			map.selected_army = -1
 			map.selected_province = pid
 			map.queue_redraw()
@@ -352,6 +370,8 @@ func _on_province_clicked(pid: int) -> void:
 func _refresh_all() -> void:
 	_refresh_top()
 	_refresh_info()
+	if _eco != null and is_instance_valid(_eco):
+		_eco_refresh()
 	while log_seen < sim.log_lines.size():
 		_log.append_text(sim.log_lines[log_seen] + "\n")
 		log_seen += 1
@@ -361,9 +381,9 @@ func _refresh_top() -> void:
 	if _top_label == null:
 		return
 	var c: Dictionary = sim.countries[player]
-	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Войн: %d" % [
+	_top_label.text = "%s   |   %s   |   Казна: %d (%+d/день)   |   Армий: %d   |   Флотов: %d   |   Сталь: %d   Нефть: %d   Еда: %d   |   Войн: %d" % [
 		c["name"], sim.date_string(), c["treasury"], c["income"] - c["upkeep"],
-		sim.armies_of(player).size(), sim.fleets_of(player).size(), sim.enemies_of(player).size()]
+		sim.armies_of(player).size(), sim.fleets_of(player).size(), c["stock"]["steel"], c["stock"]["oil"], c["stock"]["food"], sim.enemies_of(player).size()]
 	for i in _speed_buttons.size():
 		_speed_buttons[i].disabled = i == speed_idx
 
@@ -399,6 +419,10 @@ func _refresh_info() -> void:
 				_actions.add_child(fb)
 		return
 	t += "Рельеф: %s\nНаселение: %d тыс.\nПромышленность: %d\n" % [p["terrain"], p["pop"], p["industry"]]
+	var dep := ""
+	for r in p["deposits"]:
+		dep += "%s +%d  " % [_res_name(r), p["deposits"][r]]
+	t += "Добыча: %s\n" % (dep if dep != "" else "—")
 	if o >= 0:
 		var oc: Dictionary = sim.countries[o]
 		t += "Владелец: [color=%s]%s[/color]\n" % [oc["color"], oc["name"]]
@@ -465,8 +489,157 @@ func _cmd_button(label: String, cmd: Dictionary) -> void:
 	b.text = label
 	b.pressed.connect(func():
 		var r := sim.apply_command(cmd)
-		var msg := "Выполнено: %s" % label if r["ok"] else "Отказ (%s): %s" % [r["reason"], label]
+		var msg := "Выполнено: %s" % label if r["ok"] else "Отказ (%s): %s" % [_reason(r["reason"]), label]
 		_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", msg])
 		map.queue_redraw()
 		_refresh_all())
 	_actions.add_child(b)
+
+
+func _res_name(id: String) -> String:
+	for r in sim.res_defs:
+		if r["id"] == id:
+			return r["name"]
+	return id
+
+
+func _toggle_eco() -> void:
+	if _eco != null and is_instance_valid(_eco):
+		_eco.queue_free()
+		_eco = null
+		return
+	_eco = PanelContainer.new()
+	_eco.theme = _theme
+	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_eco.position = Vector2(12, 62)
+	_eco.custom_minimum_size = Vector2(520, 0)
+	ui.add_child(_eco)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 8)
+	_eco.add_child(v)
+	var h := Label.new()
+	h.text = "Экономика и торговля"
+	h.add_theme_font_size_override("font_size", 20)
+	h.add_theme_color_override("font_color", Color("e0c070"))
+	v.add_child(h)
+	_eco_dyn = VBoxContainer.new()
+	v.add_child(_eco_dyn)
+	v.add_child(HSeparator.new())
+	# new deal controls
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	v.add_child(row)
+	var ores := OptionButton.new()
+	for r in sim.res_defs:
+		ores.add_item(r["name"])
+	ores.select(_t_res)
+	ores.item_selected.connect(func(i): _t_res = i)
+	row.add_child(ores)
+	var part := OptionButton.new()
+	var partner_ids: Array[int] = []
+	for c in sim.countries:
+		if c["alive"] and c["id"] != player:
+			part.add_item(c["name"])
+			partner_ids.append(c["id"])
+	if not partner_ids.is_empty():
+		part.select(clampi(_t_partner, 0, partner_ids.size() - 1))
+	part.item_selected.connect(func(i): _t_partner = i)
+	row.add_child(part)
+	var amount := SpinBox.new()
+	amount.min_value = 1
+	amount.max_value = 20
+	amount.value = _t_amount
+	amount.value_changed.connect(func(val): _t_amount = int(val))
+	row.add_child(amount)
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 6)
+	v.add_child(row2)
+	var buy := Button.new()
+	buy.text = "Купить (в день)"
+	buy.pressed.connect(func():
+		if partner_ids.is_empty():
+			return
+		_eco_cmd({"type": "propose_trade", "country": player, "target": partner_ids[clampi(_t_partner, 0, partner_ids.size() - 1)], "res": sim.res_defs[_t_res]["id"], "amount": _t_amount}))
+	row2.add_child(buy)
+	var emb := Button.new()
+	emb.text = "Эмбарго"
+	emb.pressed.connect(func():
+		if not partner_ids.is_empty():
+			_eco_cmd({"type": "embargo", "country": player, "target": partner_ids[clampi(_t_partner, 0, partner_ids.size() - 1)]}))
+	row2.add_child(emb)
+	var lift := Button.new()
+	lift.text = "Снять эмбарго"
+	lift.pressed.connect(func():
+		if not partner_ids.is_empty():
+			_eco_cmd({"type": "lift_embargo", "country": player, "target": partner_ids[clampi(_t_partner, 0, partner_ids.size() - 1)]}))
+	row2.add_child(lift)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(_toggle_eco)
+	row2.add_child(close)
+	_eco_refresh()
+
+
+func _eco_cmd(cmd: Dictionary) -> void:
+	var r := sim.apply_command(cmd)
+	var ok: bool = r["ok"]
+	_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if ok else "#d9a05a", "Готово" if ok else "Отказ: %s" % _reason(r.get("reason", ""))])
+	_eco_refresh()
+	_refresh_top()
+
+
+func _eco_refresh() -> void:
+	for ch in _eco_dyn.get_children():
+		ch.queue_free()
+	var c: Dictionary = sim.countries[player]
+	var grid := GridContainer.new()
+	grid.columns = 5
+	grid.add_theme_constant_override("h_separation", 22)
+	_eco_dyn.add_child(grid)
+	for head in ["Ресурс", "Запас", "Добыча", "Расход", "Баланс"]:
+		var l := Label.new()
+		l.text = head
+		l.add_theme_color_override("font_color", Color("e0c070"))
+		grid.add_child(l)
+	for r in sim.res_defs:
+		var id: String = r["id"]
+		var net := sim.net_of(player, id)
+		var cells := [r["name"], str(c["stock"][id]), str(c["prod"][id]), str(c["cons"][id]), "%+d" % net]
+		for i in cells.size():
+			var l := Label.new()
+			l.text = cells[i]
+			if i == 4:
+				l.add_theme_color_override("font_color", Color("d96a5a") if net < 0 else Color("8ac58a"))
+			if i == 0 and c["short"].has(id):
+				l.add_theme_color_override("font_color", Color("d96a5a"))
+			grid.add_child(l)
+	var deals := sim.trades_of(player)
+	var t := Label.new()
+	t.text = "Торговые сделки: %d" % deals.size()
+	_eco_dyn.add_child(t)
+	for d in deals:
+		var hb := HBoxContainer.new()
+		var l := Label.new()
+		var buying: bool = d["buyer"] == player
+		var other: int = d["seller"] if buying else d["buyer"]
+		l.text = "%s %s ×%d/день  %s  (цена %d)" % ["Покупка" if buying else "Продажа", _res_name(d["res"]), d["amount"], sim.countries[other]["name"], d["price"]]
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hb.add_child(l)
+		var cb := Button.new()
+		cb.text = "Отменить"
+		var did: int = d["id"]
+		cb.pressed.connect(func(): _eco_cmd({"type": "cancel_trade", "country": player, "deal": did}))
+		hb.add_child(cb)
+		_eco_dyn.add_child(hb)
+	var emb_names: Array[String] = []
+	for e in sim.embargoes:
+		if e["a"] == player:
+			emb_names.append(sim.countries[e["b"]]["name"])
+	if not emb_names.is_empty():
+		var el := Label.new()
+		el.text = "Ваше эмбарго: " + ", ".join(emb_names)
+		_eco_dyn.add_child(el)
+
+
+func _reason(key: String) -> String:
+	return REASONS.get(key, key)

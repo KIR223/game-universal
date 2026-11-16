@@ -3,12 +3,17 @@ extends RefCounted
 ## Headless, deterministic game simulation. No Node/graphics dependencies.
 ## All mutations from players go through apply_command(); time advances via tick_day().
 
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
 const FLEET_COST := 90
 const FLEET_STRENGTH := 1500
 const TRANSPORT_PER_FLEET := 2
+const ARMY_STEEL := 40
+const FLEET_STEEL := 100
+const STOCK_CAP := 3000
+const MAX_DEALS := 6
+const GRACE_DAYS := 60  # AI does not start wars before this day
 const MOVE_DAYS := 3
 const MAX_WAR_DAYS := 150
 const TERRAIN_DEFENSE := {
@@ -26,6 +31,10 @@ var wars: Array = []  # each: {"a": int, "b": int, "start": int}
 var next_army_id := 1
 var fleets: Array = []
 var next_fleet_id := 1
+var trades: Array = []  # {"id","seller","buyer","res","amount","price","fails"}
+var next_trade_id := 1
+var embargoes: Array = []  # {"a": embargoer, "b": target}
+var res_defs: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
 var command_log: Array = []
 var log_lines: Array = []
@@ -35,6 +44,7 @@ var dirty_provinces: Array[int] = []
 func setup(seed_value_: int, country_defs: Array) -> void:
 	seed_value = seed_value_
 	rng.seed = seed_value
+	res_defs = load_resource_defs()
 	world = WorldGen.generate(seed_value)
 	var caps := WorldGen.pick_capitals(world, country_defs.size(), rng)
 	owner = WorldGen.assign_owners(world, caps)
@@ -45,9 +55,50 @@ func setup(seed_value_: int, country_defs: Array) -> void:
 			"id": i, "tag": d["tag"], "name": d["name"], "color": d["color"],
 			"capital": caps[i], "treasury": 120, "income": 0, "upkeep": 0,
 			"ai": true, "alive": true, "last_peace": -100,
+			"stock": _start_stock(), "prod": _zero_res(), "cons": _zero_res(), "short": [],
 		})
 		_spawn_army(i, caps[i])
 		_spawn_army(i, caps[i])
+
+
+func _zero_res() -> Dictionary:
+	var d := {}
+	for r in res_defs:
+		d[r["id"]] = 0
+	return d
+
+
+func _start_stock() -> Dictionary:
+	var d := _zero_res()
+	for k in d:
+		d[k] = 40
+	if d.has("steel"):
+		d["steel"] = 120
+	return d
+
+
+func res_name(res: String) -> String:
+	for r in res_defs:
+		if r["id"] == res:
+			return r["name"]
+	return res
+
+
+func price_of(res: String) -> int:
+	for r in res_defs:
+		if r["id"] == res:
+			return r["price"]
+	return 1
+
+
+static func load_resource_defs() -> Array:
+	var f := FileAccess.open("res://data/resources.json", FileAccess.READ)
+	if f == null:
+		return []
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return []
+	return parsed.get("resources", [])
 
 
 static func load_country_defs() -> Array:
@@ -262,9 +313,12 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			var c: Dictionary = countries[cid]
 			if c["treasury"] < ARMY_COST:
 				return _fail("not enough funds")
+			if c["stock"]["steel"] < ARMY_STEEL:
+				return _fail("not enough steel")
 			if owner[c["capital"]] != cid:
 				return _fail("capital lost")
 			c["treasury"] -= ARMY_COST
+			c["stock"]["steel"] -= ARMY_STEEL
 			_spawn_army(cid, c["capital"])
 			return {"ok": true}
 		"declare_war":
@@ -286,9 +340,45 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 				return _fail("no port")
 			if c2["treasury"] < FLEET_COST:
 				return _fail("not enough funds")
+			if c2["stock"]["steel"] < FLEET_STEEL:
+				return _fail("not enough steel")
 			c2["treasury"] -= FLEET_COST
+			c2["stock"]["steel"] -= FLEET_STEEL
 			_spawn_fleet(cid, sea_next_to(port))
 			return {"ok": true}
+		"propose_trade":
+			var seller: int = cmd.get("target", -1)
+			var res: String = cmd.get("res", "")
+			var amount: int = cmd.get("amount", 0)
+			if seller < 0 or seller >= countries.size() or seller == cid or not countries[seller]["alive"]:
+				return _fail("invalid target")
+			if not countries[cid]["stock"].has(res) or amount <= 0 or amount > 50:
+				return _fail("invalid deal")
+			if not countries[seller]["ai"]:
+				return _fail("human target")
+			return _try_trade(cid, seller, res, amount)
+		"cancel_trade":
+			var tid: int = cmd.get("deal", -1)
+			for t in trades:
+				if t["id"] == tid and (t["buyer"] == cid or t["seller"] == cid):
+					trades = trades.filter(func(x): return x["id"] != tid)
+					return {"ok": true}
+			return _fail("no such deal")
+		"embargo":
+			var et: int = cmd.get("target", -1)
+			if et < 0 or et >= countries.size() or et == cid:
+				return _fail("invalid target")
+			if _embargoed(cid, et):
+				return _fail("already embargoed")
+			embargoes.append({"a": cid, "b": et})
+			trades = trades.filter(func(x): return not ((x["buyer"] == cid and x["seller"] == et) or (x["buyer"] == et and x["seller"] == cid)))
+			_log("%s: %s вводит эмбарго против %s" % [date_string(), countries[cid]["name"], countries[et]["name"]])
+			return {"ok": true}
+		"lift_embargo":
+			var lt: int = cmd.get("target", -1)
+			var before := embargoes.size()
+			embargoes = embargoes.filter(func(e): return not (e["a"] == cid and e["b"] == lt))
+			return {"ok": embargoes.size() != before, "reason": "no embargo"}
 		"move_fleet":
 			var f := fleet_by_id(cmd.get("fleet", -1))
 			if f.is_empty() or f["owner"] != cid:
@@ -372,6 +462,8 @@ func _fail(reason: String) -> Dictionary:
 func tick_day() -> void:
 	day += 1
 	_economy()
+	_trade()
+	_resources()
 	_move_armies()
 	_move_fleets()
 	_battles()
@@ -406,6 +498,130 @@ func _economy() -> void:
 				for a in armies:
 					if a["owner"] == c["id"]:
 						a["strength"] = int(a["strength"] * 0.98)
+
+
+func _embargoed(a: int, b: int) -> bool:
+	for e in embargoes:
+		if (e["a"] == a and e["b"] == b) or (e["a"] == b and e["b"] == a):
+			return true
+	return false
+
+
+func can_trade(a: int, b: int) -> bool:
+	if a == b or at_war(a, b) or _embargoed(a, b):
+		return false
+	return neighbor_countries(a).has(b) or (port_of(a) >= 0 and port_of(b) >= 0)
+
+
+func _sell_committed(seller: int, res: String) -> int:
+	var n := 0
+	for t in trades:
+		if t["seller"] == seller and t["res"] == res:
+			n += t["amount"]
+	return n
+
+
+func trades_of(cid: int) -> Array:
+	return trades.filter(func(t): return t["buyer"] == cid or t["seller"] == cid)
+
+
+func _try_trade(buyer: int, seller: int, res: String, amount: int) -> Dictionary:
+	if not can_trade(buyer, seller):
+		return _fail("no trade route")
+	var bc: Dictionary = countries[buyer]
+	var sc: Dictionary = countries[seller]
+	var buying := 0
+	for t in trades:
+		if t["buyer"] == buyer:
+			buying += 1
+	if buying >= MAX_DEALS:
+		return _fail("too many deals")
+	var price := int(ceil(price_of(res) * 1.2))
+	if bc["treasury"] < price * amount * 10:
+		return _fail("cannot afford")
+	var net: int = sc["prod"][res] - sc["cons"][res]
+	var free: int = net - _sell_committed(seller, res)
+	if free < amount and sc["stock"][res] < 300:
+		return _fail("seller has no surplus")
+	trades.append({"id": next_trade_id, "seller": seller, "buyer": buyer, "res": res, "amount": amount, "price": price, "fails": 0})
+	next_trade_id += 1
+	_log("%s: торговля — %s покупает %s (%d/день) у %s" % [date_string(), bc["name"], res_name(res).to_lower(), amount, sc["name"]])
+	return {"ok": true}
+
+
+func _trade() -> void:
+	var kept: Array = []
+	for t in trades:
+		var b: Dictionary = countries[t["buyer"]]
+		var s: Dictionary = countries[t["seller"]]
+		if not b["alive"] or not s["alive"] or at_war(t["buyer"], t["seller"]) or _embargoed(t["buyer"], t["seller"]):
+			continue
+		var cost: int = t["amount"] * t["price"]
+		if s["stock"][t["res"]] >= t["amount"] and b["treasury"] >= cost:
+			s["stock"][t["res"]] -= t["amount"]
+			b["stock"][t["res"]] = mini(b["stock"][t["res"]] + t["amount"], STOCK_CAP)
+			b["treasury"] -= cost
+			s["treasury"] += cost
+			t["fails"] = 0
+		else:
+			t["fails"] += 1
+			if t["fails"] > 15:
+				continue
+		kept.append(t)
+	trades = kept
+
+
+func _resources() -> void:
+	var provs := provinces()
+	var pop_sum := {}
+	var ind_sum := {}
+	for c in countries:
+		if c["alive"]:
+			c["prod"] = _zero_res()
+			c["cons"] = _zero_res()
+			c["short"] = []
+			pop_sum[c["id"]] = 0
+			ind_sum[c["id"]] = 0
+	for p in owner.size():
+		var o := owner[p]
+		if o < 0 or not countries[o]["alive"]:
+			continue
+		for r in provs[p]["deposits"]:
+			countries[o]["prod"][r] += provs[p]["deposits"][r]
+		pop_sum[o] += provs[p]["pop"]
+		ind_sum[o] += provs[p]["industry"]
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		var st: Dictionary = c["stock"]
+		c["cons"]["food"] = pop_sum[cid] / 90
+		var astr := army_strength(cid)
+		var fstr := 0
+		for f in fleets_of(cid):
+			fstr += f["strength"]
+		c["cons"]["oil"] = (astr + 2 * fstr) / 2000
+		# smelting: iron + coal -> steel, limited by industry
+		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] / 3)
+		c["prod"]["steel"] = steel
+		c["cons"]["iron"] = steel
+		c["cons"]["coal"] = steel
+		for r in st:
+			st[r] = st[r] + c["prod"][r] - c["cons"][r]
+			if st[r] < 0:
+				st[r] = 0
+				c["short"].append(r)
+			st[r] = mini(st[r], STOCK_CAP)
+		# shortages hurt the army
+		if c["short"].has("oil") or c["short"].has("food"):
+			for a in armies:
+				if a["owner"] == cid:
+					a["strength"] -= a["strength"] / (100 if c["short"].has("oil") else 200)
+
+
+func net_of(cid: int, res: String) -> int:
+	var c: Dictionary = countries[cid]
+	return c["prod"][res] - c["cons"][res]
 
 
 func _move_armies() -> void:
@@ -574,10 +790,12 @@ func _eliminate() -> void:
 			armies = armies.filter(func(a): return a["owner"] != c["id"])
 			fleets = fleets.filter(func(f): return f["owner"] != c["id"])
 			alliances = alliances.filter(func(al): return al["a"] != c["id"] and al["b"] != c["id"])
+			trades = trades.filter(func(t): return t["buyer"] != c["id"] and t["seller"] != c["id"])
 
 
 func _declare_war(a: int, b: int) -> void:
 	wars.append({"a": a, "b": b, "start": day})
+	trades = trades.filter(func(t): return not ((t["buyer"] == a and t["seller"] == b) or (t["buyer"] == b and t["seller"] == a)))
 	_log("%s: %s объявляет войну %s" % [date_string(), countries[a]["name"], countries[b]["name"]])
 	for side in [[a, b], [b, a]]:
 		for x in allies_of(side[0]):
@@ -719,7 +937,7 @@ func _ai() -> void:
 		var my_str := army_strength(cid)
 		var enemies := enemies_of(cid)
 		# strategic: choose a victim
-		if enemies.is_empty() and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2:
+		if enemies.is_empty() and day >= GRACE_DAYS and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2:
 			var victim := -1
 			var weakest := 1 << 30
 			var targets := neighbor_countries(cid)
@@ -750,12 +968,16 @@ func _ai() -> void:
 				_end_war(cid, e, "усталость от войны")
 				enemies = enemies_of(cid)
 		# naval: build fleets
-		if c["treasury"] >= FLEET_COST * 3 and port_of(cid) >= 0 and fleets_of(cid).size() < mini(4, 1 + country_provinces(cid).size() / 10):
+		if day % 10 == 0:
+			_ai_trade(cid)
+		if c["treasury"] >= FLEET_COST * 3 and c["stock"]["steel"] >= FLEET_STEEL and port_of(cid) >= 0 and fleets_of(cid).size() < mini(4, 1 + country_provinces(cid).size() / 10):
 			c["treasury"] -= FLEET_COST
+			c["stock"]["steel"] -= FLEET_STEEL
 			_spawn_fleet(cid, sea_next_to(port_of(cid)))
 		# economic: build armies
-		if c["treasury"] >= ARMY_COST * 2 and armies_of(cid).size() < 3 + country_provinces(cid).size() / 4:
+		if c["treasury"] >= ARMY_COST * 2 and c["stock"]["steel"] >= ARMY_STEEL and armies_of(cid).size() < 3 + country_provinces(cid).size() / 4:
 			c["treasury"] -= ARMY_COST
+			c["stock"]["steel"] -= ARMY_STEEL
 			_spawn_army(cid, c["capital"])
 		# military: send idle armies at the nearest enemy target
 		if enemies.is_empty():
@@ -789,6 +1011,18 @@ func _enemy_fleet_in(p: int, enemies: Array) -> bool:
 	return false
 
 
+func _ai_trade(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	for r in res_defs:
+		var res: String = r["id"]
+		if c["stock"][res] >= 40 or net_of(cid, res) >= 0:
+			continue
+		var want := mini(5, -net_of(cid, res) + 1)
+		for other in countries:
+			if other["alive"] and other["ai"] and other["id"] != cid and _try_trade(cid, other["id"], res, want)["ok"]:
+				break
+
+
 func _war_start(a: int, b: int) -> int:
 	for w in wars:
 		if (w["a"] == a and w["b"] == b) or (w["a"] == b and w["b"] == a):
@@ -810,7 +1044,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -827,6 +1061,10 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.fleets = d["fleets"]
 	sim.next_fleet_id = d["next_fleet_id"]
 	sim.alliances = d["alliances"]
+	sim.trades = d["trades"]
+	sim.next_trade_id = d["next_trade_id"]
+	sim.embargoes = d["embargoes"]
+	sim.res_defs = load_resource_defs()
 	sim.rng.seed = sim.seed_value
 	sim.rng.state = d["rng_state"]
 	sim.command_log = d.get("command_log", [])
@@ -835,4 +1073,4 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, fleets, alliances, wars, rng.state]).hash()
+	return var_to_str([day, owner, countries, armies, fleets, alliances, trades, embargoes, wars, rng.state]).hash()
