@@ -1065,13 +1065,36 @@ func _draw_strikes(z: float) -> void:
 			draw_circle(b, 3.5 / z, Color(1.0, 0.85, 0.3, fade))
 
 
+## Own air-defence batteries and launch sites as small round markers (visible from mid zoom).
+func _draw_sites(z: float) -> void:
+	if z < 1.0 or sim.sites.is_empty():
+		return
+	var r := 7.0 / z
+	for st in sim.sites:
+		if st["owner"] != player_country:
+			continue
+		var pos := cell_world(int(st["cell"]))
+		if not cull.has_point(pos):
+			continue
+		var dmg: int = sim.damage[int(st["cell"])]
+		var col := Color(0.55, 0.85, 1.0) if st["kind"] == "ad" else Color(1.0, 0.75, 0.35)
+		if dmg >= 80:
+			col = Color(0.5, 0.5, 0.5)
+		pos += Vector2(r * 1.6, -r * 1.6)
+		draw_circle(pos, r * 1.25, Color(0.04, 0.06, 0.09, 0.9))
+		draw_arc(pos, r * 1.25, 0.0, TAU, 20, col, 1.4 / z)
+		Icons.draw(self, "satellite" if st["kind"] == "ad" else "missile", Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0), col, 1.3 / z)
+
+
 func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
-	if sim.rule_modern and not sim.strikes.is_empty():
-		_draw_strikes(z)
+	if sim.rule_modern:
+		_draw_sites(z)
+		if not sim.strikes.is_empty():
+			_draw_strikes(z)
 	_draw_region_labels(z, UiFont.regular())
 	var font := UiFont.bold()
 	for l in label_layout():

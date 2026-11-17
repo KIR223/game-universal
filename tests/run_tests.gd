@@ -2174,3 +2174,68 @@ func test_army_groups() -> void:
 	check(sim.apply_command({"type": "delete_group", "country": 0, "group": r2["id"]})["ok"] and sim.groups_of(0).is_empty(), "a group is dissolved")
 	var same := _earth()
 	check(same.checksum() == _earth().checksum(), "games without groups keep their checksum")
+
+
+func test_missile_sites() -> void:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"modern": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	var b := _find_border(sim)
+	var a: int = b["a"]
+	var d: int = b["b"]
+	sim.wars.append({"a": a, "b": d, "start": 0})
+	var cap: int = sim.countries[d]["capital"]
+	var home: int = b["cell"]
+	check(sim.apply_command({"type": "build_site", "country": a, "kind": "ad", "cell": home})["reason"] == "technology required", "sites need their technology")
+	sim.countries[a]["techs"].append_array(["ad1", "mis1"])
+	sim.countries[d]["techs"].append_array(["ad1", "mis1"])
+	sim.countries[a]["treasury"] = 2000
+	sim.countries[a]["stock"]["steel"] = 500
+	sim.countries[d]["treasury"] = 2000
+	sim.countries[d]["stock"]["steel"] = 500
+	check(sim.apply_command({"type": "build_site", "country": a, "kind": "ad", "cell": sim.countries[d]["capital"]})["reason"] == "invalid base", "sites go on own land only")
+	# defender: a battery next to the target raises interception, a damaged one counts for less
+	var target := -1
+	for q in sim.provinces()[home]["land_neighbors"]:
+		if sim.owner[q] == d:
+			target = q
+	var base_chance := sim.air_defense_at(d, target)
+	check(sim.apply_command({"type": "build_site", "country": d, "kind": "ad", "cell": target})["ok"], "a battery is built")
+	check(sim.apply_command({"type": "build_site", "country": d, "kind": "ad", "cell": target})["reason"] == "already built", "only one battery per cell")
+	var with_battery := sim.air_defense_at(d, target)
+	check(with_battery == mini(base_chance + 15, 85), "a battery adds 15 points (%d -> %d)" % [base_chance, with_battery])
+	sim.damage[target] = 100
+	check(sim.air_defense_at(d, target) == base_chance, "a destroyed battery adds nothing")
+	sim.damage[target] = 0
+	# attacker: launch sites extend the range by two cells. Find an enemy cell just out of range of every own cell.
+	var range_tac: int = Simulation.MISSILE_DEFS["tactical"]["range"]
+	var q2 := -1
+	var site_cell := -1
+	for nb in sim.neighbor_countries(a):
+		for q in sim.cells_of(nb):
+			if sim.missile_site(a, q, range_tac) >= 0:
+				continue
+			var near := sim.reach(q, range_tac + 2)
+			var best := -1
+			var best_d := 99
+			for p2 in near:
+				if sim.owner[p2] == a and sim.provinces()[p2]["land"] and near[p2] < best_d:
+					best_d = near[p2]
+					best = p2
+			if best >= 0:
+				q2 = q
+				site_cell = best
+				break
+		if q2 >= 0:
+			sim.wars.append({"a": a, "b": nb, "start": 0})
+			break
+	check(q2 >= 0, "found a target just beyond the tactical range")
+	if q2 >= 0:
+		check(sim.apply_command({"type": "build_site", "country": a, "kind": "launch", "cell": site_cell})["ok"], "a launch site is built")
+		check(sim.missile_site(a, q2, range_tac) == site_cell, "the launch site makes a target two cells further reachable")
+		sim.damage[site_cell] = 100
+		check(sim.missile_site(a, q2, range_tac) == -1, "a destroyed launch site gives no extra range")
+		sim.damage[site_cell] = 0
+	var r := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r.sites.size() == sim.sites.size() and r.checksum() == sim.checksum(), "sites survive save/load")

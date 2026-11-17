@@ -90,7 +90,7 @@ const REASONS := {
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already sanctioned": "санкции уже введены", "no sanctions": "санкций нет",
-	"no missiles": "нет ракет в запасе", "group needs two armies": "в группе минимум две армии", "too many groups": "не больше 10 групп", "no such group": "группа не найдена", "invalid name": "нужно название до 24 знаков", "invalid battalions": "нужно от 1 до 9 батальонов", "too many templates": "не больше 8 шаблонов", "template in use": "есть дивизии этого шаблона", "no such template": "шаблон не найден", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
+	"no missiles": "нет ракет в запасе", "already built": "здесь уже построено", "too many sites": "не больше 12 объектов", "invalid site": "неизвестный объект", "group needs two armies": "в группе минимум две армии", "too many groups": "не больше 10 групп", "no such group": "группа не найдена", "invalid name": "нужно название до 24 знаков", "invalid battalions": "нужно от 1 до 9 батальонов", "too many templates": "не больше 8 шаблонов", "template in use": "есть дивизии этого шаблона", "no such template": "шаблон не найден", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
@@ -1046,6 +1046,24 @@ func _refresh_info() -> void:
 				map.queue_redraw()
 				_refresh_all())
 			_actions.add_child(mb)
+	if sim.rule_modern and o == player and sim.provinces()[pid]["land"]:
+		for kind in Simulation.SITE_DEFS:
+			var sd: Dictionary = Simulation.SITE_DEFS[kind]
+			if not sim.countries[player]["techs"].has(sd["tech"]):
+				continue
+			var sk: String = kind
+			var built := false
+			for st in sim.sites_at(pid):
+				built = built or (st["owner"] == player and st["kind"] == sk)
+			var sb := Button.new()
+			sb.text = ("%s — построена" % sd["name"]) if built else ("Построить: %s (%d $, %d стали)" % [sd["name"], sd["cost"], sd["steel"]])
+			sb.disabled = built
+			sb.pressed.connect(func():
+				var rs := sim.apply_command({"type": "build_site", "country": player, "kind": sk, "cell": pid})
+				_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if rs["ok"] else "#d9a05a", "Объект построен" if rs["ok"] else "Не построено: %s" % _reason(rs["reason"])])
+				map.queue_redraw()
+				_refresh_all())
+			_actions.add_child(sb)
 	if o == player and sim.infra[pid] < Simulation.MAX_INFRA:
 		_cmd_button("Улучшить инфраструктуру до %d (%d $, 15 стали)" % [sim.infra[pid] + 1, 60 + 20 * sim.infra[pid]], {"type": "build_infra", "country": player, "province": pid})
 	if o == player:
