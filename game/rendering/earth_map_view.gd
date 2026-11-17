@@ -628,7 +628,7 @@ func _draw_settlements(z: float) -> void:
 	if not _data_ready:
 		return
 	var thr := _pop_threshold(z)
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	var r := 2.4 / z
 	var halo := 0.9 / z
 	var dots := PackedVector2Array()
@@ -697,7 +697,7 @@ func _draw_labels() -> void:
 	var z := camera.zoom.x
 	if z > 5.0:
 		return
-	var font := ThemeDB.fallback_font
+	var font := UiFont.bold()
 	for cid in _agg:
 		var a: Vector3 = _agg[cid]
 		if a.x < 1.0:

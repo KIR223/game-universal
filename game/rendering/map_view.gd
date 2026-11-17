@@ -184,7 +184,7 @@ func _draw_base() -> void:
 func _draw_units() -> void:
 	var provs := sim.provinces()
 	var us := ui_scale
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	var fsz := maxi(int(round(8.0)), 1)
 	# armies (drawn in a local frame anchored at the cell centre so sizes stay constant on screen)
 	var slot := {}
@@ -276,7 +276,7 @@ func _draw_units() -> void:
 
 
 func _draw_labels() -> void:
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	for l in _labels:
 		var fs: int = l["size"]
 		var text: String = l["name"]
