@@ -50,6 +50,9 @@ var next_fleet_id := 1
 var trades: Array = []  # {"id","seller","buyer","res","amount","price","fails"}
 var next_trade_id := 1
 var embargoes: Array = []  # {"a": embargoer, "b": target}
+var groups: Array = []   # army groups: {"id","owner","name","armies": [army ids]} - one order moves every member
+var next_group_id := 1
+const MAX_GROUPS := 10
 var sanctions: Array = []  # {"a": imposer, "b": target, "since": day}: financial pressure, see sanction_pct()
 var res_defs: Array = []
 var unit_defs: Dictionary = {}
@@ -2318,6 +2321,15 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			if terms == "annex":
 				_settle_annex(cid, t4)
 			return {"ok": true}
+		"create_group":
+			return _create_group(cid, str(cmd.get("name", "")), cmd.get("armies", []))
+		"delete_group":
+			var gid_del: int = cmd.get("group", -1)
+			var n_g := groups.size()
+			groups = groups.filter(func(g): return not (g["id"] == gid_del and g["owner"] == cid))
+			return {"ok": true} if groups.size() < n_g else _fail("no such group")
+		"group_move":
+			return _group_move(cid, cmd.get("group", -1), cmd.get("target", -1))
 		"move_army":
 			var a := army_by_id(cmd.get("army", -1))
 			if a.is_empty() or a["owner"] != cid:
@@ -3436,6 +3448,73 @@ func _log(text: String) -> void:
 		log_lines.pop_front()
 
 
+# ---------------------------------------------------------------- army groups
+
+func group_by_id(gid: int) -> Dictionary:
+	for g in groups:
+		if g["id"] == gid:
+			return g
+	return {}
+
+
+## Members that still exist (armies merge, die or change hands); the group is dropped when fewer than two remain.
+func group_members(g: Dictionary) -> Array:
+	var out: Array = []
+	for aid in g["armies"]:
+		var a := army_by_id(aid)
+		if not a.is_empty() and a["owner"] == g["owner"]:
+			out.append(a)
+	return out
+
+
+func groups_of(cid: int) -> Array:
+	return groups.filter(func(g): return g["owner"] == cid and group_members(g).size() >= 1)
+
+
+func _create_group(cid: int, gname: String, ids: Array) -> Dictionary:
+	gname = gname.strip_edges()
+	if gname.is_empty() or gname.length() > 24:
+		return _fail("invalid name")
+	var seen := {}
+	for aid in ids:
+		var a := army_by_id(int(aid))
+		if a.is_empty() or a["owner"] != cid or seen.has(int(aid)):
+			return _fail("invalid army")
+		seen[int(aid)] = true
+	if seen.size() < 2:
+		return _fail("group needs two armies")
+	if groups.filter(func(g): return g["owner"] == cid).size() >= MAX_GROUPS:
+		return _fail("too many groups")
+	for g in groups:   # an army belongs to one group at a time
+		if g["owner"] == cid:
+			g["armies"] = g["armies"].filter(func(x): return not seen.has(int(x)))
+	groups = groups.filter(func(g): return g["owner"] != cid or g["armies"].size() >= 1)
+	var members: Array = []
+	for aid in ids:
+		members.append(int(aid))
+	groups.append({"id": next_group_id, "owner": cid, "name": gname, "armies": members})
+	next_group_id += 1
+	return {"ok": true, "id": next_group_id - 1}
+
+
+## One order for the whole group; members that cannot reach the target are left where they are.
+func _group_move(cid: int, gid: int, target: int) -> Dictionary:
+	var g := group_by_id(gid)
+	if g.is_empty() or g["owner"] != cid:
+		return _fail("no such group")
+	var moved := 0
+	var failed := 0
+	for a in group_members(g):
+		var r := _validate_and_run({"type": "move_army", "country": cid, "army": a["id"], "target": target})
+		if r["ok"]:
+			moved += 1
+		else:
+			failed += 1
+	if moved == 0:
+		return _fail("no route")
+	return {"ok": true, "moved": moved, "failed": failed}
+
+
 # ---------------------------------------------------------------- division templates (rules.templates)
 
 func template_key(cid: int, id: int) -> String:
@@ -4032,7 +4111,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "rule_templates": rule_templates, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -4070,6 +4149,8 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
 	sim.rule_modern = bool(d.get("rule_modern", false))
+	sim.groups = d.get("groups", [])
+	sim.next_group_id = int(d.get("next_group_id", 1))
 	sim.rule_markets = bool(d.get("rule_markets", false))
 	sim.rule_templates = bool(d.get("rule_templates", false))
 	sim.templates = d.get("templates", {})
@@ -4115,6 +4196,8 @@ func checksum() -> int:
 	var parts := [day, owner, legal, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
 	if not sanctions.is_empty():
 		parts.append(sanctions)   # only when present: a game without sanctions keeps the checksum it always had
+	if not groups.is_empty():
+		parts.append(groups)   # only when groups exist: games without them keep their checksum
 	if rule_templates:
 		parts.append([templates, next_tpl_id])
 	if rule_markets:

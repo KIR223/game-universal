@@ -90,7 +90,7 @@ const REASONS := {
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already sanctioned": "санкции уже введены", "no sanctions": "санкций нет",
-	"no missiles": "нет ракет в запасе", "invalid name": "нужно название до 24 знаков", "invalid battalions": "нужно от 1 до 9 батальонов", "too many templates": "не больше 8 шаблонов", "template in use": "есть дивизии этого шаблона", "no such template": "шаблон не найден", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
+	"no missiles": "нет ракет в запасе", "group needs two armies": "в группе минимум две армии", "too many groups": "не больше 10 групп", "no such group": "группа не найдена", "invalid name": "нужно название до 24 знаков", "invalid battalions": "нужно от 1 до 9 батальонов", "too many templates": "не больше 8 шаблонов", "template in use": "есть дивизии этого шаблона", "no such template": "шаблон не найден", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
@@ -826,6 +826,16 @@ func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
 		return
 	_play_ui("select")
+	if _pending_group >= 0:
+		var rg := sim.apply_command({"type": "group_move", "country": player, "group": _pending_group, "target": pid})
+		if rg["ok"]:
+			_log.append_text("[color=#8ac58a]Группа выступила: %d армий%s[/color]\n" % [rg["moved"], (", без маршрута: %d" % rg["failed"]) if rg["failed"] > 0 else ""])
+		else:
+			_log.append_text("[color=#d9a05a]Группа не может идти: %s[/color]\n" % _reason(rg["reason"]))
+		_pending_group = -1
+		map.queue_redraw()
+		_refresh_all()
+		return
 	if map.selected_wing >= 0 and _pending_air != "" and not sim.wing_by_id(map.selected_wing).is_empty():
 		var cmd: Dictionary
 		if _pending_air == "rebase":
@@ -2892,11 +2902,85 @@ func _g_dip() -> void:
 		_gbody.add_child(HSeparator.new())
 
 
+var _grp_sel := {}          # army ids ticked in the army list
+var _grp_name := ""
+var _pending_group := -1    # group waiting for a target cell on the map
+
+
+## Army groups: tick armies below, name the group and create it; one order then moves the whole group.
+func _group_section(parent: Container, armies: Array) -> void:
+	parent.add_child(_h2("Группы армий"))
+	for g in sim.groups_of(player):
+		var members := sim.group_members(g)
+		var gid: int = g["id"]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", Design.S2)
+		var l := Label.new()
+		var strength := 0
+		for a in members:
+			strength += int(a["strength"])
+		l.text = "%s · армий %d · сила %d%s" % [g["name"], members.size(), strength, "   ◀ выберите цель на карте" if _pending_group == gid else ""]
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		row.add_child(l)
+		var go := Button.new()
+		go.text = "Приказ: идти"
+		go.pressed.connect(func():
+			_pending_group = gid
+			_log.append_text("[color=#8ac5ff]Группа «%s»: выберите цель на карте[/color]\n" % g["name"])
+			_fill_generic(_open_panel_name))
+		row.add_child(go)
+		var focus := Button.new()
+		focus.text = "Показать"
+		focus.pressed.connect(func():
+			if not members.is_empty():
+				_focus_cell(members[0]["prov"], 3.0))
+		row.add_child(focus)
+		var del := Button.new()
+		del.text = "Распустить"
+		del.pressed.connect(func():
+			sim.apply_command({"type": "delete_group", "country": player, "group": gid})
+			_fill_generic(_open_panel_name))
+		row.add_child(del)
+		parent.add_child(row)
+	var make := HBoxContainer.new()
+	make.add_theme_constant_override("separation", Design.S2)
+	var ne := LineEdit.new()
+	ne.placeholder_text = "Название группы"
+	ne.text = _grp_name
+	ne.max_length = 24
+	ne.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ne.text_changed.connect(func(t: String): _grp_name = t)
+	make.add_child(ne)
+	var mk := Button.new()
+	mk.text = "Создать из отмеченных (%d)" % _grp_sel.size()
+	mk.pressed.connect(func():
+		var r := sim.apply_command({"type": "create_group", "country": player, "name": _grp_name, "armies": _grp_sel.keys()})
+		_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", "Группа создана" if r["ok"] else "Группа не создана: %s" % _reason(r["reason"])])
+		if r["ok"]:
+			_grp_sel.clear()
+			_grp_name = ""
+		_fill_generic(_open_panel_name))
+	make.add_child(mk)
+	parent.add_child(make)
+
+
 func _g_army() -> void:
 	var armies := sim.armies_of(player)
 	_gbody.add_child(_h2("Армии (%d)" % armies.size()))
+	_group_section(_gbody, armies)
 	for a in armies:
 		var row := HBoxContainer.new()
+		var pick := CheckBox.new()
+		var pick_id: int = a["id"]
+		pick.button_pressed = _grp_sel.has(pick_id)
+		pick.tooltip_text = "Отметить для группы"
+		pick.toggled.connect(func(on: bool):
+			if on:
+				_grp_sel[pick_id] = true
+			else:
+				_grp_sel.erase(pick_id))
+		row.add_child(pick)
 		var l := Label.new()
 		l.text = "#%d  %s · сила %d · снабж. %d%% · %s" % [a["id"], sim.army_label(a), a["strength"], a["supply"], _where(a["prov"])]
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL

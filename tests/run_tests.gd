@@ -2137,3 +2137,40 @@ func test_division_templates() -> void:
 	for cid in ai.templates:
 		made += ai.templates[cid].size()
 	check(made >= 2, "AI countries create templates (%d)" % made)
+
+
+func test_army_groups() -> void:
+	var sim := _earth()
+	var mine: Array = sim.armies_of(0)
+	if mine.size() < 2:
+		sim._spawn_army(0, sim.countries[0]["capital"])
+		sim._spawn_army(0, sim.countries[0]["capital"])
+		mine = sim.armies_of(0)
+	var ids := [mine[0]["id"], mine[1]["id"]]
+	check(sim.apply_command({"type": "create_group", "country": 0, "name": "", "armies": ids})["reason"] == "invalid name", "a group needs a name")
+	check(sim.apply_command({"type": "create_group", "country": 0, "name": "Одна", "armies": [ids[0]]})["reason"] == "group needs two armies", "a group needs two armies")
+	check(sim.apply_command({"type": "create_group", "country": 1, "name": "Чужие", "armies": ids})["reason"] == "invalid army", "foreign armies cannot be grouped")
+	var before := sim.checksum()
+	var r := sim.apply_command({"type": "create_group", "country": 0, "name": "Ударная группа", "armies": ids})
+	check(r["ok"] and sim.groups_of(0).size() == 1, "a group is created")
+	check(sim.checksum() != before, "a group is part of the state hash")
+	# every member walks to a neighbouring land cell
+	var cap: int = sim.armies_of(0)[0]["prov"]
+	var dest := -1
+	for q in sim.provinces()[cap]["land_neighbors"]:
+		if sim.owner[q] == 0:
+			dest = q
+			break
+	if dest >= 0:
+		var gm := sim.apply_command({"type": "group_move", "country": 0, "group": r["id"], "target": dest})
+		check(gm["ok"] and gm["moved"] == 2, "one order moves the whole group (%s)" % str(gm))
+		check(sim.army_by_id(ids[0])["path"].size() > 0 and sim.army_by_id(ids[1])["path"].size() > 0, "both armies received a route")
+	check(sim.apply_command({"type": "group_move", "country": 1, "group": r["id"], "target": cap})["reason"] == "no such group", "another country cannot order my group")
+	# an army belongs to one group at a time
+	var r2 := sim.apply_command({"type": "create_group", "country": 0, "name": "Вторая", "armies": ids})
+	check(r2["ok"] and sim.groups_of(0).size() == 1, "regrouping the same armies replaces the old group")
+	var restored := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(restored.groups_of(0).size() == 1 and restored.checksum() == sim.checksum(), "groups survive save/load")
+	check(sim.apply_command({"type": "delete_group", "country": 0, "group": r2["id"]})["ok"] and sim.groups_of(0).is_empty(), "a group is dissolved")
+	var same := _earth()
+	check(same.checksum() == _earth().checksum(), "games without groups keep their checksum")
