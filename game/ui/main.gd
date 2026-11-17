@@ -12,6 +12,12 @@ var map_earth: EarthMapView
 var ui: CanvasLayer
 var player := -1
 var _quality := GraphicsQuality.Level.HIGH
+var net: NetSession = null          # multiplayer session (host or client); null in single player
+var _net_pending := {}               # host flow: the game is being set up (country select) before the server starts
+var _net_status: Label = null
+var _net_last_day := -1
+var _net_last_events := -1
+var _net_silent := false             # while true, speed changes do not send pause requests (HUD set-up on join)
 var speed_idx := 1
 var accum := 0.0
 var log_seen := 0
@@ -205,6 +211,7 @@ func _clear_ui() -> void:
 # ------------------------------------------------------------------ menu
 
 func _show_menu() -> void:
+	_net_end()
 	_clear_ui()
 	player = -1
 	sim = null
@@ -254,6 +261,10 @@ func _show_menu() -> void:
 		cont.text = "Продолжить (автосохранение)"
 		cont.pressed.connect(_load_game.bind("auto"))
 		box.add_child(cont)
+	var net_btn := Button.new()
+	net_btn.text = "Сетевая игра"
+	net_btn.pressed.connect(_show_net_menu)
+	box.add_child(net_btn)
 	var load_btn := Button.new()
 	load_btn.text = "Загрузить (F9)"
 	load_btn.pressed.connect(_load_game)
@@ -501,8 +512,9 @@ func _show_country_select() -> void:
 
 func _start_playing(cid: int) -> void:
 	player = cid
-	for c in sim.countries:
-		c["ai"] = c["id"] != cid
+	if net == null:   # in a network game the host decides who is AI (a client must not overwrite it: desync)
+		for c in sim.countries:
+			c["ai"] = c["id"] != cid
 	map.player_country = cid
 	map.selected_province = sim.countries[cid]["capital"]
 	map.selected_army = -1
@@ -518,18 +530,29 @@ func _start_playing(cid: int) -> void:
 	_open_panel_name = ""
 	_build_hud()
 	_refresh_all()
+	if _net_pending.get("mode") == "host":
+		_net_launch_host()
 
 
 func _set_speed(i: int) -> void:
 	speed_idx = i
+	if net != null and not _net_silent:
+		if net.is_host():
+			net.host.set_paused(i == 0)
+		elif net.is_client():
+			net.client.request_pause(i == 0)   # the host owns the clock
 	for k in _speed_btns.size():
 		_speed_btns[k].set_active(k == i)
 	_refresh_top()
 
 
 func _process(delta: float) -> void:
+	if net != null:
+		_net_frame()
 	if sim == null or player < 0:
 		return
+	if net != null and net.is_client():
+		return   # a client never advances time itself: it follows the host's ticks (see _net_frame)
 	var rate: float = SPEEDS[speed_idx]
 	if rate <= 0.0 or (_event_panel != null and is_instance_valid(_event_panel)):
 		return
@@ -538,7 +561,10 @@ func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
 	while accum >= 1.0 and (not stepped or Time.get_ticks_usec() - t0 < 14000):  # frame-time budget: never freeze the UI
 		accum -= 1.0
-		sim.tick_day()
+		if net != null and net.is_host():
+			net.tick()   # advances the day and announces it to every client
+		else:
+			sim.tick_day()
 		stepped = true
 	if accum > 3.0:
 		accum = 3.0  # the simulation cannot keep up at this speed: drop the backlog
@@ -674,9 +700,10 @@ func _refresh_all() -> void:
 func _refresh_top() -> void:
 	if _date_label == null or not is_instance_valid(_date_label):
 		return
+	_date_label.tooltip_text = net.describe() if net != null else ""
 	var c: Dictionary = sim.countries[player]
 	_name_label.text = c["name"]
-	_date_label.text = sim.date_string()
+	_date_label.text = sim.date_string() + (("  ·  " + net.describe()) if net != null else "")
 	var net: int = c["income"] - c["upkeep"]
 	_chip("coin", "%d (%+d)" % [c["treasury"], net], Color("e8c46a") if net >= 0 else Color("e0675a"))
 	_chip("influence", str(c["pp"]), Color("cfd6df"))
@@ -1788,6 +1815,7 @@ func _build_hud() -> void:
 	_main_menu.add_item("Окно без рамки", 6)
 	_main_menu.add_item("Разрешение окна: далее", 7)
 	_main_menu.add_separator()
+	_main_menu.add_item("Переподключиться к хосту", 9)
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
@@ -1837,6 +1865,191 @@ func _change_display(change: Callable) -> void:
 	change.call(display)
 	display.apply(get_window())
 	display.save_settings()
+		9: _net_reconnect()
+
+
+# ------------------------------------------------------------ multiplayer
+
+func _net_end() -> void:
+	if net != null:
+		net.close()
+		net = null
+	_net_pending = {}
+
+
+func _show_net_menu(message: String = "") -> void:
+	_net_end()
+	_clear_ui()
+	player = -1
+	sim = null
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.theme = _theme
+	ui.add_child(root)
+	var bg := ColorRect.new()
+	bg.color = Color("0b1119")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.custom_minimum_size = Vector2(420, 0)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.add_theme_constant_override("separation", 10)
+	root.add_child(box)
+	box.add_child(_h1("Сетевая игра"))
+	box.add_child(_muted("Хост ведёт игру и часы, клиенты шлют команды. Все должны иметь одну версию игры и данных. Порт по умолчанию — %d (UDP)." % NetProtocol.DEFAULT_PORT))
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Ваше имя"
+	name_edit.text = "Игрок"
+	box.add_child(name_edit)
+	var addr_edit := LineEdit.new()
+	addr_edit.placeholder_text = "Адрес хоста"
+	addr_edit.text = "127.0.0.1"
+	box.add_child(addr_edit)
+	var port_edit := LineEdit.new()
+	port_edit.placeholder_text = "Порт"
+	port_edit.text = str(NetProtocol.DEFAULT_PORT)
+	box.add_child(port_edit)
+	_net_status = Label.new()
+	_net_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_net_status.add_theme_color_override("font_color", Color("d9a05a"))
+	_net_status.text = message
+	var host_btn := Button.new()
+	host_btn.text = "Создать игру (Современный мир)"
+	host_btn.pressed.connect(func():
+		_net_host_start(NetProtocol.clean_name(name_edit.text), port_edit.text.to_int() if port_edit.text.is_valid_int() else NetProtocol.DEFAULT_PORT))
+	box.add_child(host_btn)
+	var join_btn := Button.new()
+	join_btn.text = "Подключиться"
+	join_btn.pressed.connect(func():
+		_net_join_start(NetProtocol.clean_name(name_edit.text), addr_edit.text.strip_edges(), port_edit.text.to_int() if port_edit.text.is_valid_int() else NetProtocol.DEFAULT_PORT))
+	box.add_child(join_btn)
+	box.add_child(_net_status)
+	var back := Button.new()
+	back.text = "← Назад"
+	back.pressed.connect(_show_menu)
+	box.add_child(back)
+
+
+## Host: set the real-world scenario up, let the player pick a country, then the server starts (see _start_playing).
+func _net_host_start(pname: String, port: int) -> void:
+	_net_pending = {"mode": "host", "port": port, "name": pname}
+	_start_scenario(ScenarioLoader.read_file("res://game/scenarios/modern_world.json"))
+
+
+func _net_launch_host() -> void:
+	var port: int = _net_pending.get("port", NetProtocol.DEFAULT_PORT)
+	_net_pending = {}
+	var t := ENetServerTransport.new()
+	var err := t.listen(port)
+	if err != OK:
+		_log.append_text("[color=#d96a5a]Не удалось открыть порт %d (ошибка %d): сетевая игра не запущена.[/color]\n" % [port, err])
+		return
+	_net_attach_host(NetHost.new(sim, t))
+	_log.append_text("[color=#8ac58a]Сервер запущен на порту %d. Игра на паузе: нажмите скорость, когда игроки подключатся.[/color]\n" % port)
+
+
+func _net_attach_host(h: NetHost) -> void:
+	net = NetSession.for_host(h)
+	h.set_host_country(player)
+	h.log_added.connect(func(text: String):
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: %s[/color]\n" % text))
+	_set_speed(0)
+
+
+func _net_join_start(pname: String, address: String, port: int) -> void:
+	var t := ENetClientTransport.new()
+	if address == "" or t.connect_to(address, port) != OK:
+		_net_status.text = "Не удалось начать подключение к %s:%d" % [address, port]
+		return
+	_net_attach_client(NetClient.new(t, pname), address, port)
+	_net_status.text = "Подключение к %s:%d…" % [address, port]
+
+
+func _net_attach_client(c: NetClient, address: String = "127.0.0.1", port: int = NetProtocol.DEFAULT_PORT) -> void:
+	net = NetSession.for_client(c, address, port)
+	_net_hook_client(c)
+
+
+func _net_hook_client(c: NetClient) -> void:
+	c.sim_replaced.connect(_net_on_sim_replaced)
+	c.log_added.connect(func(text: String):
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: %s[/color]\n" % text))
+
+
+func _net_reconnect() -> void:
+	if net == null or not net.is_client() or net.client.state == "playing":
+		return
+	if net.reconnect():
+		_net_hook_client(net.client)
+		_net_last_day = -1
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: переподключение…[/color]\n")
+
+
+## Every frame of a multiplayer session: pump the network, start the client game when the host welcomed us, refresh.
+func _net_frame() -> void:
+	net.poll()
+	if _net_status != null and is_instance_valid(_net_status) and net.is_client() and player < 0:
+		_net_status.text = net.describe()
+		if net.client.state == "rejected" or net.client.state == "disconnected":
+			var why := net.client.last_error
+			_net_end()
+			_show_net_menu("Отказ: %s" % why if why != "" else "Нет соединения")
+			return
+	if net.is_client() and net.client.state == "playing":
+		if player < 0 or sim != net.client.sim:
+			_net_client_ready()
+		_net_sync_speed_ui()
+		var ev: int = net.client.stats["events"]
+		if sim.day != _net_last_day or ev != _net_last_events:
+			_net_last_day = sim.day
+			_net_last_events = ev
+			var dirty := sim.dirty_provinces.duplicate()
+			sim.dirty_provinces.clear()
+			map.refresh(dirty)
+			_refresh_all()
+	elif net.is_host() and sim != null and player >= 0:
+		var n: int = net.host.connected_count()
+		if n != _net_last_events:
+			_net_last_events = n
+			_refresh_top()
+
+
+func _net_client_ready() -> void:
+	sim = net.client.sim
+	_bind_map(sim)
+	_net_silent = true
+	_start_playing(net.client.country)   # keeps the network's AI flags (see _start_playing)
+	_net_silent = false
+	_net_last_day = sim.day
+	_net_last_events = -1
+	_net_sync_speed_ui()
+
+
+## A client's speed buttons only show what the host does (paused or running); they never change the host's clock by themselves.
+func _net_sync_speed_ui() -> void:
+	var want := 0 if net.client.paused else maxi(1, speed_idx)
+	if want != speed_idx:
+		_net_silent = true
+		_set_speed(want)
+		_net_silent = false
+
+
+## The host sent a snapshot after a desync: continue with the repaired simulation.
+func _net_on_sim_replaced() -> void:
+	if player < 0 or net == null or not net.is_client():
+		return
+	sim = net.client.sim
+	_bind_map(sim)
+	map.player_country = player
+	if map is EarthMapView:
+		map.repaint_all()
+	_net_last_day = -1
+	_refresh_all()
 
 
 # ------------------------------------------------------------ navigation rail
