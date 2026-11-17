@@ -93,6 +93,19 @@ var ai_war_chance := 1.0          # probability gate for AI war declarations (sc
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
 var rule_terrain := false         # terrain, roads and railways change movement and supply cost
 var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
+var rule_templates := false       # division templates: the player designs divisions from battalions
+var templates := {}               # cid -> Array of {"id": n, "name": String, "bn": Array of battalion ids}
+var next_tpl_id := 1
+const MAX_TEMPLATES := 8
+const MAX_BATTALIONS := 9
+## Battalion types (game balance only). Division hp is the sum; attack/defence are hp-weighted averages.
+const BATTALIONS := {
+	"inf": {"name": "Пехота", "cost": 8, "steel": 5, "manpower": 3, "hp": 125, "atk": 1.0, "def": 1.0, "oil": false, "terrain_of": "infantry"},
+	"art": {"name": "Артиллерия", "cost": 12, "steel": 8, "manpower": 2, "hp": 90, "atk": 1.6, "def": 0.7, "oil": false, "terrain_of": "artillery"},
+	"tank": {"name": "Танки", "cost": 15, "steel": 10, "manpower": 2, "hp": 150, "atk": 2.0, "def": 1.1, "oil": true, "terrain_of": "armor"},
+	"recon": {"name": "Разведка", "cost": 6, "steel": 3, "manpower": 1, "hp": 60, "atk": 0.6, "def": 0.8, "oil": false, "terrain_of": "infantry"},
+	"eng": {"name": "Инженеры", "cost": 9, "steel": 6, "manpower": 2, "hp": 90, "atk": 0.8, "def": 1.2, "oil": false, "terrain_of": "infantry"},
+}
 var rule_markets := false         # population dynamics and a world market with floating prices
 var pop_bp := {}                  # cid -> population index in basis points (10000 = start); only with rules.markets
 var market_pct := {}              # resource -> world price in percent of the base price (100 = base)
@@ -901,6 +914,9 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_weather = bool(scn.get("rules", {}).get("weather", false))
 	rule_modern = bool(scn.get("rules", {}).get("modern", false))
 	rule_markets = bool(scn.get("rules", {}).get("markets", false))
+	rule_templates = bool(scn.get("rules", {}).get("templates", false))
+	templates = {}
+	next_tpl_id = 1
 	pop_bp = {}
 	market_pct = {}
 	_market_flow = {}
@@ -2082,6 +2098,10 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			return _resolve_event(countries[cid], cmd.get("uid", -1), cmd.get("option", -1))
 		"build_wing":
 			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
+		"create_template":
+			return _create_template(cid, str(cmd.get("name", "")), cmd.get("bn", []))
+		"delete_template":
+			return _delete_template(cid, str(cmd.get("key", "")))
 		"market_buy":
 			return _market_trade(cid, cmd.get("res", ""), int(cmd.get("amount", 1)), true)
 		"market_sell":
@@ -2132,6 +2152,8 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			var ut: String = cmd.get("unit", "")
 			if not unit_defs.has(ut):
 				return _fail("invalid unit")
+			if unit_defs[ut].get("template", false) and not ut.begins_with("tpl_%d_" % cid):
+				return _fail("invalid unit")   # templates are private to their country
 			return _train(cid, ut, cmd.get("army", -1))
 		"merge_armies":
 			var ma := army_by_id(cmd.get("army", -1))
@@ -3414,6 +3436,121 @@ func _log(text: String) -> void:
 		log_lines.pop_front()
 
 
+# ---------------------------------------------------------------- division templates (rules.templates)
+
+func template_key(cid: int, id: int) -> String:
+	return "tpl_%d_%d" % [cid, id]
+
+
+## Division stats of a battalion list as a unit definition (same fields as data/units.json), or {} when the list is invalid.
+func template_stats(bn: Array) -> Dictionary:
+	if bn.is_empty() or bn.size() > MAX_BATTALIONS:
+		return {}
+	var cost := 0
+	var steel := 0
+	var mp := 0
+	var hp := 0
+	var atk := 0.0
+	var def := 0.0
+	var oil := false
+	var counts := {}
+	var terr := {"plains": 0.0, "forest": 0.0, "hills": 0.0, "mountain": 0.0, "desert": 0.0}
+	for t in bn:
+		if not BATTALIONS.has(t):
+			return {}
+		var b: Dictionary = BATTALIONS[t]
+		cost += b["cost"]
+		steel += b["steel"]
+		mp += b["manpower"]
+		hp += b["hp"]
+		atk += b["atk"] * b["hp"]
+		def += b["def"] * b["hp"]
+		oil = oil or b["oil"]
+		counts[t] = int(counts.get(t, 0)) + 1
+		for k in terr:
+			terr[k] += float(unit_defs[b["terrain_of"]]["terrain"].get(k, 1.0)) * b["hp"]
+	atk /= hp
+	def /= hp
+	for k in terr:
+		terr[k] /= hp
+	# combined arms: infantry, artillery and tanks together fight better
+	if counts.has("inf") and counts.has("art") and counts.has("tank"):
+		atk *= 1.08
+	# reconnaissance softens every terrain penalty, engineers help in broken ground
+	if counts.has("recon"):
+		for k in terr:
+			if terr[k] < 1.0:
+				terr[k] += (1.0 - terr[k]) * 0.5
+	if counts.has("eng"):
+		for k in ["forest", "hills", "mountain"]:
+			terr[k] += 0.1
+	for k in terr:
+		terr[k] = snappedf(terr[k], 0.01)
+	return {"cost": cost, "steel": steel, "manpower": mp, "hp": hp, "atk": snappedf(atk, 0.01), "def": snappedf(def, 0.01), "oil": oil, "terrain": terr}
+
+
+func _register_template(cid: int, tpl: Dictionary) -> void:
+	var st := template_stats(tpl["bn"])
+	if st.is_empty():
+		return
+	st["id"] = template_key(cid, tpl["id"])
+	st["name"] = tpl["name"]
+	st["template"] = true
+	unit_defs[st["id"]] = st
+
+
+func _register_all_templates() -> void:
+	for cid in templates:
+		for tpl in templates[cid]:
+			_register_template(int(cid), tpl)
+
+
+func _create_template(cid: int, tname: String, bn: Array) -> Dictionary:
+	if not rule_templates:
+		return _fail("rule disabled")
+	tname = tname.strip_edges()
+	if tname.is_empty() or tname.length() > 24:
+		return _fail("invalid name")
+	if template_stats(bn).is_empty():
+		return _fail("invalid battalions")
+	var mine: Array = templates.get(cid, [])
+	if mine.size() >= MAX_TEMPLATES:
+		return _fail("too many templates")
+	var tpl := {"id": next_tpl_id, "name": tname, "bn": bn.duplicate()}
+	next_tpl_id += 1
+	mine.append(tpl)
+	templates[cid] = mine
+	_register_template(cid, tpl)
+	return {"ok": true, "key": template_key(cid, tpl["id"])}
+
+
+func _delete_template(cid: int, key: String) -> Dictionary:
+	if not rule_templates:
+		return _fail("rule disabled")
+	var mine: Array = templates.get(cid, [])
+	for i in mine.size():
+		if template_key(cid, mine[i]["id"]) == key:
+			for a in armies:
+				for d in a["div"]:
+					if d["t"] == key:
+						return _fail("template in use")
+			mine.remove_at(i)
+			unit_defs.erase(key)
+			return {"ok": true}
+	return _fail("no such template")
+
+
+## Default templates for AI countries (created on first use): a line infantry division and a tank division.
+func _ai_template_key(cid: int, kind: String) -> String:
+	if not templates.has(cid):
+		_create_template(cid, "Пехотная дивизия", ["inf", "inf", "inf", "art", "eng"])
+		_create_template(cid, "Танковая дивизия", ["tank", "tank", "tank", "inf", "inf", "art", "recon"])
+	var mine: Array = templates.get(cid, [])
+	if mine.size() < 2:
+		return ""
+	return template_key(cid, mine[0 if kind == "infantry" else 1]["id"])
+
+
 # ---------------------------------------------------------------- population and world market (rules.markets)
 
 ## Population index (basis points, 10000 = scenario start). Scales food demand and manpower growth.
@@ -3755,7 +3892,12 @@ func _ai() -> void:
 		# economic: build armies
 		if c["treasury"] >= 120 and divisions_of(cid) < 6 + cells_of(cid).size():
 			var kinds := ["infantry", "infantry", "armor", "artillery"]
-			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
+			var kind: String = kinds[(day / 5 + cid) % kinds.size()]
+			if rule_templates and kind != "artillery":
+				var tk := _ai_template_key(cid, kind)
+				if tk != "":
+					kind = tk
+			_train(cid, kind)
 		_ai_generals(cid)
 		_ai_air(cid)
 		if rule_modern:
@@ -3890,7 +4032,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "rule_templates": rule_templates, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3929,6 +4071,10 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.name_pool = load_name_pool()
 	sim.rule_modern = bool(d.get("rule_modern", false))
 	sim.rule_markets = bool(d.get("rule_markets", false))
+	sim.rule_templates = bool(d.get("rule_templates", false))
+	sim.templates = d.get("templates", {})
+	sim.next_tpl_id = int(d.get("next_tpl_id", 1))
+	sim._register_all_templates()
 	sim.pop_bp = d.get("pop_bp", {})
 	sim.market_pct = d.get("market_pct", {})
 	sim._market_flow = d.get("market_flow", {})
@@ -3969,6 +4115,8 @@ func checksum() -> int:
 	var parts := [day, owner, legal, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
 	if not sanctions.is_empty():
 		parts.append(sanctions)   # only when present: a game without sanctions keeps the checksum it always had
+	if rule_templates:
+		parts.append([templates, next_tpl_id])
 	if rule_markets:
 		parts.append([pop_bp, market_pct, _market_flow])
 	if rule_modern:

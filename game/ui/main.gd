@@ -90,7 +90,7 @@ const REASONS := {
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already sanctioned": "санкции уже введены", "no sanctions": "санкций нет",
-	"no missiles": "нет ракет в запасе", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
+	"no missiles": "нет ракет в запасе", "invalid name": "нужно название до 24 знаков", "invalid battalions": "нужно от 1 до 9 батальонов", "too many templates": "не больше 8 шаблонов", "template in use": "есть дивизии этого шаблона", "no such template": "шаблон не найден", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
@@ -1056,6 +1056,8 @@ func _refresh_info() -> void:
 	if o == player and pid == sim.countries[player]["capital"]:
 		for ut in sim.unit_defs:
 			var u: Dictionary = sim.unit_defs[ut]
+			if u.get("template", false) and not str(ut).begins_with("tpl_%d_" % player):
+				continue   # templates of other countries
 			var tb := Button.new()
 			tb.text = "Обучить: %s (%d $, %d стали, %d чел.)" % [u["name"], u["cost"], u["steel"], u["manpower"]]
 			var target_army := map.selected_army if (map.selected_army >= 0 and not sim.army_by_id(map.selected_army).is_empty() and sim.army_by_id(map.selected_army)["prov"] == pid) else -1
@@ -1118,6 +1120,93 @@ func _sanction_button(o: int, parent: Container = null) -> void:
 		_cmd_button("Снять санкции: %s" % oname, {"type": "lift_sanctions", "country": player, "target": o}, parent)
 	else:
 		_cmd_button("Санкции: %s (−%d влияния)" % [oname, Simulation.SANCTION_COST_PP], {"type": "impose_sanctions", "country": player, "target": o}, parent)
+
+
+var _tpl_counts := {"inf": 4, "art": 0, "tank": 0, "recon": 0, "eng": 0}
+var _tpl_name := ""
+
+
+## Division template designer: battalion counts, a live preview of the resulting division and the list of own templates.
+func _template_section(parent: Container) -> void:
+	parent.add_child(HSeparator.new())
+	parent.add_child(_h2("Шаблоны дивизий (до %d батальонов)" % Simulation.MAX_BATTALIONS))
+	var preview := Label.new()
+	preview.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var update := func():
+		var bn: Array = []
+		for k in Simulation.BATTALIONS:
+			for i in int(_tpl_counts.get(k, 0)):
+				bn.append(k)
+		var st := sim.template_stats(bn)
+		if st.is_empty():
+			preview.text = "Нужно от 1 до %d батальонов" % Simulation.MAX_BATTALIONS
+			preview.add_theme_color_override("font_color", Design.C_WARN)
+		else:
+			preview.text = "Дивизия: %d батальонов · сила %d · атака %.2f · защита %.2f · %d $, %d стали, %d чел.%s" % [bn.size(), st["hp"], st["atk"], st["def"], st["cost"], st["steel"], st["manpower"], " · нужна нефть" if st["oil"] else ""]
+			preview.add_theme_color_override("font_color", Design.C_TEXT)
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("h_separation", Design.S3)
+	parent.add_child(row)
+	for k in Simulation.BATTALIONS:
+		var key: String = k
+		var cell := HBoxContainer.new()
+		var l := Label.new()
+		l.text = Simulation.BATTALIONS[key]["name"]
+		cell.add_child(l)
+		var sp := SpinBox.new()
+		sp.min_value = 0
+		sp.max_value = Simulation.MAX_BATTALIONS
+		sp.value = int(_tpl_counts.get(key, 0))
+		sp.value_changed.connect(func(v: float):
+			_tpl_counts[key] = int(v)
+			update.call())
+		cell.add_child(sp)
+		row.add_child(cell)
+	parent.add_child(preview)
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Название шаблона"
+	name_edit.text = _tpl_name
+	name_edit.max_length = 24
+	name_edit.text_changed.connect(func(t: String): _tpl_name = t)
+	parent.add_child(name_edit)
+	var create := Button.new()
+	create.text = "Создать шаблон"
+	create.pressed.connect(func():
+		var bn: Array = []
+		for k in Simulation.BATTALIONS:
+			for i in int(_tpl_counts.get(k, 0)):
+				bn.append(k)
+		var r := sim.apply_command({"type": "create_template", "country": player, "name": _tpl_name, "bn": bn})
+		_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if r["ok"] else "#d9a05a", "Шаблон создан" if r["ok"] else "Шаблон не создан: %s" % _reason(r["reason"])])
+		if r["ok"]:
+			_tpl_name = ""
+		_fill_generic(_open_panel_name))
+	parent.add_child(create)
+	for tpl in sim.templates.get(player, []):
+		var key2: String = sim.template_key(player, tpl["id"])
+		var st2: Dictionary = sim.unit_defs.get(key2, {})
+		var counts := {}
+		for t in tpl["bn"]:
+			counts[t] = int(counts.get(t, 0)) + 1
+		var parts: Array[String] = []
+		for k in counts:
+			parts.append("%d %s" % [counts[k], str(Simulation.BATTALIONS[k]["name"]).to_lower()])
+		var line := HBoxContainer.new()
+		var tl := Label.new()
+		tl.text = "%s: %s · сила %d" % [tpl["name"], ", ".join(parts), int(st2.get("hp", 0))]
+		tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		line.add_child(tl)
+		var del := Button.new()
+		del.text = "Удалить"
+		del.pressed.connect(func():
+			var rd := sim.apply_command({"type": "delete_template", "country": player, "key": key2})
+			if not rd["ok"]:
+				_log.append_text("[color=#d9a05a]%s[/color]\n" % _reason(rd["reason"]))
+			_fill_generic(_open_panel_name))
+		line.add_child(del)
+		parent.add_child(line)
+	update.call()
 
 
 func _cmd_button(label: String, cmd: Dictionary, parent: Container = null) -> void:
@@ -2703,7 +2792,11 @@ func _g_build() -> void:
 	_gbody.add_child(_h2("Производство в столице (%s)" % _where(c["capital"])))
 	for ut in sim.unit_defs:
 		var ud: Dictionary = sim.unit_defs[ut]
+		if ud.get("template", false) and not str(ut).begins_with("tpl_%d_" % player):
+			continue
 		_cmd_button("Дивизия: %s — %d $, %d стали, %d чел." % [ud["name"], ud["cost"], ud["steel"], ud["manpower"]], {"type": "train_division", "country": player, "unit": ut}, _gbody)
+	if sim.rule_templates:
+		_template_section(_gbody)
 	var port := sim.port_of(player)
 	if port >= 0:
 		_cmd_button("Флот в порту (%s) — %d $, %d стали" % [_where(port), Simulation.FLEET_COST, Simulation.FLEET_STEEL], {"type": "build_fleet", "country": player}, _gbody)

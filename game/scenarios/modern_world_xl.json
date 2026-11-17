@@ -16,6 +16,7 @@
   "terrain": true,
   "weather": true,
   "modern": true,
-  "markets": true
+  "markets": true,
+  "templates": true
  }
 }

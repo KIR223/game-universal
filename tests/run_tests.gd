@@ -2083,3 +2083,57 @@ func test_ui_motion_helpers() -> void:
 func test_icon_set_is_complete() -> void:
 	for n in ["air", "fleet", "missile", "drone", "market", "weather", "satellite"]:
 		check(Icons.NAMES.has(n), "icon %s is registered" % n)
+
+
+func test_division_templates() -> void:
+	var plain := _earth()
+	check(plain.apply_command({"type": "create_template", "country": 0, "name": "X", "bn": ["inf"]})["reason"] == "rule disabled", "templates need the rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"templates": true}
+	var sim := Simulation.new()
+	check(sim.setup_scenario(scn).is_empty(), "scenario with templates loads")
+	var four := sim.template_stats(["inf", "inf", "inf", "inf"])
+	check(four["hp"] == 500 and four["cost"] == 32 and is_equal_approx(four["atk"], 1.0), "four infantry battalions equal the classic infantry division")
+	var plain_avg := sim.template_stats(["inf", "art", "tank"])
+	var combined := sim.template_stats(["inf", "art", "tank"])
+	var no_tank := sim.template_stats(["inf", "art"])
+	check(combined["atk"] > no_tank["atk"], "combined arms attack beats infantry + artillery (%.2f vs %.2f)" % [combined["atk"], no_tank["atk"]])
+	check(sim.template_stats(["tank", "tank"])["oil"] and not four["oil"], "tanks make a division oil-dependent")
+	var tank_only := sim.template_stats(["tank", "tank"])
+	var with_recon := sim.template_stats(["tank", "tank", "recon"])
+	check(with_recon["terrain"]["mountain"] > tank_only["terrain"]["mountain"], "reconnaissance softens terrain penalties")
+	check(sim.template_stats([]).is_empty() and sim.template_stats(["inf", "inf", "inf", "inf", "inf", "inf", "inf", "inf", "inf", "inf"]).is_empty() and sim.template_stats(["ufo"]).is_empty(), "invalid battalion lists are refused")
+	var c: Dictionary = sim.countries[0]
+	var r := sim.apply_command({"type": "create_template", "country": 0, "name": "Штурмовая", "bn": ["inf", "inf", "art", "eng"]})
+	check(r["ok"] and sim.unit_defs.has(r["key"]), "a template becomes a unit type")
+	check(sim.apply_command({"type": "create_template", "country": 0, "name": "", "bn": ["inf"]})["reason"] == "invalid name", "a name is required")
+	var key: String = r["key"]
+	c["treasury"] = 1000
+	c["stock"]["steel"] = 500
+	c["manpower"] = 500
+	var divs_before := sim.divisions_of(0)
+	var t0: int = c["treasury"]
+	var tr := sim.apply_command({"type": "train_division", "country": 0, "unit": key})
+	check(tr["ok"] and sim.divisions_of(0) == divs_before + 1 and c["treasury"] == t0 - int(sim.unit_defs[key]["cost"]), "a template division is trained and paid for")
+	check(sim.apply_command({"type": "train_division", "country": 1, "unit": key})["reason"] == "invalid unit", "other countries cannot train my template")
+	check(sim.apply_command({"type": "delete_template", "country": 0, "key": key})["reason"] == "template in use", "a template in use cannot be deleted")
+	var r2 := sim.apply_command({"type": "create_template", "country": 0, "name": "Запасная", "bn": ["inf"]})
+	check(sim.apply_command({"type": "delete_template", "country": 0, "key": r2["key"]})["ok"] and not sim.unit_defs.has(r2["key"]), "an unused template is deleted")
+	for i in 8:
+		sim.apply_command({"type": "create_template", "country": 0, "name": "T%d" % i, "bn": ["inf"]})
+	check(sim.apply_command({"type": "create_template", "country": 0, "name": "Лишняя", "bn": ["inf"]})["reason"] == "too many templates", "at most 8 templates per country")
+	# fighting with a template division works (combat reads the generated definition)
+	for i in 5:
+		sim.tick_day()
+	var restored := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(restored.unit_defs.has(key) and restored.templates[0].size() == sim.templates[0].size(), "templates survive save/load")
+	check(restored.checksum() == sim.checksum(), "checksum survives save/load with templates")
+	# AI countries design their own divisions
+	var ai := Simulation.new()
+	ai.setup_scenario(scn)
+	for i in 80:
+		ai.tick_day()
+	var made := 0
+	for cid in ai.templates:
+		made += ai.templates[cid].size()
+	check(made >= 2, "AI countries create templates (%d)" % made)
