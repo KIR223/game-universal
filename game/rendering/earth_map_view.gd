@@ -927,11 +927,66 @@ func _draw_facilities(z: float) -> void:
 			draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
 
 
+## Region (admin-1) centroids in simulation-raster pixels, weighted by cell area; built once per dataset.
+var _region_info: Array = []   # [{id, pos(Vector2 px), pixels}]
+var _region_ds := ""
+
+
+func _build_region_info() -> void:
+	_region_ds = str(sim.world.get("dataset", ""))
+	var sums := {}
+	for p in sim.provinces():
+		if not p["land"] or int(p["region"]) <= 0:
+			continue
+		var w: float = p["cell_count"]
+		var a: Vector3 = sums.get(p["region"], Vector3.ZERO)
+		sums[p["region"]] = Vector3(a.x + w, a.y + p["center"].x * w, a.z + p["center"].y * w)
+	_region_info = []
+	for rid in sums:
+		var a2: Vector3 = sums[rid]
+		var r: Dictionary = sim.world["regions"][int(rid) - 1]
+		if r.get("kind") == "country":
+			continue   # countries without admin-1 data are labelled as countries
+		_region_info.append({"id": int(rid), "pos": Vector2(a2.y / a2.x, a2.z / a2.x), "pixels": a2.x})
+	_region_info.sort_custom(func(a, b): return a["pixels"] > b["pixels"])
+
+
+## Names of administrative regions, shown from mid zoom; only regions big enough on screen to hold their name, biggest first.
+func _draw_region_labels(z: float, font: Font) -> void:
+	if z < 1.5:
+		return
+	if _region_ds != str(sim.world.get("dataset", "")):
+		_build_region_info()
+	var res := float(sim.world.get("res", 0.2))
+	var alpha := clampf((z - 1.5) / 1.0, 0.0, 1.0) * 0.85
+	var taken := {}
+	var shown := 0
+	for ri in _region_info:
+		if shown >= 160:
+			break
+		var pos := px_to_world(ri["pos"])
+		if not cull.has_point(pos):
+			continue
+		var extent_px := sqrt(ri["pixels"]) * res * (_world_w / 360.0) * z
+		var nm := EarthWorld.region_name(sim.world, ri["id"])
+		var px := int(clampf(10.0 + extent_px / 90.0, 10.0, 15.0))
+		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+		if extent_px < tw * 0.9:
+			continue
+		var gk := Vector2i(int(pos.x * z / 110.0), int(pos.y * z / 18.0))
+		if taken.has(gk):
+			continue
+		taken[gk] = true
+		_text(font, pos, nm, px, Color(0.93, 0.95, 1.0, alpha), -tw * 0.5)
+		shown += 1
+
+
 func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
+	_draw_region_labels(z, ThemeDB.fallback_font)
 	if z > 5.0:
 		return
 	var font := ThemeDB.fallback_font
