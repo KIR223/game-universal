@@ -2,7 +2,7 @@
 
 ## Где лежат сценарии
 - Встроенные: `game/scenarios/*.json`, список в `game/scenarios/index.json`.
-- Пользовательские и модовые: `user://scenarios/*.json` (macOS: `~/Library/Application Support/Godot/app_userdata/Iron Dominion/scenarios/`; Windows: `%APPDATA%\Godotpp_userdata\Iron Dominion\scenarios\`; Android: `files/scenarios/` во внутреннем хранилище приложения). Редактор сохраняет сюда.
+- Пользовательские и модовые: `user://scenarios/*.json` (macOS: `~/Library/Application Support/Godot/app_userdata/Iron Dominion/scenarios/`; Windows: `%APPDATA%\Godot\app_userdata\Iron Dominion\scenarios\`; Android: `files/scenarios/` во внутреннем хранилище приложения). Редактор сохраняет сюда.
 
 ## Формат (schema_version 1)
 ```json
