@@ -90,6 +90,14 @@ var _agg: Dictionary = {}         # country id -> {"prod","pop","ind","income"} 
 var _blockade_key: Array = []   # inputs of the last blockade computation (see _logistics)
 var _agg_key: Array = []
 var ai_war_chance := 1.0          # probability gate for AI war declarations (scenario-tunable)
+## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
+var rule_terrain := false         # terrain, roads and railways change movement and supply cost
+var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
+var rule_weather := false         # seasons, winter by latitude and local storms slow armies, supply and air operations
+var _cell_lat := PackedFloat32Array()
+var _start_doy := 1
+const TERRAIN_MOVE := {"plains": 100, "desert": 125, "forest": 150, "hills": 165, "mountain": 260, "sea": 100}  # percent of base days
+const TERRAIN_SUPPLY_EXTRA := {"plains": 0, "desert": 2, "forest": 2, "hills": 3, "mountain": 6, "sea": 0}
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -149,6 +157,12 @@ func set_owner(p: int, cid: int) -> void:
 	var old := owner[p]
 	if old == cid:
 		return
+	var base_ok := _agg_base_ver == _owner_ver and not _agg_base.is_empty()
+	if base_ok:
+		if old >= 0:
+			_agg_cell(_agg_base, old, p, -1)
+		if cid >= 0:
+			_agg_cell(_agg_base, cid, p, 1)
 	if old >= 0 and _cp.has(old):
 		var l: Array = _cp[old]
 		var i := l.bsearch(p)
@@ -162,6 +176,8 @@ func set_owner(p: int, cid: int) -> void:
 		var l2: Array = _cp[cid]
 		l2.insert(l2.bsearch(p), p)
 	_owner_ver += 1
+	if base_ok:
+		_agg_base_ver = _owner_ver
 
 
 ## Read-only view of the cells a country controls (do not modify).
@@ -240,6 +256,8 @@ func _load_techs() -> void:
 	if typeof(parsed) != TYPE_DICTIONARY:
 		return
 	for t in parsed.get("techs", []):
+		if t.get("rule", "") == "modern" and not rule_modern:
+			continue   # opt-in rule set: not part of scenarios that do not enable it
 		tech_defs[t["id"]] = t
 		tech_order.append(t["id"])
 
@@ -427,7 +445,11 @@ func _set_mission(cid: int, w: Dictionary, mission: String, target: int) -> Dict
 
 
 func _can_fly(w: Dictionary) -> bool:
-	return not countries[w["owner"]]["short"].has("oil")
+	if countries[w["owner"]]["short"].has("oil"):
+		return false
+	if rule_weather and (storm_at(w["base"]) or winter_at(w["base"]) > 85):
+		return false
+	return true
 
 
 func air_oil(cid: int) -> int:
@@ -629,8 +651,10 @@ static func _tag_color(tag: String) -> String:
 
 ## Build the game on the real-world dataset: every sovereign state with territory becomes a country.
 func setup_earth(scn: Dictionary) -> Array:
-	if not EarthWorld.available():
-		return ["real-world dataset is missing (data/world)"]
+	var ds := str(scn.get("world_dataset", "world"))
+	if not EarthWorld.available_dataset(ds):
+		return ["real-world dataset is missing (data/%s)" % ds]
+	EarthWorld.activate(ds)
 	seed_value = int(scn.get("seed", 2026))
 	rng.seed = seed_value
 	_load_static()
@@ -726,7 +750,8 @@ func front_cells(a: int, b: int) -> Array[int]:
 	return out
 
 
-## Cells of `cid` that are not connected to its capital through cells held by itself or allies (pockets / encircled areas).
+## Cells of `cid` that are cut off from its capital by the enemy: not connected through own/allied cells AND touching a cell held by
+## a country it is at war with (islands and exclaves with no enemy next to them are not "encircled").
 func cut_off_cells(cid: int) -> Array[int]:
 	var provs := provinces()
 	var cap: int = countries[cid]["capital"]
@@ -740,10 +765,17 @@ func cut_off_cells(cid: int) -> Array[int]:
 				if not reached.has(q) and (owner[q] == cid or (owner[q] >= 0 and allied(cid, owner[q]))):
 					reached[q] = true
 					queue.append(q)
+	var enemies := enemies_of(cid)
 	var out: Array[int] = []
+	if enemies.is_empty():
+		return out
 	for p in cells_of(cid):
-		if not reached.has(p):
-			out.append(p)
+		if reached.has(p):
+			continue
+		for q in provs[p]["land_neighbors"]:
+			if enemies.has(owner[q]):
+				out.append(p)
+				break
 	return out
 
 
@@ -851,6 +883,12 @@ func setup_scenario(scn: Dictionary) -> Array:
 	disabled_events = scn.get("disabled_events", []).duplicate()
 	grace_days = int(scn.get("grace_days", GRACE_DAYS))
 	ai_war_chance = float(scn.get("ai_war_chance", 1.0))
+	rule_terrain = bool(scn.get("rules", {}).get("terrain", false))
+	rule_weather = bool(scn.get("rules", {}).get("weather", false))
+	rule_modern = bool(scn.get("rules", {}).get("modern", false))
+	if rule_modern:
+		_load_techs()
+	_compute_start_doy()
 	scenario_id = str(scn.get("id", ""))
 	if is_earth:
 		var ep := setup_earth(scn)
@@ -2291,25 +2329,56 @@ func tick_day() -> void:
 	_in_tick = false
 
 
+var _agg_base: Dictionary = {}
+var _agg_base_ver := -1
+
+
+## Adds (sign = 1) or removes (sign = -1) one cell's undamaged contribution to the per-country base sums.
+func _agg_cell(base: Dictionary, o: int, p: int, sign: int) -> void:
+	if not base.has(o):
+		base[o] = {"prod": {}, "pop": 0, "ind": 0, "income": 0, "n": 0}
+	var a: Dictionary = base[o]
+	var pv: Dictionary = provinces()[p]
+	for r in pv["deposits"]:
+		a["prod"][r] = a["prod"].get(r, 0) + sign * pv["deposits"][r]
+	a["pop"] += sign * pv["pop"]
+	a["ind"] += sign * ((pv["industry"] * 100 + 50) / 100)
+	a["income"] += sign * (pv["pop"] * pv["industry"] * 100 / 10000)
+	a["n"] += sign
+	if a["n"] == 0:
+		base.erase(o)
+
+
+## Per-country sums of production, population, industry and income. The undamaged sums are cached until ownership changes;
+## each call only adds the (exact, integer) correction of the currently damaged cells.
 func _aggregate() -> Dictionary:
+	var provs := provinces()
+	if _agg_base_ver != _owner_ver or _agg_base.is_empty():
+		var base := {}
+		for p in owner.size():
+			if owner[p] >= 0:
+				_agg_cell(base, owner[p], p, 1)
+		_agg_base = base
+		_agg_base_ver = _owner_ver
+		_agg_key = []
 	var key := [_owner_ver, hash(damage)]
 	if not _agg.is_empty() and _agg_key == key:
 		return _agg
-	var provs := provinces()
 	var agg := {}
-	for p in owner.size():
-		var o := owner[p]
-		if o < 0:
+	for o in _agg_base:
+		var b: Dictionary = _agg_base[o]
+		agg[o] = {"prod": b["prod"], "pop": b["pop"], "ind": b["ind"], "income": b["income"]}
+	for p in damage.size():
+		var d := damage[p]
+		if d == 0:
 			continue
-		if not agg.has(o):
-			agg[o] = {"prod": {}, "pop": 0, "ind": 0, "income": 0}
-		var a: Dictionary = agg[o]
-		var pv: Dictionary = provs[p]
-		for r in pv["deposits"]:
-			a["prod"][r] = a["prod"].get(r, 0) + pv["deposits"][r]
-		a["pop"] += pv["pop"]
-		a["ind"] += (pv["industry"] * (100 - damage[p]) + 50) / 100
-		a["income"] += pv["pop"] * pv["industry"] * (100 - damage[p]) / 10000
+		var o2 := owner[p]
+		if o2 < 0:
+			continue
+		var pv2: Dictionary = provs[p]
+		var a2: Dictionary = agg[o2]
+		a2["ind"] += (pv2["industry"] * (100 - d) + 50) / 100 - (pv2["industry"] * 100 + 50) / 100
+		a2["income"] += pv2["pop"] * pv2["industry"] * (100 - d) / 10000 - pv2["pop"] * pv2["industry"] * 100 / 10000
 	_agg = agg
 	_agg_key = key
 	return agg
@@ -2334,6 +2403,14 @@ func _economy() -> void:
 		if c["alive"]:
 			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) * (100 - sanction_pct(c["id"])) / 1000000
 			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
+			if rule_modern:
+				# abstract cyber pressure: enemies at war reduce income, cyber defence offsets it (at most -25%)
+				var hit := 0
+				for e in enemies_of(c["id"]):
+					hit += mod(e, "cyber_pct")
+				hit = clampi(hit - mod(c["id"], "cyber_def_pct"), 0, 25)
+				if hit > 0:
+					c["income"] = c["income"] * (100 - hit) / 100
 	for c in countries:
 		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
@@ -2523,9 +2600,19 @@ func _logistics() -> void:
 		return
 	_blockade_key = key
 	var idx := _fleets_by_sea()
+	var fleet_owners := {}
+	for f in fleets:
+		if f["strength"] > 0:
+			fleet_owners[f["owner"]] = true
 	for c in countries:
 		if c["alive"]:
-			c["blockade"] = blockade_level(c["id"], idx)
+			# a port is blockaded only by a fleet of a country at war with the owner
+			var threatened := false
+			for e in enemies_of(c["id"]):
+				if fleet_owners.has(e):
+					threatened = true
+					break
+			c["blockade"] = blockade_level(c["id"], idx) if threatened else 0
 
 
 func _trade() -> void:
@@ -2574,6 +2661,18 @@ func _resources() -> void:
 			c["short"] = []
 			pop_sum[c["id"]] = 0
 			ind_sum[c["id"]] = 0
+	# per-owner military totals in one pass (each country only ever hurts its own armies below, so these stay valid)
+	var astr_of := {}
+	var fstr_of := {}
+	var armor_of := {}
+	for a in armies:
+		var ao: int = a["owner"]
+		astr_of[ao] = astr_of.get(ao, 0) + a["strength"]
+		for d in a["div"]:
+			if unit_defs[d["t"]]["oil"]:
+				armor_of[ao] = armor_of.get(ao, 0) + d["hp"]
+	for f in fleets:
+		fstr_of[f["owner"]] = fstr_of.get(f["owner"], 0) + f["strength"]
 	var agg := _aggregate()
 	var armies_by_owner := {}   # one pass instead of a scan over all armies per country (O(countries x armies))
 	for a in armies:
@@ -2597,18 +2696,9 @@ func _resources() -> void:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
 		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] / 90
-		var mine: Array = armies_by_owner.get(cid, [])
-		var astr := 0
-		for a in mine:
-			astr += a["strength"]
-		var fstr := 0
-		for f in fleets_of(cid):
-			fstr += f["strength"]
-		var armor_hp := 0
-		for a in mine:
-			for d in a["div"]:
-				if unit_defs[d["t"]]["oil"]:
-					armor_hp += d["hp"]
+		var astr: int = astr_of.get(cid, 0)
+		var fstr: int = fstr_of.get(cid, 0)
+		var armor_hp: int = armor_of.get(cid, 0)
 		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000 + air_oil(cid)
 		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
@@ -2624,7 +2714,7 @@ func _resources() -> void:
 			st[r] = mini(st[r], STOCK_CAP)
 		# shortages hurt the army
 		if c["short"].has("oil") or c["short"].has("food"):
-			for a in mine:
+			for a in armies_by_owner.get(cid, []):
 				_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
 
 
@@ -2633,15 +2723,73 @@ func net_of(cid: int, res: String) -> int:
 	return c["prod"][res] - c["cons"][res]
 
 
+## Day of the year (1..366) of the scenario start; used by the seasonal model.
+func _compute_start_doy() -> void:
+	var cum := [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+	var parts := start_date.split("-")
+	if parts.size() == 3:
+		_start_doy = cum[clampi(int(parts[1]) - 1, 0, 11)] + int(parts[2])
+	else:
+		_start_doy = 1
+
+
+func _ensure_cell_lat() -> void:
+	if _cell_lat.size() == provinces().size():
+		return
+	_cell_lat = PackedFloat32Array()
+	_cell_lat.resize(provinces().size())
+	var res := float(world.get("res", 0.0))
+	var top := float(world.get("lat_top", 0.0))
+	for p in provinces():
+		_cell_lat[p["id"]] = top - (p["center"].y + 0.5) * res if res > 0.0 else 45.0
+
+
+## Winter severity 0..100 at a cell: peaks mid-January in the north (mid-July in the south) and grows with latitude (integer maths).
+func winter_at(cell: int) -> int:
+	_ensure_cell_lat()
+	var lat := int(_cell_lat[cell])
+	var doy := (_start_doy + day - 1) % 365
+	var dist := mini(absi(doy - 15), 365 - absi(doy - 15))   # 0..182 days from mid-January
+	var north := 100 - dist * 100 / 182
+	var w := north if lat >= 0 else 100 - north
+	var lat_f := clampi((absi(lat) - 25) * 100 / 40, 0, 100)
+	return w * lat_f / 100
+
+
+## Local storm (≈7% of cell-days), deterministic from the calendar and the cell.
+func storm_at(cell: int) -> bool:
+	return ((day / 3) * 7919 + (cell / 37) * 104729) % 100 < 7
+
+
+## Days an army needs to enter `to_cell` from `from_cell` (3 by default). Roads and railways speed it up, terrain and weather slow it.
+func move_days(from_cell: int, to_cell: int) -> int:
+	if not rule_terrain and not rule_weather:
+		return MOVE_DAYS
+	var pct := 100
+	if rule_terrain:
+		pct = TERRAIN_MOVE.get(provinces()[to_cell]["terrain"], 100)
+		var key := mini(from_cell, to_cell) * 100000 + maxi(from_cell, to_cell)
+		if world.get("rail_link", {}).has(key):
+			pct = pct * 50 / 100
+		elif world.get("road_link", {}).has(key):
+			pct = pct * 75 / 100
+	if rule_weather:
+		pct = pct * (100 + winter_at(to_cell) * 80 / 100) / 100
+		if storm_at(to_cell):
+			pct = pct * 130 / 100
+	return maxi(1, (MOVE_DAYS * pct + 50) / 100)
+
+
 func _move_armies() -> void:
 	for a in armies:
 		if a["path"].is_empty():
 			continue
 		a["move"] += 1
-		if a["move"] < MOVE_DAYS:
+		var next_cell: int = a["path"][0]
+		if a["move"] < move_days(a["prov"], next_cell):
 			continue
 		a["move"] = 0
-		var nxt: int = a["path"][0]
+		var nxt: int = next_cell
 		var o := owner[nxt]
 		var cid: int = a["owner"]
 		if o != cid and o >= 0 and not at_war(cid, o) and not allied(cid, o):
@@ -3021,11 +3169,13 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	var need := {}
 	for t in targets:
 		need[t] = true
-	# relation of `cid` to each cell owner, memoised for this search: at_war()/allied() scan every war/alliance,
-	# which is far too slow inside the per-neighbour loop. bit 1 = own or allied, bit 2 = at war, -1 = not computed yet.
-	var rel := PackedInt32Array()
-	rel.resize(countries.size())
-	rel.fill(-1)
+	var enemy_set := {}
+	for e in enemies_of(cid):
+		enemy_set[e] = true
+	var ally_set := {}
+	for al in allies_of(cid):
+		ally_set[al] = true
+	var terr_extra := _terrain_supply_extra() if rule_terrain else PackedInt32Array()
 	for d in SUPPLY_RANGE + 1:
 		for p in buckets[d]:
 			if dist[p] != d:
@@ -3036,19 +3186,64 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 					return dist  # every army's supply distance is final
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
-				var r := 0
-				if o >= 0:
-					r = rel[o]
-					if r < 0:
-						r = (1 if (o == cid or allied(cid, o)) else 0) | (2 if (o != cid and at_war(cid, o)) else 0)
-						rel[o] = r
-				var infra_q := maxi(1, infra[q] - damage[q] / 30)   # == eff_infra(q)
-				var nd := d + ((10 - infra_q) if (r & 1) != 0 else (25 - infra_q))
+				var hostile := o >= 0 and o != cid and enemy_set.has(o)
+				var eff := maxi(1, infra[q] - damage[q] / 30)
+				var cost: int = (10 - eff) if (o == cid or ally_set.has(o)) else (25 - eff)
+				if rule_terrain:
+					cost += terr_extra[q]
+				if rule_weather:
+					cost += _winter_cached(q) / 20
+				var nd := d + cost
 				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
 					dist[q] = nd
-					if (r & 2) == 0:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
+					if not hostile:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
 						buckets[nd].append(q)
 	return dist
+
+
+var _terr_extra_cache := PackedInt32Array()
+var _winter_val := PackedInt32Array()
+var _winter_stamp := PackedInt32Array()
+
+
+func _terrain_supply_extra() -> PackedInt32Array:
+	var provs := provinces()
+	if _terr_extra_cache.size() != provs.size():
+		_terr_extra_cache = PackedInt32Array()
+		_terr_extra_cache.resize(provs.size())
+		for p in provs:
+			_terr_extra_cache[p["id"]] = TERRAIN_SUPPLY_EXTRA.get(p["terrain"], 0)
+	return _terr_extra_cache
+
+
+## winter_at() memoised per day (it is called for the same cells many times during supply searches).
+func _winter_cached(cell: int) -> int:
+	if _winter_val.size() != provinces().size():
+		_winter_val.resize(provinces().size())
+		_winter_stamp.resize(provinces().size())
+		_winter_stamp.fill(-1)
+	if _winter_stamp[cell] != day:
+		_winter_val[cell] = winter_at(cell)
+		_winter_stamp[cell] = day
+	return _winter_val[cell]
+
+
+var _ind_ver := -1
+var _ind_cache := {}
+
+
+## Raw industry sum of a country, cached until the ownership of any cell changes.
+func _industry_of(cid: int) -> int:
+	if _ind_ver != _owner_ver:
+		_ind_cache = {}
+		_ind_ver = _owner_ver
+	if not _ind_cache.has(cid):
+		var provs := provinces()
+		var sum := 0
+		for p in cells_of(cid):
+			sum += provs[p]["industry"]
+		_ind_cache[cid] = sum
+	return _ind_cache[cid]
 
 
 func _supply() -> void:
@@ -3072,9 +3267,7 @@ func _supply() -> void:
 			if provs[a["prov"]]["land"]:
 				targets.append(a["prov"])
 		var dist := _supply_dist(cid, targets)
-		var industry := 0
-		for p in cells_of(cid):
-			industry += provs[p]["industry"]
+		var industry := _industry_of(cid)
 		var factor := minf(1.0, float(6 + industry) * (100 + mod(cid, "supply_pct")) / 100.0 / maxf(demand, 1.0))
 		for a in mine:
 			var d: int = dist.get(a["prov"], 9999)
@@ -3435,7 +3628,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3443,9 +3636,11 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	var sim := Simulation.new()
 	sim.seed_value = d["seed"]
 	if str(d.get("world_kind", "procedural")) == "earth":
-		if not EarthWorld.available():
-			sim.load_error = "real-world dataset is missing"
+		var ds2 := str(d.get("world_dataset", "world"))
+		if not EarthWorld.available_dataset(ds2):
+			sim.load_error = "real-world dataset is missing (%s)" % ds2
 			return sim
+		EarthWorld.activate(ds2)
 		sim._own_earth_world()
 		if str(d.get("world_hash", "")) != str(sim.world.get("world_hash", "")):
 			sim.load_error = "save was made with a different world dataset (%s)" % str(d.get("world_hash", "")).substr(0, 8)
@@ -3470,6 +3665,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.res_defs = load_resource_defs()
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
+	sim.rule_modern = bool(d.get("rule_modern", false))
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
 	sim.start_date = d["start_date"]
@@ -3477,6 +3673,9 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.grace_days = d["grace_days"]
 	sim.scenario_id = d["scenario_id"]
 	sim.ai_war_chance = float(d.get("ai_war_chance", 1.0))
+	sim.rule_terrain = bool(d.get("rule_terrain", false))
+	sim.rule_weather = bool(d.get("rule_weather", false))
+	sim._compute_start_doy()
 	sim.scenario_deposits = d["scenario_deposits"]
 	for k in sim.scenario_deposits:
 		sim.set_deposits(int(k), sim.scenario_deposits[k])

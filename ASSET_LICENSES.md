@@ -16,6 +16,7 @@ glyphs it lacks fall back to Godot's built-in default font (Open Sans / Noto, MI
 | Данные | Источник | Лицензия | Атрибуция |
 |--------|----------|----------|-----------|
 | Страны, области, спорные территории, озёра, реки, порты, аэропорты, дороги, железные дороги, регионы | Natural Earth 5.2.0-pre, https://www.naturalearthdata.com | Public domain | рекомендуется: Made with Natural Earth |
+| Растровая подложка Natural Earth II 50m (shaded relief + water), маска суши 10m | Natural Earth, https://www.naturalearthdata.com | Public domain | рекомендуется: Made with Natural Earth |
 | Населённые пункты, названия, районы | GeoNames, https://www.geonames.org (`cities5000`, `admin1CodesASCII`, `admin2Codes`) | CC BY 4.0 | **обязательна**: Contains data from GeoNames |
 | Высоты и глубины | Terrain Tiles (Tilezen), AWS Open Data | SRTM/GMTED2010/ETOPO1/NED и др. | **обязательна**: https://github.com/tilezen/joerd/blob/master/docs/attribution.md |
 | Добыча нефти и угля по странам | Our World in Data, energy-data | CC BY 4.0 | **обязательна**: Our World in Data |

@@ -46,6 +46,15 @@ func _ready() -> void:
 	camera.make_current()
 
 
+## World-space position of a cell (the legacy map is a plain grid; the Earth view projects longitude/latitude).
+func cell_world(p: int) -> Vector2:
+	return sim.provinces()[p]["center"] * CELL
+
+
+func world_size() -> Vector2:
+	return Vector2(sim.world["w"], sim.world["h"]) * CELL
+
+
 func set_active(on: bool) -> void:
 	visible = on
 	camera.enabled = on
@@ -179,7 +188,7 @@ func _draw_base() -> void:
 		draw_multiline(_border_country, Color(0.05, 0.05, 0.07, 0.9), 2.2)
 	var provs := sim.provinces()
 	if selected_province >= 0:
-		draw_arc(provs[selected_province]["center"] * CELL, 14.0, 0, TAU, 32, Color("ffe08a"), 2.0)
+		draw_arc(cell_world(selected_province), 14.0, 0, TAU, 32, Color("ffe08a"), 2.0)
 
 
 func _draw_units() -> void:
@@ -193,7 +202,7 @@ func _draw_units() -> void:
 		var p: int = a["prov"]
 		var i: int = slot.get(p, 0)
 		slot[p] = i + 1
-		var base: Vector2 = provs[p]["center"] * CELL
+		var base: Vector2 = cell_world(p)
 		if not cull.has_point(base):
 			continue
 		var col := Color(sim.countries[a["owner"]]["color"])
@@ -217,16 +226,18 @@ func _draw_units() -> void:
 		if not a["path"].is_empty() and not lod_compact:
 			var pts := PackedVector2Array([base])
 			for q in a["path"]:
-				pts.append(provs[q]["center"] * CELL)
+				pts.append(cell_world(q))
 			draw_polyline(pts, Color(1, 0.85, 0.4, 0.9), 2.0 * us, true)
 			var end: Vector2 = pts[pts.size() - 1]
 			var dir := (end - pts[pts.size() - 2]).normalized()
+			if dir.length() < 0.5:
+				continue   # zero-length last segment: no arrow head (degenerate triangle)
 			var nrm := dir.orthogonal()
 			draw_colored_polygon(PackedVector2Array([end, end - dir * 9 * us + nrm * 5 * us, end - dir * 9 * us - nrm * 5 * us]), Color(1, 0.85, 0.4))
 	# bombing damage
 	for p in sim.damage.size():
-		if sim.damage[p] > 0 and cull.has_point(provs[p]["center"] * CELL):
-			draw_circle(provs[p]["center"] * CELL, (5.0 + sim.damage[p] * 0.12) * us, Color(0.85, 0.2, 0.1, 0.12 + sim.damage[p] * 0.003))
+		if sim.damage[p] > 0 and cull.has_point(cell_world(p)):
+			draw_circle(cell_world(p), (5.0 + sim.damage[p] * 0.12) * us, Color(0.85, 0.2, 0.1, 0.12 + sim.damage[p] * 0.003))
 	# aircraft: wings at their bases, mission lines to targets
 	var wslot := {}
 	var mission_col := {"air_superiority": Color(0.55, 0.8, 1.0, 0.85), "bomb": Color(1.0, 0.45, 0.3, 0.85), "cas": Color(0.7, 1.0, 0.5, 0.85)}
@@ -235,7 +246,7 @@ func _draw_units() -> void:
 		var bp: int = w["base"]
 		var wi: int = wslot.get(bp, 0)
 		wslot[bp] = wi + 1
-		var wbase: Vector2 = provs[bp]["center"] * CELL
+		var wbase: Vector2 = cell_world(bp)
 		if not cull.has_point(wbase) or lod_compact:
 			continue
 		var wpos := Vector2(-9 + wi * 11, -17)
@@ -247,7 +258,7 @@ func _draw_units() -> void:
 		draw_string(font, wpos + Vector2(-3, 12), "%s%d" % [letters.get(w["type"], "?"), w["strength"]], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color.WHITE)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		if w["mission"] != "idle" and w["target"] >= 0:
-			var tpos: Vector2 = provs[w["target"]]["center"] * CELL
+			var tpos: Vector2 = cell_world(w["target"])
 			var mc: Color = mission_col.get(w["mission"], Color.WHITE)
 			draw_dashed_line(wbase + wpos * us, tpos, mc, 1.5 * us, 5.0 * us)
 			draw_arc(tpos, 9.0 * us, 0, TAU, 20, mc, 1.5 * us)
@@ -257,7 +268,7 @@ func _draw_units() -> void:
 		var fp: int = f["prov"]
 		var fi: int = fslot.get(fp, 0)
 		fslot[fp] = fi + 1
-		var fbase: Vector2 = provs[fp]["center"] * CELL
+		var fbase: Vector2 = cell_world(fp)
 		if not cull.has_point(fbase):
 			continue
 		var fpos := Vector2(fi * 14 - 6, 6)
@@ -272,7 +283,7 @@ func _draw_units() -> void:
 		if not f["path"].is_empty() and not lod_compact:
 			var fpts := PackedVector2Array([fbase])
 			for q in f["path"]:
-				fpts.append(provs[q]["center"] * CELL)
+				fpts.append(cell_world(q))
 			draw_polyline(fpts, Color(0.6, 0.85, 1.0, 0.9), 2.0 * us, true)
 
 
@@ -393,5 +404,4 @@ func _smooth_zoom(delta: float) -> bool:
 
 
 func _clamp_camera() -> void:
-	var size_px := Vector2(sim.world["w"], sim.world["h"]) * CELL
-	camera.position = camera.position.clamp(Vector2.ZERO, size_px)
+	camera.position = camera.position.clamp(Vector2.ZERO, world_size())

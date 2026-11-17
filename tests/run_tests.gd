@@ -11,6 +11,7 @@ func _init() -> void:
 	for m in get_method_list():
 		if str(m["name"]).begins_with("test_"):
 			print("▶ ", m["name"])
+			EarthWorld.activate("world")  # scenario tests may switch the dataset; every test starts from the base world
 			call(m["name"])
 	print("\n%d checks passed, %d failed" % [passed, failures])
 	quit(1 if failures > 0 else 0)
@@ -1647,3 +1648,199 @@ func test_sanctions() -> void:
 		fresh.set_owner(p, target)
 	fresh._eliminate()
 	check(not fresh.countries[imposers[2]]["alive"] and fresh.sanctions.is_empty(), "sanctions of a destroyed country disappear")
+
+
+func test_terrain_weather_rules() -> void:
+	var base := _earth()
+	check(not base.rule_terrain and not base.rule_weather, "rules are off by default")
+	check(base.move_days(0, 1) == Simulation.MOVE_DAYS, "default movement time is unchanged")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"terrain": true, "weather": true}
+	var a := Simulation.new()
+	check(a.setup_scenario(scn).is_empty(), "scenario with rules loads")
+	check(a.rule_terrain and a.rule_weather, "rule flags are read from the scenario")
+	# find a mountain cell and a plains cell: mountains must be slower
+	var mtn := -1
+	var pl := -1
+	for p in a.provinces():
+		if not p["land"]:
+			continue
+		if mtn < 0 and p["terrain"] == "mountain":
+			mtn = p["id"]
+		if pl < 0 and p["terrain"] == "plains":
+			pl = p["id"]
+	if mtn >= 0 and pl >= 0:
+		var rw := a.rule_weather
+		a.rule_weather = false
+		check(a.move_days(pl, mtn) > a.move_days(mtn, pl), "mountains are slower to enter than plains")
+		a.rule_weather = rw
+	# winter: strong at high northern latitude in January, absent in July, always within 0..100
+	var north := -1
+	for p in a.provinces():
+		a._ensure_cell_lat()
+		if p["land"] and a._cell_lat[p["id"]] > 60.0:
+			north = p["id"]
+			break
+	check(north >= 0, "there are land cells above 60 N")
+	if north >= 0:
+		a._start_doy = 15
+		a.day = 1
+		var jan := a.winter_at(north)
+		a._start_doy = 196
+		var jul := a.winter_at(north)
+		check(jan > 60 and jul < 10 and jan <= 100, "winter peaks in January and vanishes in July (%d/%d)" % [jan, jul])
+	# determinism + save/load with rules on
+	var b := Simulation.new()
+	b.setup_scenario(scn)
+	for i in 20:
+		a.tick_day()
+		b.tick_day()
+	var c := Simulation.new()
+	c.setup_scenario(scn)
+	var d := Simulation.new()
+	d.setup_scenario(scn)
+	for i in 20:
+		c.tick_day()
+		d.tick_day()
+	check(c.checksum() == d.checksum(), "simulation with terrain/weather rules is deterministic")
+	var restored := Simulation.from_dict(str_to_var(var_to_str(c.to_dict())), Simulation.load_country_defs())
+	check(restored.rule_terrain and restored.rule_weather, "rule flags survive save/load")
+	check(restored.checksum() == c.checksum(), "checksum survives save/load with rules on")
+
+
+func test_hd_world_dataset() -> void:
+	check(EarthWorld.available_dataset("world_hd"), "HD dataset is present")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world_hd.json")
+	var a := Simulation.new()
+	var probs := a.setup_scenario(scn)
+	check(probs.is_empty(), "HD scenario loads %s" % str(probs))
+	check(str(a.world["dataset"]) == "world_hd", "HD dataset is active")
+	check(int(a.world["land_count"]) >= 20000, "HD map has 20k+ land cells (%d)" % int(a.world["land_count"]))
+	check(EarthWorld.settlement_count() >= 200000, "HD map has 200k+ settlements (%d)" % EarthWorld.settlement_count())
+	check(a.rule_terrain and a.rule_weather, "HD scenario enables terrain and weather rules")
+	var seen := {}
+	for p in a.provinces():
+		if p["land"]:
+			seen[a.owner[p["id"]]] = true
+	check(seen.size() > 150, "every country owns cells on the HD map (%d owners)" % seen.size())
+	var b := Simulation.new()
+	b.setup_scenario(scn)
+	for i in 10:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "HD simulation is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(str(r.world["dataset"]) == "world_hd" and r.checksum() == a.checksum(), "HD save/load keeps dataset and checksum")
+	EarthWorld.activate("world")
+	check(int(Simulation.new().setup_scenario(ScenarioLoader.read_file("res://game/scenarios/modern_world.json")).size()) == 0, "switching back to the base dataset works")
+
+
+func test_visual_layer_data() -> void:
+	check(EarthVisual.available(), "visual layer is present")
+	var m := EarthVisual.manifest()
+	var g := EarthVisual.tile_grid()
+	check(g == Vector2i(8, 4), "imagery tile grid is 8x4")
+	var t := EarthVisual.tile_image(4, 1)
+	check(t != null and t.get_width() == int(m["imagery"]["tile_w"]) and t.get_height() == int(m["imagery"]["tile_h"]), "imagery tile has the expected size")
+	check(t.get_format() == Image.FORMAT_RGBA8, "imagery tile carries the land mask in alpha")
+	var land := 0
+	for y in range(0, t.get_height(), 8):
+		for x in range(0, t.get_width(), 8):
+			if t.get_pixel(x, y).a > 0.5:
+				land += 1
+	check(land > 0, "tile (4,1) contains land and water (Europe/Atlantic)")
+	var fr := EarthVisual.land_fraction("world")
+	var w: Dictionary = EarthWorld.load_world()
+	check(fr.size() == int(w["w"]) * int(w["h"]), "land fraction raster matches the simulation raster")
+	var ext := EarthVisual.ext_bytes("world")
+	check(ext.size() == int(w["w"]) * int(w["h"]) * 2, "extended id raster matches the simulation raster")
+	var vec := EarthVisual.vectors()
+	check(vec["coast"].size() > 1000 and vec["rivers"].size() > 100 and vec["border0"].size() > 100, "fine vector layers are populated")
+	# fine coast must stay close to the source geometry: Italy's boot tip near 38 N 16 E lies on the coast
+	var best := 1e9
+	for ring in vec["coast"]:
+		for pt in ring:
+			var d: float = Vector2(pt[0], pt[1]).distance_to(Vector2(16.0, 38.0))
+			if d < best:
+				best = d
+	check(best < 0.6, "fine coastline passes near the toe of Italy (%.2f deg)" % best)
+
+
+func test_xl_world_dataset() -> void:
+	check(EarthWorld.available_dataset("world_xl"), "XL dataset is present")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world_xl.json")
+	var a := Simulation.new()
+	var probs := a.setup_scenario(scn)
+	check(probs.is_empty(), "XL scenario loads %s" % str(probs))
+	check(int(a.world["land_count"]) >= 50000, "XL map has 50k+ land cells (%d)" % int(a.world["land_count"]))
+	check(a.world["provinces"].size() < 65535, "cell ids fit the 16-bit extended raster")
+	var b := Simulation.new()
+	b.setup_scenario(scn)
+	for i in 5:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "XL simulation is deterministic")
+	EarthWorld.activate("world")
+
+
+func test_modern_warfare_rule() -> void:
+	var base := _earth()
+	check(not base.rule_modern and not base.tech_defs.has("drn1"), "modern techs are absent unless the scenario enables the rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"modern": true}
+	var a := Simulation.new()
+	check(a.setup_scenario(scn).is_empty(), "scenario with the modern rule loads")
+	for id in ["drn1", "drn2", "ew1", "sat1", "cyb1", "cyb2"]:
+		check(a.tech_defs.has(id), "tech %s is available" % id)
+	# cyber pressure: a cyber-capable enemy at war cuts income, cyber defence offsets it
+	var x := 0
+	var y := 1
+	for i in 3:
+		a.tick_day()
+	for c in a.countries:
+		if c["alive"] and c["id"] != x and c["income"] > a.countries[y]["income"]:
+			y = c["id"]
+	a.wars.append({"a": x, "b": y, "start": 0})
+	a.tick_day()
+	var calm: int = a.countries[y]["income"]
+	a.countries[x]["mods"]["cyber_pct"] = 20
+	a.tick_day()
+	var hit: int = a.countries[y]["income"]
+	check(calm > 20 and hit < calm, "enemy cyber operations cut income (%d -> %d)" % [calm, hit])
+	a.countries[y]["mods"]["cyber_def_pct"] = 20
+	a.tick_day()
+	var shielded: int = a.countries[y]["income"]
+	check(shielded > hit, "cyber defence offsets the loss (%d -> %d)" % [hit, shielded])
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_modern and r.tech_defs.has("cyb2"), "modern rule and techs survive save/load")
+	check(r.checksum() == a.checksum(), "checksum survives save/load with the modern rule")
+
+
+func test_incremental_aggregate_matches_rebuild() -> void:
+	var sim := _earth()
+	for i in 5:
+		sim.tick_day()
+	sim._aggregate()   # prime the incremental base
+	var rs := RandomNumberGenerator.new()
+	rs.seed = 11
+	var land: int = sim.world["land_count"]
+	for i in 400:
+		sim.set_owner(rs.randi_range(0, land - 1), rs.randi_range(0, sim.countries.size() - 1))
+	for i in 300:
+		sim.damage[rs.randi_range(0, land - 1)] = rs.randi_range(0, 100)
+	var inc: Dictionary = sim._aggregate().duplicate(true)
+	sim._agg_base = {}
+	sim._agg_base_ver = -1
+	sim._agg = {}
+	var fresh: Dictionary = sim._aggregate()
+	var same := inc.size() == fresh.size()
+	for o in fresh:
+		same = same and inc.has(o)
+		if inc.has(o):
+			for k in ["pop", "ind", "income"]:
+				if inc[o][k] != fresh[o][k]:
+					same = false
+			for r in fresh[o]["prod"]:
+				if inc[o]["prod"].get(r, 0) != fresh[o]["prod"][r]:
+					same = false
+	check(same, "incremental per-country aggregate equals a full rebuild")

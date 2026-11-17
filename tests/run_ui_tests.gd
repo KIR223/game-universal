@@ -85,7 +85,7 @@ func run_checks() -> void:
 	check(GraphicsQuality.load_level("user://missing_graphics.cfg", true) == GraphicsQuality.Level.MEDIUM, "missing config falls back to the platform default")
 	var q_before: int = main._quality
 	main._cycle_quality()
-	check(main._quality != q_before and (main.map as EarthMapView).quality == main._quality, "menu item cycles the quality and the map follows")
+	check(main._quality != q_before and (main.map as EarthMapView).detail == main._quality, "menu item cycles the quality and the map follows")
 	main._quality = q_before
 	main._apply_quality()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(GraphicsQuality.PATH))
@@ -239,7 +239,7 @@ func run_checks() -> void:
 	check(main.display.ui_scale < 0.0 and is_equal_approx(main.get_window().content_scale_factor, 1.0), "settings: Auto returns to the default scale")
 	var q_o: OptionButton = holder.get_child(7)
 	q_o.item_selected.emit(0)
-	check(main._quality == 0 and (main.map as EarthMapView).quality == 0, "settings: the graphics quality option applies to the map")
+	check(main._quality == 0 and (main.map as EarthMapView).detail == 0, "settings: the graphics quality option applies to the map")
 	var keys_text := ""
 	for n in holder.get_children():
 		if n is Label and (n as Label).text.find("F11") >= 0:
