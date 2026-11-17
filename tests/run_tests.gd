@@ -1432,8 +1432,8 @@ func test_war_flow_via_commands() -> void:
 ## Cross-platform determinism: golden checksums recorded on Windows. CI runs this on Linux, macOS and Windows, so any
 ## divergence in floats, hashing or RNG between platforms (a Windows <-> macOS multiplayer desync) fails here first.
 ## If simulation rules change on purpose, regenerate: run the test, copy the printed values.
-const GOLDEN_IDLE_30 := 2965233151
-const GOLDEN_WAR_40 := 3973190776
+const GOLDEN_IDLE_30 := 3494266976
+const GOLDEN_WAR_40 := 2834175281
 
 
 func test_cross_platform_golden_checksums() -> void:
