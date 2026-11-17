@@ -145,6 +145,9 @@ func _make_theme() -> Theme:
 		sb.set_content_margin_all(6)
 		sb.content_margin_left = 12
 		sb.content_margin_right = 12
+		if MobileLayout.is_phone():
+			sb.content_margin_top = 12   # finger-sized targets (>= 44 pt with the 1.3 UI scale)
+			sb.content_margin_bottom = 12
 		sb.border_color = Color(0.32, 0.38, 0.46, 0.8)
 		sb.set_border_width_all(1)
 		match state:
