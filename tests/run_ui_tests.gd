@@ -75,6 +75,20 @@ func run_checks() -> void:
 			break
 	check(other < 0 or m._cell_color(other) != r1, "administrative mode distinguishes neighbouring regions")
 	m.set_mode("political")
+	# graphics quality: ordered presets, cycling, per-machine config; renderer follows the level
+	check(GraphicsQuality.params(GraphicsQuality.Level.LOW)["labels"] < GraphicsQuality.params(GraphicsQuality.Level.MEDIUM)["labels"] and GraphicsQuality.params(GraphicsQuality.Level.MEDIUM)["labels"] < GraphicsQuality.params(GraphicsQuality.Level.HIGH)["labels"], "label budget grows with quality")
+	check(GraphicsQuality.next(GraphicsQuality.Level.HIGH) == GraphicsQuality.Level.LOW and GraphicsQuality.next(GraphicsQuality.Level.LOW) == GraphicsQuality.Level.MEDIUM, "quality cycles Low -> Medium -> High -> Low")
+	check(GraphicsQuality.default_level(true) == GraphicsQuality.Level.MEDIUM and GraphicsQuality.default_level(false) == GraphicsQuality.Level.HIGH, "phones default to Medium, desktops to High")
+	var gq_tmp := "user://graphics_test.cfg"
+	check(GraphicsQuality.save_level(GraphicsQuality.Level.LOW, gq_tmp) and GraphicsQuality.load_level(gq_tmp) == GraphicsQuality.Level.LOW, "quality round-trips through the config")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(gq_tmp))
+	check(GraphicsQuality.load_level("user://missing_graphics.cfg", true) == GraphicsQuality.Level.MEDIUM, "missing config falls back to the platform default")
+	var q_before: int = main._quality
+	main._cycle_quality()
+	check(main._quality != q_before and (main.map as EarthMapView).quality == main._quality, "menu item cycles the quality and the map follows")
+	main._quality = q_before
+	main._apply_quality()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(GraphicsQuality.PATH))
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])

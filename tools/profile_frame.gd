@@ -11,6 +11,7 @@ var cpu: Array[float] = []
 var gpu: Array[float] = []
 var last := 0
 var static_cam := false
+var quality := -1
 
 
 func _initialize() -> void:
@@ -19,6 +20,8 @@ func _initialize() -> void:
 		zoom = float(a[0])
 	if a.size() > 2:
 		static_cam = a[2] == "static"
+	if a.size() > 3:
+		quality = int(a[3])
 	if a.size() > 1:
 		total = int(a[1])
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
@@ -33,6 +36,9 @@ func _process(_d: float) -> bool:
 	elif frames == 10:
 		main._start_playing(0)
 		RenderingServer.viewport_set_measure_render_time(root.get_viewport_rid(), true)
+		if quality >= 0:
+			main._quality = quality
+			main._apply_quality()
 		main.map.camera.position_smoothing_enabled = false
 		main.map.camera.zoom = Vector2.ONE * zoom
 	elif frames > 60 and frames <= 60 + total:
@@ -47,7 +53,7 @@ func _process(_d: float) -> bool:
 		cpu.append(RenderingServer.viewport_get_measured_render_time_cpu(rid))
 		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(rid))
 	elif frames > 60 + total:
-		print("zoom ", zoom, ": wall ", _avg(wall), " ms (", 1000.0 / _avg(wall), " FPS) | render CPU ", _avg(cpu), " ms | GPU ", _avg(gpu),
+		print("zoom ", zoom, " quality ", quality, ": wall ", _avg(wall), " ms (", 1000.0 / _avg(wall), " FPS) | render CPU ", _avg(cpu), " ms | GPU ", _avg(gpu),
 			" ms | draw calls ", Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 			" | process ", Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, " ms")
 		var m: Array = Engine.get_meta("prof", [0,0,0,0,0])
