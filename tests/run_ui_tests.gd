@@ -75,6 +75,48 @@ func run_checks() -> void:
 			break
 	check(other < 0 or m._cell_color(other) != r1, "administrative mode distinguishes neighbouring regions")
 	m.set_mode("political")
+	# smooth zoom towards the cursor: reaches the target and keeps the world point under the cursor fixed
+	var anchor := Vector2(430, 260)
+	var half: Vector2 = m.get_viewport_rect().size * 0.5
+	m.camera.position_smoothing_enabled = false
+	m.camera.zoom = Vector2.ONE * 1.0
+	m.camera.position = m.sim.provinces()[main.sim.countries[fr]["capital"]]["center"] * MapView.CELL
+	var world_under: Vector2 = m.camera.position + (anchor - half) / m.camera.zoom.x
+	m._zoom_at(2.5, anchor)
+	check(m._zooming and absf(m.camera.zoom.x - 1.0) < 0.001, "a wheel notch only sets a target (no jump)")
+	var steps := 0
+	while m._smooth_zoom(0.016) and steps < 400:
+		steps += 1
+	check(not m._zooming and absf(m.camera.zoom.x - 2.5) < 0.01, "smooth zoom reaches the target (%d frames)" % steps)
+	var world_after: Vector2 = m.camera.position + (anchor - half) / m.camera.zoom.x
+	check(world_after.distance_to(world_under) < 0.5, "the world point under the cursor stays under the cursor (moved %.3f)" % world_after.distance_to(world_under))
+	m._zoom_at(100.0, anchor)
+	while m._smooth_zoom(0.016):
+		pass
+	check(is_equal_approx(m.camera.zoom.x, m.max_zoom), "zoom is clamped to max_zoom")
+	check(m.camera.position_smoothing_enabled, "camera smoothing is back on after zooming")
+	# country labels: shown on the world view (they were lost after starting a game) and never overlap, at any zoom
+	var world_center := Vector2(main.sim.world["w"], main.sim.world["h"]) * MapView.CELL * 0.5
+	for zl in [0.15, 0.3, 0.6, 1.0, 2.0, 4.0]:
+		m.camera.zoom = Vector2.ONE * zl
+		m.camera.position = world_center if zl <= 0.3 else main.sim.provinces()[main.sim.countries[fr]["capital"]]["center"] * MapView.CELL
+		m._last_cam = Vector3(-1, -1, -1)
+		m._process(0.016)
+		var lay: Array = m.label_layout()
+		var overlap := 0
+		for i in lay.size():
+			for j in range(i + 1, lay.size()):
+				if (lay[i]["box"] as Rect2).intersects(lay[j]["box"]):
+					overlap += 1
+		check(overlap == 0, "zoom %.2f: %d country labels, %d overlaps" % [zl, lay.size(), overlap])
+		if zl <= 0.3:
+			check(lay.size() >= 3, "zoom %.2f: country labels are present on the world view (%d)" % [zl, lay.size()])
+			var off := []
+			for l in lay:
+				var under_cell: int = m.province_at(l["pos"])
+				if under_cell < 0 or main.sim.owner[under_cell] != l["cid"]:
+					off.append(l["name"])
+			check(off.is_empty(), "zoom %.2f: every label sits on its own country's land (off: %s)" % [zl, str(off)])
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])

@@ -162,6 +162,7 @@ func repaint_all() -> void:
 		return
 	_compute_context()
 	_agg.clear()
+	_ctl.fill(-2)   # _agg (country label anchors) is rebuilt by _write_info only for cells whose controller "changed"
 	for p in sim.provinces():
 		if p["land"]:
 			_write_info(p["id"])
@@ -404,6 +405,7 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	_smooth_zoom(delta)
 	if not is_earth or sim == null:
 		return
 	var cam := camera.get_screen_center_position()
@@ -694,15 +696,34 @@ func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
-	var z := camera.zoom.x
-	if z > 5.0:
-		return
 	var font := ThemeDB.fallback_font
-	for cid in _agg:
+	for l in label_layout():
+		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
+
+
+## Country labels that fit the current zoom: biggest countries first, greedy placement, no two labels overlap
+## (compared in screen pixels = world * zoom). Each entry: cid, name, pos (world), px (font size), width, box (screen px).
+func label_layout() -> Array:
+	var out: Array = []
+	var z := camera.zoom.x
+	if z > 5.0 or sim == null:
+		return out
+	var font := ThemeDB.fallback_font
+	var order: Array = _agg.keys()
+	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x or (_agg[x].x == _agg[y].x and x < y))
+	var placed: Array[Rect2] = []
+	for cid in order:
 		var a: Vector3 = _agg[cid]
 		if a.x < 1.0:
 			continue
 		var pos := Vector2(a.y / a.x, a.z / a.x) * CELL
+		# a country with far-flung territories has its centre of mass in the ocean (France -> mid-Atlantic):
+		# then the label goes to the capital, which is on its own land
+		var under := province_at(pos)
+		if under < 0 or sim.owner[under] != cid:
+			var cap: int = sim.countries[cid]["capital"]
+			if cap >= 0 and sim.owner[cap] == cid:
+				pos = sim.provinces()[cap]["center"] * CELL
 		if not cull.has_point(pos):
 			continue
 		var fs_px := clampf(9.0 + sqrt(a.x) * 0.9, 9.0, 26.0)
@@ -713,7 +734,17 @@ func _draw_labels() -> void:
 			continue
 		var px := int(fs_px)
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
-		_text(font, pos, nm, px, Color(1, 1, 1, 0.92), -tw * 0.5)
+		var box := Rect2(pos * z + Vector2(-tw * 0.5 - 4.0, -px * 0.7), Vector2(tw + 8.0, px * 1.3))
+		var clash := false
+		for r in placed:
+			if r.intersects(box):
+				clash = true
+				break
+		if clash:
+			continue
+		placed.append(box)
+		out.append({"cid": cid, "name": nm, "pos": pos, "px": px, "width": tw, "box": box})
+	return out
 
 
 ## Text in true screen-pixel size: glyphs are rasterised at `px` and the camera zoom is cancelled, so labels stay sharp at any zoom.
