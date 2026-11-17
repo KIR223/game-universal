@@ -75,6 +75,41 @@ func run_checks() -> void:
 			break
 	check(other < 0 or m._cell_color(other) != r1, "administrative mode distinguishes neighbouring regions")
 	m.set_mode("political")
+	# the context menu of an enemy cell: every entry has its own id (a duplicate id once made "Embargo" run the annexation)
+	var neighbor_c: int = main.sim.neighbor_countries(fr)[0]
+	var declared: Dictionary = main.sim.apply_command({"type": "declare_war", "country": fr, "target": neighbor_c})
+	check(declared["ok"], "war declared on a neighbour for the menu test (%s)" % str(declared))
+	var foe_cells: Array = main.sim.cells_of(neighbor_c)
+	var foe_cell: int = foe_cells[0]
+	main.sim.armies = main.sim.armies.filter(func(x): return x["prov"] != foe_cell)
+	main.sim._add_army(fr, foe_cell, [main.sim._make_div("infantry")])
+	main.sim._occupation()
+	check(not main.sim.cells_held_from(fr, neighbor_c).is_empty(), "France holds an enemy cell (so the annexation entry appears)")
+	var click_cell: int = main.sim.cells_of(neighbor_c)[0]
+	main._on_province_right_clicked(click_cell, Vector2(300, 300))
+	var ids := {}
+	var dup := 0
+	for i in main._ctx.item_count:
+		if main._ctx.is_item_separator(i):
+			continue
+		var iid: int = main._ctx.get_item_id(i)
+		if ids.has(iid):
+			dup += 1
+		ids[iid] = main._ctx.get_item_text(i)
+	check(dup == 0, "context menu entries have unique ids (%d duplicates in %s)" % [dup, str(ids)])
+	check(ids.has(14) and str(ids[14]).begins_with("Мир с аннексией"), "the annexation peace entry has its own id")
+	check(not ids.has(13), "no embargo entry while at war with that country")
+	var peaceful := -1
+	for c in main.sim.countries:
+		if c["id"] != fr and c["alive"] and not main.sim.at_war(fr, c["id"]) and not main.sim.cells_of(c["id"]).is_empty():
+			peaceful = c["id"]
+			break
+	main._on_province_right_clicked(main.sim.cells_of(peaceful)[0], Vector2(300, 300))
+	var ids2 := {}
+	for i in main._ctx.item_count:
+		if not main._ctx.is_item_separator(i):
+			ids2[main._ctx.get_item_id(i)] = main._ctx.get_item_text(i)
+	check(ids2.has(13) and str(ids2[13]).begins_with("Эмбарго") and not ids2.has(14), "for a country at peace id 13 is the embargo and there is no annexation entry")
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])

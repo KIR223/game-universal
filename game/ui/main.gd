@@ -2408,7 +2408,7 @@ func _on_province_right_clicked(pid: int, screen_pos: Vector2) -> void:
 			_ctx.add_item("Предложить мир: %s" % oname, 12)
 			var held := sim.cells_held_from(player, o).size()
 			if held > 0:
-				_ctx.add_item("Мир с аннексией занятого (%d яч.): %s" % [held, oname], 13)
+				_ctx.add_item("Мир с аннексией занятого (%d яч.): %s" % [held, oname], 14)
 		else:
 			if sim.can_declare_war(player, o) and not sim.allied(player, o):
 				_ctx.add_item("Объявить войну: %s" % oname, 10)
@@ -2434,7 +2434,7 @@ func _ctx_pressed(id: int) -> void:
 		10: _pol_cmd_log({"type": "declare_war", "country": player, "target": o})
 		11: _pol_cmd_log({"type": "propose_alliance", "country": player, "target": o})
 		12: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o})
-		13: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o, "terms": "annex"})
+		14: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o, "terms": "annex"})
 		13: _pol_cmd_log({"type": "embargo", "country": player, "target": o})
 		20:
 			var ids := EarthWorld.settlements_in_cell(pid)
