@@ -49,6 +49,18 @@ ROW_LAT = y2lat(np.arange(H))
 PIX_KM2 = ((RES * KM_PER_DEG) ** 2 * np.cos(np.radians(ROW_LAT))).astype(np.float64)  # per row
 
 
+def configure(res, land_km2, sea_km2):
+    """Re-derive every raster-dependent global (the helpers read these at call time)."""
+    global RES, W, H, LAND_CELL_KM2, SEA_ZONE_KM2, ROW_LAT, PIX_KM2
+    RES = res
+    W = int(round(360 / RES))
+    H = int(round((LAT_TOP - LAT_BOT) / RES))
+    LAND_CELL_KM2 = land_km2
+    SEA_ZONE_KM2 = sea_km2
+    ROW_LAT = y2lat(np.arange(H))
+    PIX_KM2 = ((RES * KM_PER_DEG) ** 2 * np.cos(np.radians(ROW_LAT))).astype(np.float64)
+
+
 def load_geojson(raw, name):
     with open(os.path.join(raw, "ne", name + ".geojson"), encoding="utf-8") as f:
         return json.load(f)["features"]
@@ -106,8 +118,9 @@ def stamp_missing(arr, items):
     return n
 
 
-def kmeans_pixels(ys, xs, k, seed):
+def kmeans_pixels(ys, xs, k, seed, weights=None):
     """Equal-area-ish k-means on pixel coordinates; returns labels (len n) in 0..k-1.
+    `weights` (>0) concentrate seeds where they are large (adaptive grids).
     Large inputs (oceans) fit the centres on a deterministic sample, then assign every pixel in chunks."""
     n = len(ys)
     if k <= 1 or n <= 1:
@@ -116,16 +129,21 @@ def kmeans_pixels(ys, xs, k, seed):
     rs = np.random.RandomState(seed)
     scale = np.cos(np.radians(y2lat(ys))).astype(np.float64)
     allpts = np.stack([xs * scale, ys.astype(np.float64)], axis=1)
+    allw = np.ones(n) if weights is None else np.asarray(weights, dtype=np.float64)
     if n > 30000:
         sel = np.sort(rs.choice(n, 30000, replace=False))
-        pts = allpts[sel]
+        pts, wts = allpts[sel], allw[sel]
     else:
-        pts = allpts
+        pts, wts = allpts, allw
     m = len(pts)
-    centers = [pts[rs.randint(m)]]
+    weighted = weights is not None and not np.allclose(wts, 1.0)
+    # unweighted path keeps the exact random stream of dataset v2 (rebuilding it must reproduce world_hash)
+    first = rs.choice(m, p=wts / wts.sum()) if weighted else rs.randint(m)
+    centers = [pts[first]]
     d2 = ((pts - centers[0]) ** 2).sum(1)
     for _ in range(1, k):
-        probs = d2 / d2.sum() if d2.sum() > 0 else np.ones(m) / m
+        pr = d2 * wts if weighted else d2
+        probs = pr / pr.sum() if pr.sum() > 0 else wts / wts.sum()
         c = pts[rs.choice(m, p=probs)]
         centers.append(c)
         d2 = np.minimum(d2, ((pts - c) ** 2).sum(1))
@@ -136,7 +154,7 @@ def kmeans_pixels(ys, xs, k, seed):
         for j in range(k):
             mm = lab == j
             if mm.any():
-                centers[j] = pts[mm].mean(0)
+                centers[j] = (pts[mm] * wts[mm, None]).sum(0) / wts[mm].sum() if weighted else pts[mm].mean(0)
     labels = np.zeros(n, dtype=np.int32)
     for c0 in range(0, n, 50000):
         blk = allpts[c0:c0 + 50000]
@@ -217,7 +235,7 @@ def label_components(mask, wrap=True):
     return lab.reshape(H, W)
 
 
-def build_cells(region, mask_land, regions_meta):
+def build_cells(region, mask_land, regions_meta, density=None):
     """Return cell raster (-1 water). Cells nest in regions and are connected."""
     cell = np.full((H, W), -1, dtype=np.int32)
     next_id = 0
@@ -239,9 +257,10 @@ def build_cells(region, mask_land, regions_meta):
         for c in range(1, ncomp + 1):
             m = comp_of == c
             cy, cx = ys[m], xs[m]
-            a = float(area[m].sum())
+            dens = density[cy, cx] if density is not None else None
+            a = float((area[m] * dens).sum()) if dens is not None else float(area[m].sum())
             k = max(1, int(round(a / LAND_CELL_KM2)))
-            labels = kmeans_pixels(cy, cx, k, seed=rid * 131 + c)
+            labels = kmeans_pixels(cy, cx, k, seed=rid * 131 + c, weights=dens)
             # deterministic cluster order: by centroid (y then x)
             cents = []
             for j in range(labels.max() + 1):
@@ -311,13 +330,13 @@ def compact_ids(cell):
     return out, len(ids)
 
 
-def decode_dem(raw):
-    tiles = {}
-    mosaic = np.zeros((16 * 256, 16 * 256), dtype=np.float32)
-    for x in range(16):
-        for y in range(16):
-            im = np.array(Image.open(os.path.join(raw, "dem", "4_%d_%d.png" % (x, y))).convert("RGB"), dtype=np.float32)
-            mosaic[y * 256:(y + 1) * 256, x * 256:(x + 1) * 256] = im[..., 0] * 256 + im[..., 1] + im[..., 2] / 256 - 32768
+def decode_dem(raw, dem_dir="dem", zoom=4):
+    side = 1 << zoom
+    mosaic = np.zeros((side * 256, side * 256), dtype=np.int16)
+    for x in range(side):
+        for y in range(side):
+            im = np.array(Image.open(os.path.join(raw, dem_dir, "%d_%d_%d.png" % (zoom, x, y))).convert("RGB"), dtype=np.float32)
+            mosaic[y * 256:(y + 1) * 256, x * 256:(x + 1) * 256] = np.round(im[..., 0] * 256 + im[..., 1] + im[..., 2] / 256 - 32768).astype(np.int16)
     n = mosaic.shape[0]
     xs = np.arange(W)
     ys = np.arange(H)
@@ -330,13 +349,51 @@ def decode_dem(raw):
     return mosaic[py[:, None], px[None, :]].astype(np.int16)
 
 
+def density_raster(region, reg_country, cities_xy, adaptive):
+    """Relative cell density per pixel: >1 = smaller cells (near big cities and state borders)."""
+    dens = np.ones((H, W), dtype=np.float64)
+    if not adaptive:
+        return dens
+    land = region > 0
+    cr = np.where(land, reg_country[region], -1)
+    border = np.zeros((H, W), dtype=bool)
+    for dy, dx in ((0, 1), (1, 0)):
+        sh = np.roll(np.roll(cr, -dy, axis=0), -dx, axis=1)
+        diff = (cr != sh) & land & (sh >= 0)
+        border |= diff
+        border |= np.roll(np.roll(diff, dy, axis=0), dx, axis=1)
+    dens[border] = np.maximum(dens[border], 2.0)
+    r = max(2, int(round(0.35 / RES)))
+    for lon, lat, pop in cities_xy:
+        cx, cy = int(lon2x(lon)), int(lat2y(lat))
+        if not (0 <= cx < W and 0 <= cy < H):
+            continue
+        boost = 5.0 if pop >= 3000000 else 3.5 if pop >= 1000000 else 2.5
+        y0, y1, x0, x1 = max(cy - r, 0), min(cy + r + 1, H), max(cx - r, 0), min(cx + r + 1, W)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        disk = ((yy - cy) ** 2 + (xx - cx) ** 2) <= r * r
+        sub = dens[y0:y1, x0:x1]
+        sub[disk & land[y0:y1, x0:x1]] = np.maximum(sub[disk & land[y0:y1, x0:x1]], boost)
+    return dens
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--cities", default="cities5000")
     ap.add_argument("--cache", default=None, help="directory for intermediate .npz (speeds up reruns)")
+    ap.add_argument("--res", type=float, default=0.2, help="simulation raster, degrees per pixel (0.2 base, 0.1 hd)")
+    ap.add_argument("--cell-km2", type=float, default=12000.0, help="target land cell area")
+    ap.add_argument("--sea-km2", type=float, default=700000.0, help="target sea zone area")
+    ap.add_argument("--adaptive", action="store_true", help="smaller cells near big cities and borders")
+    ap.add_argument("--dem-dir", default="dem")
+    ap.add_argument("--dem-zoom", type=int, default=4)
+    ap.add_argument("--world-version", type=int, default=2)
     args = ap.parse_args()
+    configure(args.res, args.cell_km2, args.sea_km2)
+    global WORLD_VERSION
+    WORLD_VERSION = args.world_version
     raw, out = args.raw, args.out
     os.makedirs(out, exist_ok=True)
     cache = args.cache or os.path.join(raw, "_cache")
@@ -438,7 +495,7 @@ def main():
     land = region > 0
     # ------------------------------------------------------------ elevation
     log("decoding elevation tiles")
-    elev = decode_dem(raw)
+    elev = decode_dem(raw, args.dem_dir, args.dem_zoom)
     # ------------------------------------------------------------ disputed areas
     disp = load_geojson(raw, "ne_10m_admin_0_disputed_areas")
     disputes = []
@@ -457,14 +514,23 @@ def main():
     log("desert hint polygons:", len(desert_items))
 
     # ------------------------------------------------------------ cells
-    cpath = os.path.join(cache, "cells.npz")
+    ckey = "cells.npz" if (args.res == 0.2 and args.cell_km2 == 12000.0 and not args.adaptive) else "cells_%g_%g_%s.npz" % (args.res, args.cell_km2, "a" if args.adaptive else "u")
+    cpath = os.path.join(cache, ckey)
     if os.path.exists(cpath):
         z = np.load(cpath)
         cell, n_land = z["cell"], int(z["n_land"])
         log("cells loaded from cache:", n_land)
     else:
         log("building land cells")
-        cell, n_raw = build_cells(region, land, regions)
+        big = []
+        if args.adaptive:
+            with zipfile.ZipFile(os.path.join(raw, "geonames", "cities5000.zip")) as zf5:
+                for line in zf5.open("cities5000.txt"):
+                    p_ = line.decode("utf-8").split("\t")
+                    if int(p_[14] or 0) >= 500000:
+                        big.append((float(p_[5]), float(p_[4]), int(p_[14])))
+        dens = density_raster(region, reg_country, big, args.adaptive)
+        cell, n_raw = build_cells(region, land, regions, dens)
         cell, n_new, fixed = fix_connectivity(cell, n_raw)
         cell, n_land = compact_ids(cell)
         log("land cells:", n_land, "(connectivity fixes:", fixed, ")")
