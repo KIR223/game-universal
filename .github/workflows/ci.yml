@@ -37,3 +37,5 @@ jobs:
         run: godot --headless --path . -s tests/run_tests.gd
       - name: UI smoke tests on the real map
         run: godot --headless --path . -s tests/run_ui_tests.gd
+      - name: UI layout tests with the phone profile (bottom navigation, compact card)
+        run: godot --headless --path . -s tests/run_ui_tests.gd -- --phone

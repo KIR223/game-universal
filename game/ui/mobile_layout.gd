@@ -3,11 +3,12 @@ extends RefCounted
 ## Phone/tablet layout helpers (iPhone, iPad, Android): detection, UI scale and safe-area margins.
 
 const PHONE_UI_SCALE := 1.3
+static var force := false   # tests and tools: behave like a phone on any device
 
 
 ## True on iPhone/iPad/Android builds (and when forced with `-- --phone-ui` for desktop testing).
 static func is_phone() -> bool:
-	return OS.has_feature("ios") or OS.has_feature("android") or OS.get_cmdline_user_args().has("--phone-ui")
+	return force or OS.has_feature("ios") or OS.has_feature("android") or OS.get_cmdline_user_args().has("--phone-ui")
 
 
 ## Safe area (window pixels) -> margins in UI units: Rect2(position = left/top, size = right/bottom).

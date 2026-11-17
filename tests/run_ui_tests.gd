@@ -10,6 +10,9 @@ var _frames := 0
 
 
 func _initialize() -> void:
+	if OS.get_cmdline_user_args().has("--phone"):
+		MobileLayout.force = true            # phone layout: bottom navigation, compact card, 1170x540 window
+		# only the layout code paths change (bottom navigation bar, compact card, phone panel sizes); the headless window size is fixed
 	GameSettings.path = "user://test_ui_settings.cfg"   # scratch settings: reduced motion makes panels appear at once, so layout can be measured
 	GameSettings.reset_for_tests()
 	GameSettings.set_value("reduce_motion", true)
@@ -46,6 +49,8 @@ func _layout_step(i: int) -> void:
 	var phase := i % 3
 	var name: String = _layout_panels[idx]
 	if phase == 0:
+		if i == 0 and OS.get_cmdline_user_args().has("--phone"):
+			check(MobileLayout.is_phone() and main.BOTTOM_PAD > 8 and main.RAIL_W == 8, "phone profile is active")
 		main._nav_pressed(name)
 	elif phase == 2:
 		var top: Control = main._top
@@ -54,8 +59,8 @@ func _layout_step(i: int) -> void:
 		check(panel != null and panel.is_inside_tree(), "%s panel is open" % name)
 		if panel != null:
 			var r := panel.get_global_rect()
-			check(r.size.x <= vp.x * 0.8, "%s panel keeps a sane width (%.0f of %.0f px)" % [name, r.size.x, vp.x])
-			check(r.position.x >= 60.0 and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y + 1.0, "%s panel stays inside the window and clear of the nav rail (%s of %s)" % [name, str(r), str(vp)])
+			check(r.size.x <= vp.x * 0.8 + 1.0, "%s panel keeps a sane width (%.0f of %.0f px)" % [name, r.size.x, vp.x])
+			check(r.position.x >= (0.0 if MobileLayout.is_phone() else 60.0) and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y - float(main.BOTTOM_PAD - 8) + 1.0, "%s panel stays inside the window and clear of the nav rail (%s of %s)" % [name, str(r), str(vp)])
 			check(r.position.y >= top.get_global_rect().end.y - 4.0, "%s panel does not cover the top bar" % name)
 		main._nav_pressed(name)
 

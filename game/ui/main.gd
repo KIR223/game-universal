@@ -23,6 +23,10 @@ var _actions: Container
 var _speed_buttons: Array[Button] = []
 ## Height of the bottom card (selected territory / army / actions): compact on phones.
 var CARD_H: int = 156 if MobileLayout.is_phone() else 232
+## Space kept free at the bottom: the phone navigation bar (nothing on desktop).
+var NAV_H: int = 58
+var RAIL_W: int = 8 if MobileLayout.is_phone() else 68   # left space taken by the navigation rail
+var BOTTOM_PAD: int = (58 + 8) if MobileLayout.is_phone() else 8
 const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
 const RIGHT_TABS := [["events", "События"], ["wars", "Войны"], ["fronts", "Фронты"], ["tasks", "Задачи"]]
 var _nav: Dictionary = {}
@@ -1021,12 +1025,16 @@ func _toggle_eco() -> void:
 	_eco = PanelContainer.new()
 	_eco.theme = _theme
 	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_eco.position = Vector2(68, 56)
-	_eco.custom_minimum_size = Vector2(_panel_w(), 0)
+	_eco.position = Vector2(RAIL_W, 56)
+	_eco.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_eco)
+	var eco_scroll := ScrollContainer.new()
+	eco_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_eco.add_child(eco_scroll)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
-	_eco.add_child(v)
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	eco_scroll.add_child(v)
 	v.add_child(_panel_header("Экономика и торговля", func(): _nav_pressed("economy")))
 	_eco_dyn = VBoxContainer.new()
 	v.add_child(_eco_dyn)
@@ -1217,8 +1225,8 @@ func _toggle_tech() -> void:
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_tech.position = Vector2(68, 56)
-	_tech.custom_minimum_size = Vector2(_panel_w(), 560)
+	_tech.position = Vector2(RAIL_W, 56)
+	_tech.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_tech)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
@@ -1416,8 +1424,8 @@ func _toggle_pol() -> void:
 	_pol = PanelContainer.new()
 	_pol.theme = _theme
 	_pol.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_pol.position = Vector2(68, 56)
-	_pol.custom_minimum_size = Vector2(_panel_w(), 560)
+	_pol.position = Vector2(RAIL_W, 56)
+	_pol.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_pol)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
@@ -1555,8 +1563,8 @@ func _toggle_intel() -> void:
 	_intel = PanelContainer.new()
 	_intel.theme = _theme
 	_intel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_intel.position = Vector2(68, 56)
-	_intel.custom_minimum_size = Vector2(_panel_w(), 560)
+	_intel.position = Vector2(RAIL_W, 56)
+	_intel.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_intel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
@@ -1665,7 +1673,12 @@ func _intel_refresh() -> void:
 
 ## Width shared by all modal panels: the design width, never more than 80 % of the window.
 func _panel_w() -> float:
-	return minf(float(Design.PANEL_W), get_viewport().get_visible_rect().size.x * 0.8 - 68.0)
+	return minf(float(Design.PANEL_W), get_viewport().get_visible_rect().size.x * 0.8 - float(RAIL_W))
+
+
+## Panel height: the design height, but always inside the window above the phone navigation bar.
+func _panel_h() -> float:
+	return clampf(get_viewport().get_visible_rect().size.y - 56.0 - float(BOTTOM_PAD) - 8.0, 240.0, 560.0)
 
 
 ## One header for every modal panel: gold title on the left, icon close button on the right.
@@ -1794,12 +1807,23 @@ func _build_hud() -> void:
 	menu_btn.pressed.connect(func(): _main_menu.popup(Rect2i(Vector2i(menu_btn.get_screen_position()) + Vector2i(0, 40), Vector2i(1, 1))))
 	hb.add_child(menu_btn)
 
-	# ---- left rail
+	# ---- navigation: left rail on desktop, bottom bar on phones (thumb reach, keeps the map free)
 	var nav := PanelContainer.new()
-	nav.position = Vector2(8, 56)
 	root.add_child(nav)
-	var nv := VBoxContainer.new()
-	nv.add_theme_constant_override("separation", 2)
+	var nv: BoxContainer
+	if MobileLayout.is_phone():
+		nav.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+		nav.offset_left = 8
+		nav.offset_right = -8
+		nav.offset_top = -(NAV_H + 4)
+		nav.offset_bottom = -4
+		nv = HBoxContainer.new()
+		nv.alignment = BoxContainer.ALIGNMENT_CENTER
+		nv.add_theme_constant_override("separation", 6)
+	else:
+		nav.position = Vector2(8, 56)
+		nv = VBoxContainer.new()
+		nv.add_theme_constant_override("separation", 2)
 	nav.add_child(nv)
 	for it in NAV_ITEMS:
 		var b2 := IconButton.new(it[0], it[1], Vector2(44, 44))
@@ -1813,7 +1837,7 @@ func _build_hud() -> void:
 	_right.offset_left = -352
 	_right.offset_right = -8
 	_right.offset_top = 56
-	_right.offset_bottom = -(CARD_H + 8)
+	_right.offset_bottom = -(CARD_H + BOTTOM_PAD)
 	root.add_child(_right)
 	if MobileLayout.is_phone():
 		# phones: the journal panel starts closed and opens with a button, so the map keeps the screen
@@ -1854,10 +1878,10 @@ func _build_hud() -> void:
 	# ---- bottom card: selected territory / settlement / units + actions
 	_bottom = PanelContainer.new()
 	_bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_bottom.offset_left = 68
+	_bottom.offset_left = RAIL_W
 	_bottom.offset_right = -8 if MobileLayout.is_phone() else -360
-	_bottom.offset_top = -CARD_H
-	_bottom.offset_bottom = -8
+	_bottom.offset_top = -(CARD_H + BOTTOM_PAD - 8)
+	_bottom.offset_bottom = -BOTTOM_PAD
 	root.add_child(_bottom)
 	var bh := HBoxContainer.new()
 	bh.add_theme_constant_override("separation", 10)
@@ -1886,9 +1910,9 @@ func _build_hud() -> void:
 	# ---- map mode selector (floating, bottom-left of the map)
 	var modes := PanelContainer.new()
 	modes.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	modes.offset_left = 68
-	modes.offset_bottom = -(CARD_H + 8)
-	modes.offset_top = -(CARD_H + 54)
+	modes.offset_left = RAIL_W
+	modes.offset_bottom = -(CARD_H + BOTTOM_PAD)
+	modes.offset_top = -(CARD_H + BOTTOM_PAD + 46)
 	modes.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	root.add_child(modes)
 	var mh := HBoxContainer.new()
@@ -2012,8 +2036,8 @@ func _nav_pressed(name: String) -> void:
 func _open_generic(name: String) -> void:
 	_generic = PanelContainer.new()
 	_generic.theme = _theme
-	_generic.position = Vector2(68, 56)
-	_generic.custom_minimum_size = Vector2(_panel_w(), 600)
+	_generic.position = Vector2(RAIL_W, 56)
+	_generic.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_generic)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
