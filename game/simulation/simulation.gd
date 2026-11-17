@@ -1915,7 +1915,29 @@ func date_string() -> String:
 # --------------------------------------------------------------- commands
 
 ## Validated entry point for every player/network action.
+## Multiplayer hooks (both unset in single player; never serialised):
+##  - command_sink: a network CLIENT forwards every command to the host instead of applying it here;
+##  - command_hook: the network HOST is told about every command that was applied, to broadcast it.
+var command_sink := Callable()
+var command_hook := Callable()
+
+
+var _in_tick := false   # commands the simulation issues itself (AI) while a day is processed are replayed by every peer
+
+
 func apply_command(cmd: Dictionary) -> Dictionary:
+	if command_sink.is_valid() and not _in_tick:
+		return command_sink.call(cmd)
+	var res := _validate_and_run(cmd)
+	if res["ok"]:
+		command_log.append({"day": day, "cmd": cmd})
+		if command_hook.is_valid() and not _in_tick:
+			command_hook.call(cmd)
+	return res
+
+
+## A network client applies the host's already validated commands here (bypasses command_sink and command_hook).
+func apply_remote_command(cmd: Dictionary) -> Dictionary:
 	var res := _validate_and_run(cmd)
 	if res["ok"]:
 		command_log.append({"day": day, "cmd": cmd})
@@ -2206,6 +2228,7 @@ func _fail(reason: String) -> Dictionary:
 # --------------------------------------------------------------- time step
 
 func tick_day() -> void:
+	_in_tick = true
 	day += 1
 	_logistics()
 	_economy()
@@ -2228,6 +2251,7 @@ func tick_day() -> void:
 		for c in countries:
 			if c["alive"] and c["generals"].size() < MAX_GENERALS:
 				_new_general(c["id"])
+	_in_tick = false
 
 
 func _aggregate() -> Dictionary:

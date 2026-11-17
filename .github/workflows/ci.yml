@@ -37,3 +37,12 @@ jobs:
         run: godot --headless --path . -s tests/run_tests.gd
       - name: UI smoke tests on the real map
         run: godot --headless --path . -s tests/run_ui_tests.gd
+      - name: Multiplayer core (protocol, lockstep, desync repair, reconnect) on the in-memory network
+        run: godot --headless --path . -s tests/run_net_tests.gd
+      - name: Multiplayer through the game UI (host + client)
+        run: godot --headless --path . -s tests/run_net_ui_tests.gd
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Multiplayer over real UDP (host and client processes, ENet on localhost)
+        run: python tests/net_enet_test.py --days 40
