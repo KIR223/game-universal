@@ -3587,6 +3587,25 @@ func _cell_supply_text(pid: int) -> String:
 	return "—"
 
 
+const TERRAIN_RU := {"plains": "равнина", "forest": "лес", "hills": "холмы", "mountain": "горы", "desert": "пустыня", "sea": "море"}
+
+
+## "Label  value" line of the territory card: muted label, bright value.
+func _kv(k: String, v: String) -> String:
+	return "[color=#93a3b8]%s[/color]  %s" % [k, v]
+
+
+## Integer with thin-space thousands separators: 1584 -> "1 584".
+func _num(n: int) -> String:
+	var s := str(absi(n))
+	var out := ""
+	for i in s.length():
+		if i > 0 and (s.length() - i) % 3 == 0:
+			out += " "
+		out += s[i]
+	return ("-" if n < 0 else "") + out
+
+
 func _earth_card(pid: int) -> String:
 	var p: Dictionary = sim.provinces()[pid]
 	var w := sim.world
@@ -3621,15 +3640,26 @@ func _earth_card(pid: int) -> String:
 	if int(p["dispute"]) > 0:
 		var d: Dictionary = w["disputes"][int(p["dispute"]) - 1]
 		claim = "\n[color=#e0b45a]Спорная территория:[/color] %s — %s" % [d["name"], d["note"] if d["note"] != null else "нет данных"]
+	var reg := region if region != "" else "Без названия"
 	var t := "[table=3]"
-	t += "[cell][b]%s[/b]\nСтрана (признана): %s\nОбласть/регион: %s\nРайон: %s\nБлижайший населённый пункт: %s\nЯчейка #%d · %d км²[/cell]" % [
-		region if region != "" else "Без названия", _cname(lg), region if region != "" else "—", district if district != "" else "нет данных", near, pid, int(p["area"])]
-	t += "[cell]Владелец (признанный): %s\nКонтролирует: %s%s\nСтатус: %s%s[/cell]" % [
-		_cname(lg), _cname(o), "  [color=#e0b45a](оккупирована)[/color]" if o != lg else "", ", ".join(status), claim]
-	t += "[cell]Рельеф: %s · высота ≈ %d м\nНаселение: %s\nПромышленность: %d · инфраструктура: %d%s\nСнабжение: %s\nДобыча: %s[/cell]" % [
-		p["terrain"], int(p["elev"]), ("%d тыс." % (int(p["pop_real"]) / 1000)) if int(p["pop_real"]) > 0 else "нет данных",
-		int(p["industry"]), sim.infra[pid], (" (с разрушениями %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else "",
-		_cell_supply_text(pid), dep if dep != "" else "—"]
+	t += "[cell][font_size=17][b]%s[/b][/font_size]\n%s\n%s\n%s\n%s\n%s[/cell]" % [
+		reg,
+		_kv("Страна", _cname(lg)),
+		_kv("Область", region if region != "" else "—"),
+		_kv("Район", district if district != "" else "нет данных"),
+		_kv("Рядом", near),
+		"[color=#6f7c8e]Ячейка #%d · %s км²[/color]" % [pid, _num(int(p["area"]))]]
+	t += "[cell][color=#e0c070]Власть[/color]\n%s\n%s%s\n%s%s[/cell]" % [
+		_kv("Владелец", _cname(lg)),
+		_kv("Контроль", _cname(o)), "  [color=#e0b45a](оккупирована)[/color]" if o != lg else "",
+		_kv("Статус", ", ".join(status)), claim]
+	var pop_text: String = ("%s тыс." % _num(int(p["pop_real"]) / 1000)) if int(p["pop_real"]) > 0 else "нет данных"
+	t += "[cell][color=#e0c070]Территория[/color]\n%s\n%s\n%s\n%s\n%s[/cell]" % [
+		_kv("Рельеф", "%s, %d м" % [TERRAIN_RU.get(p["terrain"], p["terrain"]), int(p["elev"])]),
+		_kv("Население", pop_text),
+		_kv("Промышленность", str(int(p["industry"]))),
+		_kv("Инфраструктура", "%d%s" % [sim.infra[pid], (" (с разрушениями %d)" % sim.eff_infra(pid)) if sim.eff_infra(pid) != sim.infra[pid] else ""]),
+		_kv("Снабжение", _cell_supply_text(pid)) + "\n" + _kv("Добыча", dep if dep != "" else "—")]
 	t += "[/table]\n"
 	return t
 

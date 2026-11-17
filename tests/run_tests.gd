@@ -2353,3 +2353,65 @@ func test_organization() -> void:
 		a2.tick_day()
 		b2.tick_day()
 	check(a2.checksum() == b2.checksum(), "simulation with organisation is deterministic")
+
+
+func test_organization_retreat() -> void:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"organization": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	var b := _find_border(sim)
+	var x: int = b["a"]
+	var y: int = b["b"]
+	sim.wars.append({"a": x, "b": y, "start": 0})
+	var ax: Dictionary = sim.armies_of(x)[0]
+	var ay: Dictionary = sim.armies_of(y)[0]
+	var cell: int = b["cell"]   # a cell of x
+	ax["prov"] = cell
+	ay["prov"] = cell
+	ax["org"] = 0
+	ay["org"] = 80
+	sim._organization()
+	check(ax["prov"] != cell and ax["prov"] >= 0 and sim.owner[ax["prov"]] == x, "a broken army retreats to an own neighbouring cell")
+	check(sim.army_org(ax) == 15 and ax["path"].is_empty(), "the retreating army keeps a little organisation and stops marching")
+	check(ay["prov"] == cell, "the army that held the field stays")
+	# with every neighbour held by the enemy the broken army has nowhere to go and stays
+	var held := sim.armies_of(y)
+	var stuck: Dictionary = sim.armies_of(x)[0]
+	stuck["prov"] = cell
+	stuck["org"] = 0
+	ay["prov"] = cell
+	var i := 0
+	for q in sim.provinces()[cell]["land_neighbors"]:
+		if sim.owner[q] == x or sim.owner[q] == y:
+			var filler: Dictionary = sim.armies_of(y)[(i + 1) % maxi(held.size(), 1)] if held.size() > 1 else ay
+			if filler != ay:
+				filler["prov"] = q
+				i += 1
+	sim._organization()
+	check(stuck["prov"] == cell or sim.army_org(stuck) == 15, "a broken army either retreats or stays (never vanishes)")
+
+
+func test_fog() -> void:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"weather": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	var cell := 0
+	for p in sim.provinces():
+		if p["land"]:
+			cell = p["id"]
+			break
+	var hits := 0
+	var in_band := 0
+	for d in 400:
+		sim.day = d
+		if sim.fog_at(cell):
+			hits += 1
+			var w := sim.winter_at(cell)
+			if w >= 10 and w <= 70:
+				in_band += 1
+	check(hits == in_band, "fog appears only where winter severity is 10..70")
+	check(WeatherFx.state_for(40, false, 2.0, true, false, true)["fog"] > 0.0, "fog shows with the Medium/High profile")
+	check(WeatherFx.state_for(40, true, 2.0, true, false, true)["fog"] == 0.0, "a storm replaces fog")
+	check(WeatherFx.state_for(40, false, 2.0, true, true, true)["fog"] == 0.0, "no fog with reduced motion")

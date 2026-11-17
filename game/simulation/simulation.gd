@@ -2842,6 +2842,12 @@ func winter_at(cell: int) -> int:
 	return w * lat_f / 100
 
 
+## Fog in the shoulder seasons (≈12% of cell-days, only where winter severity is 10..70), deterministic from calendar and cell.
+func fog_at(cell: int) -> bool:
+	var w := winter_at(cell)
+	return w >= 10 and w <= 70 and ((day / 4) * 31 + (cell / 53) * 17) % 100 < 12
+
+
 ## Local storm (≈7% of cell-days), deterministic from the calendar and the cell.
 func storm_at(cell: int) -> bool:
 	return ((day / 3) * 7919 + (cell / 37) * 104729) % 100 < 7
@@ -3583,6 +3589,8 @@ func _organization() -> void:
 				fighting = true
 				break
 		if fighting:
+			if org <= 0:
+				_retreat(a)   # a broken army leaves the cell it cannot hold
 			continue   # battles already cost organisation
 		if not a["path"].is_empty():
 			org -= ORG_MOVE
@@ -3591,6 +3599,29 @@ func _organization() -> void:
 		elif a["supply"] < 30:
 			org -= 1
 		a["org"] = clampi(org, 0, 100)
+
+
+## A broken army (organisation 0) falls back to a neighbouring own or allied cell free of enemy armies; with nowhere to go it stays.
+func _retreat(a: Dictionary) -> void:
+	var provs := provinces()
+	var best := -1
+	for q in provs[a["prov"]]["land_neighbors"]:
+		var o := owner[q]
+		if o != a["owner"] and not (o >= 0 and allied(a["owner"], o)):
+			continue
+		var occupied := false
+		for b in armies:
+			if b["prov"] == q and b["owner"] != a["owner"] and at_war(a["owner"], b["owner"]):
+				occupied = true
+				break
+		if not occupied and (best < 0 or q < best):
+			best = q
+	if best >= 0:
+		a["prov"] = best
+		a["path"] = []
+		a["move"] = 0
+		a["org"] = 15
+		_log("%s: армия %s отступила — организация исчерпана" % [date_string(), countries[a["owner"]]["name"]])
 
 
 # ---------------------------------------------------------------- division templates (rules.templates)
