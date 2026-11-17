@@ -3240,23 +3240,32 @@ func eff_infra(p: int) -> int:
 ## Supply distance from hubs. Cost per step depends on infrastructure (own land ~5-9, hostile ~20-24).
 func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	var provs := provinces()
-	var dist := {}
+	# working distances live in a flat array (much cheaper than a Dictionary per step); the result dictionary lists only reached cells
+	if _sd_arr.size() != owner.size():
+		_sd_arr = PackedInt32Array()
+		_sd_arr.resize(owner.size())
+	_sd_arr.fill(9999)
+	var dv := _sd_arr
+	var touched: Array[int] = []
 	var buckets: Array = []
 	for _i in SUPPLY_RANGE + 1:
 		buckets.append([])
 	var cap: int = countries[cid]["capital"]
 	if owner[cap] == cid:
-		dist[cap] = 0
+		dv[cap] = 0
+		touched.append(cap)
 		buckets[0].append(cap)
 	else:
 		for p in cells_of(cid):
-			dist[p] = 60
+			dv[p] = 60
+			touched.append(p)
 			buckets[60].append(p)
 			break
 	if not fleets_of(cid).is_empty():
 		for p in cells_of(cid):
-			if _coastal[p] == 1 and not dist.has(p) and not port_blockaded(p, cid):
-				dist[p] = 80
+			if _coastal[p] == 1 and dv[p] == 9999 and not port_blockaded(p, cid):
+				dv[p] = 80
+				touched.append(p)
 				buckets[80].append(p)
 	var need := {}
 	for t in targets:
@@ -3268,14 +3277,18 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	for al in allies_of(cid):
 		ally_set[al] = true
 	var terr_extra := _terrain_supply_extra() if rule_terrain else PackedInt32Array()
+	var finished := false
 	for d in SUPPLY_RANGE + 1:
+		if finished:
+			break
 		for p in buckets[d]:
-			if dist[p] != d:
+			if dv[p] != d:
 				continue
 			if not need.is_empty() and need.has(p):
 				need.erase(p)
 				if need.is_empty():
-					return dist  # every army's supply distance is final
+					finished = true   # every army's supply distance is final
+					break
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
 				var hostile := o >= 0 and o != cid and enemy_set.has(o)
@@ -3286,13 +3299,19 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 				if rule_weather:
 					cost += _winter_cached(q) / 20
 				var nd := d + cost
-				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
-					dist[q] = nd
+				if nd <= SUPPLY_RANGE and nd < dv[q]:
+					if dv[q] == 9999:
+						touched.append(q)
+					dv[q] = nd
 					if not hostile:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
 						buckets[nd].append(q)
+	var dist := {}
+	for p in touched:
+		dist[p] = dv[p]
 	return dist
 
 
+var _sd_arr := PackedInt32Array()
 var _terr_extra_cache := PackedInt32Array()
 var _winter_val := PackedInt32Array()
 var _winter_stamp := PackedInt32Array()
@@ -3550,12 +3569,17 @@ func _lose_org(a: Dictionary, n: int) -> void:
 
 ## Daily: marching and starving armies lose organisation, armies that rest in supply regain it.
 func _organization() -> void:
-	var provs := provinces()
+	# owners present per cell, so "is there an enemy army here" costs one dictionary lookup per army
+	var present := {}
+	for a in armies:
+		if not present.has(a["prov"]):
+			present[a["prov"]] = {}
+		present[a["prov"]][a["owner"]] = true
 	for a in armies:
 		var org := army_org(a)
 		var fighting := false
-		for b in armies:
-			if b["prov"] == a["prov"] and b["owner"] != a["owner"] and at_war(a["owner"], b["owner"]):
+		for o in present[a["prov"]]:
+			if o != a["owner"] and at_war(a["owner"], o):
 				fighting = true
 				break
 		if fighting:
