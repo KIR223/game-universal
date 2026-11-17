@@ -1016,11 +1016,34 @@ func _draw_region_labels(z: float, font: Font) -> void:
 		shown += 1
 
 
+## Recent missile launches: a trail from the launch site to the target and an expanding ring (red = hit, blue = intercepted).
+func _draw_strikes(z: float) -> void:
+	for s in sim.strikes:
+		var age: int = sim.day - int(s["day"])
+		if age < 0 or age > 8:
+			continue
+		var fade := 1.0 - float(age) / 9.0
+		var a := cell_world(int(s["from"]))
+		var b := cell_world(int(s["target"]))
+		var col := Color(1.0, 0.45, 0.2, fade) if s["hit"] else Color(0.55, 0.78, 1.0, fade)
+		if not (cull.has_point(a) or cull.has_point(b) or cull.grow(200.0).intersects(Rect2(a, b - a).abs())):
+			continue
+		var head := a.lerp(b, minf(1.0, 0.35 + 0.2 * age))
+		draw_line(a, head, Color(col, fade * 0.8), 2.2 / z)
+		draw_circle(head, 3.0 / z, col)
+		var ring := (6.0 + 5.0 * age) / z
+		draw_arc(b, ring, 0.0, TAU, 28, col, 2.0 / z)
+		if s["hit"]:
+			draw_circle(b, 3.5 / z, Color(1.0, 0.85, 0.3, fade))
+
+
 func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
+	if sim.rule_modern and not sim.strikes.is_empty():
+		_draw_strikes(z)
 	_draw_region_labels(z, ThemeDB.fallback_font)
 	if z > 5.0:
 		return

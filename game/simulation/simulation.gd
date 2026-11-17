@@ -87,6 +87,14 @@ var ai_war_chance := 1.0          # probability gate for AI war declarations (sc
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
 var rule_terrain := false         # terrain, roads and railways change movement and supply cost
 var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
+var missile_stock := {}           # cid -> {"tactical": n, "strategic": n}; only with rules.modern
+var strikes: Array = []           # recent launches for the map and the log: {"day","owner","from","target","type","hit"}
+const MISSILE_CAP := 40
+## Abstract missile types (game balance only): range in cells (hops), damage to the cell (0..100), share of enemy army strength lost.
+const MISSILE_DEFS := {
+	"tactical": {"name": "Тактические ракеты", "cost": 40, "steel": 8, "range": 5, "dmg": 25, "army_pct": 8, "tech": "mis1"},
+	"strategic": {"name": "Ракеты дальнего действия", "cost": 120, "steel": 25, "range": 12, "dmg": 55, "army_pct": 18, "tech": "mis2"},
+}
 var rule_weather := false         # seasons, winter by latitude and local storms slow armies, supply and air operations
 var _cell_lat := PackedFloat32Array()
 var _start_doy := 1
@@ -882,6 +890,8 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_modern = bool(scn.get("rules", {}).get("modern", false))
 	if rule_modern:
 		_load_techs()
+		missile_stock = {}
+		strikes = []
 	_compute_start_doy()
 	scenario_id = str(scn.get("id", ""))
 	if is_earth:
@@ -2030,6 +2040,10 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			return _resolve_event(countries[cid], cmd.get("uid", -1), cmd.get("option", -1))
 		"build_wing":
 			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
+		"build_missile":
+			return _build_missile(cid, cmd.get("mtype", ""), int(cmd.get("count", 1)))
+		"launch_missile":
+			return _launch_missile(cid, cmd.get("mtype", ""), int(cmd.get("target", -1)))
 		"air_mission":
 			var aw := wing_by_id(cmd.get("wing", -1))
 			if aw.is_empty() or aw["owner"] != cid:
@@ -3244,6 +3258,141 @@ func _log(text: String) -> void:
 		log_lines.pop_front()
 
 
+# ---------------------------------------------------------------- missiles and air defence (abstract, rules.modern)
+
+const MISSILE_START := {"tactical": 3, "strategic": 0}
+
+
+## Missiles in stock (read-only: never creates state).
+func missile_count(cid: int, mtype: String) -> int:
+	return int(missile_stock.get(cid, MISSILE_START).get(mtype, 0))
+
+
+func _set_missiles(cid: int, mtype: String, n: int) -> void:
+	if not missile_stock.has(cid):
+		missile_stock[cid] = MISSILE_START.duplicate()
+	missile_stock[cid][mtype] = n
+
+
+## Chance (percent) that a launch against this country is shot down.
+func air_defense(cid: int) -> int:
+	return clampi(8 + mod(cid, "ad_pct"), 0, 80)
+
+
+func _build_missile(cid: int, mtype: String, count: int) -> Dictionary:
+	if not rule_modern:
+		return _fail("rule disabled")
+	if not MISSILE_DEFS.has(mtype):
+		return _fail("invalid missile")
+	var d: Dictionary = MISSILE_DEFS[mtype]
+	var c: Dictionary = countries[cid]
+	if not c["techs"].has(d["tech"]):
+		return _fail("technology required")
+	count = clampi(count, 1, 10)
+	if missile_count(cid, mtype) + count > MISSILE_CAP:
+		return _fail("stock full")
+	if c["treasury"] < d["cost"] * count:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < d["steel"] * count:
+		return _fail("not enough steel")
+	c["treasury"] -= d["cost"] * count
+	c["stock"]["steel"] -= d["steel"] * count
+	_set_missiles(cid, mtype, missile_count(cid, mtype) + count)
+	return {"ok": true}
+
+
+## Nearest own land cell from which `target` is within `range_cells` hops (-1 if none).
+func missile_site(cid: int, target: int, range_cells: int) -> int:
+	var best := -1
+	var best_d := 9999
+	var r := reach(target, range_cells)
+	var provs := provinces()
+	for p in r:
+		if owner[p] == cid and provs[p]["land"]:
+			var dd: int = r[p]
+			if dd < best_d or (dd == best_d and p < best):
+				best_d = dd
+				best = p
+	return best
+
+
+func _launch_missile(cid: int, mtype: String, target: int) -> Dictionary:
+	if not rule_modern:
+		return _fail("rule disabled")
+	if not MISSILE_DEFS.has(mtype):
+		return _fail("invalid missile")
+	if target < 0 or target >= owner.size() or not provinces()[target]["land"]:
+		return _fail("land target required")
+	var def_owner := owner[target]
+	if def_owner < 0 or not at_war(cid, def_owner):
+		return _fail("target not at war")
+	if missile_count(cid, mtype) <= 0:
+		return _fail("no missiles")
+	var d: Dictionary = MISSILE_DEFS[mtype]
+	var from := missile_site(cid, target, d["range"] + mod(cid, "air_range"))
+	if from < 0:
+		return _fail("out of range")
+	_set_missiles(cid, mtype, missile_count(cid, mtype) - 1)
+	var chance := clampi(air_defense(def_owner) - mod(cid, "missile_pen_pct"), 0, 85)
+	var hit := rng.randi_range(0, 99) >= chance
+	strikes.append({"day": day, "owner": cid, "from": from, "target": target, "type": mtype, "hit": hit})
+	if strikes.size() > 40:
+		strikes.pop_front()
+	var where := "ячейка #%d" % target
+	if is_earth_world():
+		var rn := EarthWorld.region_name(world, int(provinces()[target].get("region", 0)))
+		if rn != "":
+			where = rn
+	if hit:
+		damage[target] = mini(100, damage[target] + d["dmg"])
+		for a in armies:
+			if a["prov"] == target and a["owner"] != cid and at_war(cid, a["owner"]):
+				_hurt(a, a["strength"] * d["army_pct"] / 100)
+		_log("%s: %s наносит удар (%s) по территории %s — %s" % [date_string(), countries[cid]["name"], d["name"], countries[def_owner]["name"], where])
+	else:
+		_log("%s: ПВО страны %s перехватила ракету (%s) из %s" % [date_string(), countries[def_owner]["name"], d["name"], countries[cid]["name"]])
+	_aggregate_dirty()
+	return {"ok": true, "hit": hit}
+
+
+func _aggregate_dirty() -> void:
+	_agg_key = []   # damage changed: per-country sums must be recomputed
+
+
+func _ai_missiles(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var enemies := enemies_of(cid)
+	if enemies.is_empty():
+		return
+	if day % 7 == 0 and c["treasury"] >= 260 and c["stock"]["steel"] >= 60:
+		for mt in ["strategic", "tactical"]:
+			if c["techs"].has(MISSILE_DEFS[mt]["tech"]) and missile_count(cid, mt) < 6:
+				_build_missile(cid, mt, 1)
+				break
+	if day % 6 != 0:
+		return
+	for mt in ["strategic", "tactical"]:
+		if missile_count(cid, mt) <= 0:
+			continue
+		var best := -1
+		var best_v := -1
+		for t in cells_of_enemies(enemies):
+			var v: int = provinces()[t]["industry"] * 10 + armies_in(t).size() * 4 - damage[t] / 10
+			if v > best_v and missile_site(cid, t, MISSILE_DEFS[mt]["range"] + mod(cid, "air_range")) >= 0:
+				best_v = v
+				best = t
+		if best >= 0:
+			_launch_missile(cid, mt, best)
+			return
+
+
+func cells_of_enemies(enemies: Array) -> Array:
+	var out: Array = []
+	for e in enemies:
+		out.append_array(cells_of(e))
+	return out
+
+
 # ---------------------------------------------------------------- pathing
 
 ## BFS over land. Passable: own, enemy-owned or unowned provinces.
@@ -3363,6 +3512,8 @@ func _ai() -> void:
 			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
 		_ai_generals(cid)
 		_ai_air(cid)
+		if rule_modern:
+			_ai_missiles(cid)
 		if day % 10 == 0:
 			_ai_politics(cid)
 		if day % 15 == 0:
@@ -3472,7 +3623,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3509,6 +3660,8 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
 	sim.rule_modern = bool(d.get("rule_modern", false))
+	sim.missile_stock = d.get("missile_stock", {})
+	sim.strikes = d.get("strikes", [])
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
 	sim.start_date = d["start_date"]
@@ -3540,4 +3693,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	return var_to_str([day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]).hash()
+	var state := [day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
+	if rule_modern:
+		state.append([missile_stock, strikes])   # only with the rule: other scenarios keep their reference checksums
+	return var_to_str(state).hash()

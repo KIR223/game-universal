@@ -61,7 +61,7 @@ const REASONS := {
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
-	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
+	"already embargoed": "эмбарго уже введено", "no missiles": "нет ракет в запасе", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
 const EFFECT_NAMES := {
@@ -809,6 +809,22 @@ func _refresh_info() -> void:
 			_actions.add_child(wb2)
 	if map.selected_wing >= 0:
 		_air_tools(sim.wing_by_id(map.selected_wing))
+	if sim.rule_modern and o >= 0 and o != player and sim.at_war(player, o) and sim.provinces()[pid]["land"]:
+		for mt in Simulation.MISSILE_DEFS:
+			var md: Dictionary = Simulation.MISSILE_DEFS[mt]
+			var mtype: String = mt
+			var mb := Button.new()
+			mb.text = "Ракетный удар: %s (в запасе %d, дальность %d, ПВО врага %d%%)" % [md["name"], sim.missile_count(player, mtype), md["range"] + sim.mod(player, "air_range"), sim.air_defense(o)]
+			mb.disabled = sim.missile_count(player, mtype) <= 0
+			mb.pressed.connect(func():
+				var rm := sim.apply_command({"type": "launch_missile", "country": player, "mtype": mtype, "target": pid})
+				if rm["ok"]:
+					_log.append_text("[color=%s]%s[/color]\n" % ["#e0603a" if rm["hit"] else "#8ac5ff", "Ракета достигла цели" if rm["hit"] else "Ракета перехвачена ПВО"])
+				else:
+					_log.append_text("[color=#d9a05a]Удар невозможен: %s[/color]\n" % _reason(rm["reason"]))
+				map.queue_redraw()
+				_refresh_all())
+			_actions.add_child(mb)
 	if o == player and sim.infra[pid] < Simulation.MAX_INFRA:
 		_cmd_button("Улучшить инфраструктуру до %d (%d $, 15 стали)" % [sim.infra[pid] + 1, 60 + 20 * sim.infra[pid]], {"type": "build_infra", "country": player, "province": pid})
 	if o == player:
@@ -2026,6 +2042,13 @@ func _g_build() -> void:
 	for at in sim.air_defs:
 		var ad: Dictionary = sim.air_defs[at]
 		_cmd_button("Авиагруппа: %s — %d $, %d стали" % [ad["name"], ad["cost"], ad["steel"]], {"type": "build_wing", "country": player, "type_air": at, "base": c["capital"]}, _gbody)
+	if sim.rule_modern:
+		_gbody.add_child(HSeparator.new())
+		_gbody.add_child(_h2("Ракеты и ПВО (запас: тактические %d, дальние %d · ПВО %d%%)" % [sim.missile_count(player, "tactical"), sim.missile_count(player, "strategic"), sim.air_defense(player)]))
+		for mt in Simulation.MISSILE_DEFS:
+			var md: Dictionary = Simulation.MISSILE_DEFS[mt]
+			var have: bool = c["techs"].has(md["tech"])
+			_cmd_button("Ракеты: %s — %d $, %d стали%s" % [md["name"], md["cost"], md["steel"], "" if have else " (нужна технология)"], {"type": "build_missile", "country": player, "mtype": mt, "count": 1}, _gbody)
 
 
 func _relation_text(o: int) -> String:

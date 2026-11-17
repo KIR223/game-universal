@@ -53,7 +53,7 @@ cats = {c["id"] for c in techs["categories"]}
 EFFECTS = {"income_pct", "upkeep_pct", "food_pct", "coal_pct", "iron_pct", "oil_pct", "steel_pct", "manpower_pct",
            "atk_pct", "def_pct", "atk_infantry_pct", "atk_armor_pct", "atk_artillery_pct", "def_infantry_pct",
            "def_armor_pct", "def_artillery_pct", "fleet_pct", "supply_pct", "supply_decay_pct", "attrition_pct",
-           "research_pct", "research_slots", "air_fighter_pct", "air_bomber_pct", "air_attacker_pct", "air_range", "supply_decay_pct", "cyber_pct", "cyber_def_pct"}
+           "research_pct", "research_slots", "air_fighter_pct", "air_bomber_pct", "air_attacker_pct", "air_range", "supply_decay_pct", "cyber_pct", "cyber_def_pct", "ad_pct", "missile_pen_pct"}
 tmap = {}
 for t in techs["techs"]:
     if t["id"] in tmap:

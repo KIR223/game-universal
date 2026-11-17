@@ -1614,3 +1614,57 @@ func test_safe_area_insets() -> void:
 	check(is_equal_approx(ins.size.y, 34.0 / 3.0), "bottom inset follows the home indicator (%.1f)" % ins.size.y)
 	check(ins.position.x == 0.0 and ins.size.x == 0.0, "no side insets in portrait")
 	check(MobileLayout.safe_area_insets(Rect2i(), Vector2i(0, 0), Vector2(100, 100)) == Rect2(), "empty safe area gives no insets")
+
+
+func test_missiles_and_air_defense() -> void:
+	var plain := _earth()
+	check(plain.apply_command({"type": "build_missile", "country": 0, "mtype": "tactical"})["reason"] == "rule disabled", "missiles need the modern rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"modern": true}
+	var sim := Simulation.new()
+	check(sim.setup_scenario(scn).is_empty(), "modern scenario loads")
+	var b := _find_border(sim)
+	check(not b.is_empty(), "found two neighbouring countries")
+	var a: int = b["a"]
+	var d: int = b["b"]
+	var target := -1
+	for q in sim.provinces()[b["cell"]]["land_neighbors"]:
+		if sim.owner[q] == d:
+			target = q
+	check(target >= 0, "enemy target cell next to the border")
+	sim.wars.append({"a": a, "b": d, "start": 0})
+	check(sim.missile_count(a, "tactical") == 3 and sim.missile_count(a, "strategic") == 0, "starting stock")
+	check(sim.apply_command({"type": "build_missile", "country": a, "mtype": "tactical"})["reason"] == "technology required", "building needs the technology")
+	sim.countries[a]["techs"].append("mis1")
+	sim.countries[a]["treasury"] = 1000
+	sim.countries[a]["stock"]["steel"] = 200
+	check(sim.apply_command({"type": "build_missile", "country": a, "mtype": "tactical", "count": 2})["ok"], "tactical missiles are built")
+	check(sim.missile_count(a, "tactical") == 5 and sim.countries[a]["treasury"] == 920, "build spends stock, money and steel")
+	check(sim.apply_command({"type": "launch_missile", "country": a, "mtype": "strategic", "target": target})["reason"] == "no missiles", "cannot launch without missiles")
+	# interception: defence 80% vs none
+	sim.damage[target] = 0
+	var hits := 0
+	var tries := 0
+	sim.countries[d]["mods"]["ad_pct"] = 200   # clamp -> 80 %
+	for i in 4:
+		var r := sim.apply_command({"type": "launch_missile", "country": a, "mtype": "tactical", "target": target})
+		check(r["ok"], "launch %d accepted" % i)
+		tries += 1
+		if r.get("hit", false):
+			hits += 1
+	check(sim.missile_count(a, "tactical") == 1, "each launch uses one missile")
+	check(sim.strikes.size() == tries, "launches are recorded for the map")
+	check(sim.air_defense(d) == 80, "air defence is capped at 80%")
+	check(sim.damage[target] == hits * 25 or sim.damage[target] == 100 or sim.damage[target] == hits * 25, "only hits damage the target (%d hits, damage %d)" % [hits, sim.damage[target]])
+	# peace and range
+	check(sim.apply_command({"type": "launch_missile", "country": a, "mtype": "tactical", "target": sim.countries[a]["capital"]})["reason"] == "target not at war", "own territory is not a valid target")
+	var far := -1
+	for c in sim.countries:
+		if c["id"] != a and c["id"] != d and not sim.at_war(a, c["id"]):
+			far = c["capital"]
+	sim.wars.append({"a": a, "b": sim.owner[far], "start": 0})
+	check(sim.apply_command({"type": "launch_missile", "country": a, "mtype": "tactical", "target": far})["reason"] == "out of range", "targets beyond the missile range are refused")
+	# save/load + determinism
+	var r2 := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r2.missile_count(a, "tactical") == 1 and r2.strikes.size() == tries, "missile state survives save/load")
+	check(r2.checksum() == sim.checksum(), "checksum survives save/load with missiles")

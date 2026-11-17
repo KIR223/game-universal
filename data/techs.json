@@ -592,6 +592,70 @@
     "cyber_def_pct": 8,
     "income_pct": 2
    }
+  },
+  {
+   "id": "mis1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Тактические ракеты",
+   "cost": 600,
+   "requires": [
+    "cm1"
+   ],
+   "effects": {}
+  },
+  {
+   "id": "mis2",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Ракеты дальнего действия",
+   "cost": 950,
+   "requires": [
+    "mis1",
+    "av2"
+   ],
+   "effects": {}
+  },
+  {
+   "id": "mis3",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Точное наведение и ложные цели",
+   "cost": 850,
+   "requires": [
+    "mis1",
+    "cp1"
+   ],
+   "effects": {
+    "missile_pen_pct": 15
+   }
+  },
+  {
+   "id": "ad1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Система ПВО",
+   "cost": 560,
+   "requires": [
+    "cm1"
+   ],
+   "effects": {
+    "ad_pct": 20
+   }
+  },
+  {
+   "id": "ad2",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Эшелонированная ПВО и ПРО",
+   "cost": 900,
+   "requires": [
+    "ad1",
+    "ew1"
+   ],
+   "effects": {
+    "ad_pct": 25
+   }
   }
  ]
 }
