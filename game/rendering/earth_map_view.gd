@@ -9,12 +9,14 @@ const MODES := [
 	["political", "Политический"], ["admin", "Административный"], ["military", "Военный"], ["control", "Контроль территорий"],
 	["terrain", "Рельеф"], ["infra", "Инфраструктура"], ["economy", "Экономика"], ["resources", "Ресурсы"],
 	["population", "Население"], ["logistics", "Логистика"], ["diplomacy", "Дипломатия"], ["legal", "Признанные границы"],
+	["weather", "Погода и сезон"],
 ]
 const CHUNK_DEG := 15.0
 const CHUNK_COLS := 24
 const BUILD_BUDGET := 2500   # polylines turned into chunked segments per frame
 
 var mode := "political"
+var _weather_day := -1
 var is_earth := false
 var show_settlements := true
 var show_lines := true
@@ -396,6 +398,10 @@ func refresh(dirty: Array[int]) -> void:
 	if not is_earth:
 		super.refresh(dirty)
 		return
+	if mode == "weather" and sim.day != _weather_day and sim.day % 2 == 0:
+		_weather_day = sim.day
+		_fill_palette_all()
+		_upload()
 	if not dirty.is_empty():
 		_war_pairs_rebuild()
 		var touched := {}
@@ -620,6 +626,12 @@ func _cell_color(c: int) -> Color:
 			return Color(_rel.get(o, Color(0.5, 0.5, 0.5)), 0.9) if o >= 0 else Color(0, 0, 0, 0)
 		"legal":
 			return Color(_country_color(sim.legal[c]), 1.0)
+		"weather":
+			# winter severity (white-blue) and local storms (violet); meaningful only with the weather rule, but always shows the season
+			if sim.storm_at(c) and sim.rule_weather:
+				return Color("7d4fd0", 0.92)
+			var w := float(sim.winter_at(c)) / 100.0
+			return Color(_ramp(w, Color("5a8f4a"), Color("e8f2ff")), 0.9)
 	return Color(0, 0, 0, 0)
 
 
@@ -684,13 +696,23 @@ func _preload_work() -> void:
 	EarthWorld.lines()
 	if EarthVisual.available():
 		EarthVisual.vectors()
+	# per chunk: capitals first, then the rest by falling population (ids are already ordered by population),
+	# so the draw loop can stop at the first small non-capital instead of scanning every village
+	var caps_c := {}
+	var rest_c := {}
 	for i in EarthWorld.S_POP.size():
 		var key := int((EarthWorld.S_LON[i] + 180.0) / CHUNK_DEG) + CHUNK_COLS * int((_top - EarthWorld.S_LAT[i]) / CHUNK_DEG)
-		if not _sett_chunks.has(key):
-			_sett_chunks[key] = PackedInt32Array()
-		var arr: PackedInt32Array = _sett_chunks[key]
+		var dst: Dictionary = caps_c if EarthWorld.S_CAP[i] == 1 else rest_c
+		if not dst.has(key):
+			dst[key] = PackedInt32Array()
+		var arr: PackedInt32Array = dst[key]
 		arr.append(i)
-		_sett_chunks[key] = arr
+		dst[key] = arr
+	for key in rest_c:
+		_sett_chunks[key] = (caps_c[key] + rest_c[key]) if caps_c.has(key) else rest_c[key]
+	for key in caps_c:
+		if not _sett_chunks.has(key):
+			_sett_chunks[key] = caps_c[key]
 
 
 func _exit_tree() -> void:
@@ -882,8 +904,11 @@ func _draw_settlements(z: float) -> void:
 		for i in _sett_chunks[k]:
 			var pop: int = EarthWorld.S_POP[i]
 			var cap: bool = EarthWorld.S_CAP[i] == 1
-			if pop < thr and not (cap and z >= 0.25):
-				continue
+			if pop < thr:
+				if not cap:
+					break   # non-capitals are sorted by population: everything after is smaller
+				if z < 0.25:
+					continue
 			var pos := world_pos_of(EarthWorld.S_LON[i], EarthWorld.S_LAT[i])
 			if not cull.has_point(pos):
 				continue
