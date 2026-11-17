@@ -17,6 +17,7 @@ const BUILD_BUDGET := 2500   # polylines turned into chunked segments per frame
 var mode := "political"
 var is_earth := false
 var show_settlements := true
+var quality := GraphicsQuality.Level.HIGH   # drawing detail, see GraphicsQuality
 var show_lines := true
 
 var _sprite: Sprite2D
@@ -124,6 +125,11 @@ func bind(sim_: Simulation) -> void:
 	_cut.clear()
 	_last_cam = Vector3(-1, -1, -1)
 	repaint_all()
+
+
+func set_quality(level: int) -> void:
+	quality = clampi(level, GraphicsQuality.Level.LOW, GraphicsQuality.Level.HIGH)
+	queue_redraw()
 
 
 func set_mode(m: String) -> void:
@@ -604,7 +610,7 @@ func _draw_base() -> void:
 			_draw_layer("border0", keys, Color(1, 1, 1, 0.35 if mode != "legal" else 0.7), 1.0)
 		if z >= 1.1 and (mode == "admin" or z >= 2.0):
 			_draw_layer("border1", keys, Color(1, 1, 1, 0.22), 0.8)
-		if z >= 1.6 or mode == "logistics" or mode == "infra":
+		if z >= GraphicsQuality.params(quality)["roads_zoom"] or mode == "logistics" or mode == "infra":
 			if z >= 0.8:
 				_draw_layer("roads", keys, Color(0.95, 0.85, 0.55, 0.5 if mode != "logistics" else 0.85), 0.8)
 				_draw_layer("rails", keys, Color(0.08, 0.08, 0.1, 0.55), 0.9)
@@ -640,7 +646,8 @@ func world_pos_of(lon: float, lat: float) -> Vector2:
 func _draw_settlements(z: float) -> void:
 	if not _data_ready:
 		return
-	var thr := _pop_threshold(z)
+	var qp := GraphicsQuality.params(quality)
+	var thr := int(_pop_threshold(z) * qp["pop_scale"])
 	var font := ThemeDB.fallback_font
 	var r := 2.4 / z
 	var halo := 0.9 / z
@@ -688,7 +695,7 @@ func _draw_settlements(z: float) -> void:
 	var labels := 0
 	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
 	for job in jobs:
-		if labels >= 220:
+		if labels >= qp["labels"]:
 			break
 		var pos2: Vector2 = job[0]
 		var gk := Vector2i(int(pos2.x * z / 90.0), int(pos2.y * z / 16.0))

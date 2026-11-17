@@ -10,6 +10,7 @@ var map_legacy: MapView
 var map_earth: EarthMapView
 var ui: CanvasLayer
 var player := -1
+var _quality := GraphicsQuality.Level.HIGH
 var speed_idx := 1
 var accum := 0.0
 var log_seen := 0
@@ -95,6 +96,7 @@ var _t_amount := 3
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
+	_quality = GraphicsQuality.load_level(GraphicsQuality.PATH, OS.has_feature("mobile"))
 	_theme = _make_theme()
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
@@ -106,6 +108,7 @@ func _ready() -> void:
 	add_child(map_earth)
 	map_earth.set_active(false)
 	map = map_legacy
+	_apply_quality()
 	ui = CanvasLayer.new()
 	add_child(ui)
 	_show_menu()
@@ -1712,6 +1715,7 @@ func _build_hud() -> void:
 	_main_menu.add_separator()
 	_main_menu.add_item("Масштаб интерфейса +", 2)
 	_main_menu.add_item("Масштаб интерфейса −", 3)
+	_main_menu.add_item("Качество графики: %s" % GraphicsQuality.label(_quality), 8)
 	_main_menu.add_separator()
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
@@ -1727,6 +1731,22 @@ func _mode_index(m: String) -> int:
 	return 0
 
 
+## Low -> Medium -> High map drawing quality; stored per machine, rendering only.
+func _cycle_quality() -> void:
+	_quality = GraphicsQuality.next(_quality)
+	GraphicsQuality.save_level(_quality)
+	_apply_quality()
+	var i := _main_menu.get_item_index(8)
+	if i >= 0:
+		_main_menu.set_item_text(i, "Качество графики: %s" % GraphicsQuality.label(_quality))
+
+
+func _apply_quality() -> void:
+	for m in [map_earth, map_legacy]:
+		if m is EarthMapView:
+			m.set_quality(_quality)
+
+
 func _menu_pressed(id: int) -> void:
 	match id:
 		0: SaveSystem.save(sim, "quick")
@@ -1734,6 +1754,7 @@ func _menu_pressed(id: int) -> void:
 		2: get_window().content_scale_factor = clampf(get_window().content_scale_factor + 0.1, 0.8, 1.8)
 		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
 		4: _show_menu()
+		8: _cycle_quality()
 
 
 # ------------------------------------------------------------ navigation rail

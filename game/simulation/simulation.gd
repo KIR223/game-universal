@@ -82,6 +82,7 @@ var _nc_ver := -1
 var _owner_ver := 0
 var _coastal := PackedByteArray()
 var _agg: Dictionary = {}         # country id -> {"prod","pop","ind","income"} (exact; rebuilt when ownership/damage/deposits change)
+var _blockade_key: Array = []   # inputs of the last blockade computation (see _logistics)
 var _agg_key: Array = []
 var ai_war_chance := 1.0          # probability gate for AI war declarations (scenario-tunable)
 var tech_defs: Dictionary = {}
@@ -2427,7 +2428,19 @@ func _logistics() -> void:
 	if fleets.is_empty():
 		for c in countries:
 			c["blockade"] = 0
+		_blockade_key = []   # values were reset: the next non-empty computation must not be skipped
 		return
+	# the blockade is a pure function of cell owners, fleet positions, wars and alliances: skip the O(all cells) pass
+	# when none of them changed since the last computation
+	var fleet_key := PackedInt32Array()
+	for f in fleets:
+		if f["strength"] > 0:
+			fleet_key.append(f["prov"])
+			fleet_key.append(f["owner"])
+	var key := [_owner_ver, fleet_key, hash(wars), hash(alliances), countries.size(), alive_count()]
+	if _blockade_key == key:
+		return
+	_blockade_key = key
 	var idx := _fleets_by_sea()
 	for c in countries:
 		if c["alive"]:
@@ -2481,6 +2494,12 @@ func _resources() -> void:
 			pop_sum[c["id"]] = 0
 			ind_sum[c["id"]] = 0
 	var agg := _aggregate()
+	var armies_by_owner := {}   # one pass instead of a scan over all armies per country (O(countries x armies))
+	for a in armies:
+		var ao: int = a["owner"]
+		if not armies_by_owner.has(ao):
+			armies_by_owner[ao] = []
+		armies_by_owner[ao].append(a)
 	for o in agg:
 		if not countries[o]["alive"]:
 			continue
@@ -2497,12 +2516,15 @@ func _resources() -> void:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
 		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] / 90
-		var astr := army_strength(cid)
+		var mine: Array = armies_by_owner.get(cid, [])
+		var astr := 0
+		for a in mine:
+			astr += a["strength"]
 		var fstr := 0
 		for f in fleets_of(cid):
 			fstr += f["strength"]
 		var armor_hp := 0
-		for a in armies_of(cid):
+		for a in mine:
 			for d in a["div"]:
 				if unit_defs[d["t"]]["oil"]:
 					armor_hp += d["hp"]
@@ -2521,9 +2543,8 @@ func _resources() -> void:
 			st[r] = mini(st[r], STOCK_CAP)
 		# shortages hurt the army
 		if c["short"].has("oil") or c["short"].has("food"):
-			for a in armies:
-				if a["owner"] == cid:
-					_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
+			for a in mine:
+				_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
 
 
 func net_of(cid: int, res: String) -> int:
@@ -2917,6 +2938,11 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	var need := {}
 	for t in targets:
 		need[t] = true
+	# relation of `cid` to each cell owner, memoised for this search: at_war()/allied() scan every war/alliance,
+	# which is far too slow inside the per-neighbour loop. bit 1 = own or allied, bit 2 = at war, -1 = not computed yet.
+	var rel := PackedInt32Array()
+	rel.resize(countries.size())
+	rel.fill(-1)
 	for d in SUPPLY_RANGE + 1:
 		for p in buckets[d]:
 			if dist[p] != d:
@@ -2927,12 +2953,17 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 					return dist  # every army's supply distance is final
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
-				var hostile := o >= 0 and o != cid and at_war(cid, o)
-				var cost: int = (10 - eff_infra(q)) if (o == cid or allied(cid, o)) else (25 - eff_infra(q))
-				var nd := d + cost
+				var r := 0
+				if o >= 0:
+					r = rel[o]
+					if r < 0:
+						r = (1 if (o == cid or allied(cid, o)) else 0) | (2 if (o != cid and at_war(cid, o)) else 0)
+						rel[o] = r
+				var infra_q := maxi(1, infra[q] - damage[q] / 30)   # == eff_infra(q)
+				var nd := d + ((10 - infra_q) if (r & 1) != 0 else (25 - infra_q))
 				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
 					dist[q] = nd
-					if not hostile:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
+					if (r & 2) == 0:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
 						buckets[nd].append(q)
 	return dist
 
