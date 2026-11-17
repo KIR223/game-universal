@@ -1414,3 +1414,80 @@ func test_peace_treaty_annexes_occupied_land() -> void:
 	var loaded := SaveSystem.load_slot("peacetest")
 	check(loaded != null and loaded.legal == sim.legal and loaded.checksum() == sim.checksum(), "legal[] after the treaty survives save/load")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/peacetest.sav"))
+
+
+## Surrender is a treaty: when a capital falls the winner gets legal title to everything it holds from the loser.
+func test_capitulation_annexes_held_land() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var cap: int = sim.countries[a]["capital"]
+	sim.wars.append({"a": b, "b": a, "start": 0})
+	var held: int = f["cell"]
+	for cell in [held, cap]:
+		sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+		sim._add_army(b, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(not sim.at_war(a, b), "the war ended by capitulation")
+	check(sim.owner[cap] == b and sim.legal[cap] == b, "the fallen capital is now legally the winner's")
+	check(sim.owner[held] == b and sim.legal[held] == b, "every cell the winner holds is recognised after the surrender")
+	check(sim.owner[sim.countries[a]["capital"]] == a or not sim.countries[a]["alive"], "the loser's new capital is on its own land")
+	check(sim.cells_held_from(b, a).is_empty(), "no unrecognised occupation is left between the two")
+
+
+## A tired AI that is clearly outmatched concedes what the stronger side holds; a roughly equal one only makes peace.
+func test_tired_ai_concedes_to_a_clearly_stronger_enemy() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	sim.wars.append({"a": b, "b": a, "start": -200})
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != f["cell"] and x["owner"] != a)
+	sim._add_army(b, f["cell"], [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[f["cell"]] == b and sim.legal[f["cell"]] == a, "b occupies a cell of a")
+	sim._ai()
+	check(not sim.at_war(a, b), "the exhausted AI ended the war")
+	check(sim.legal[f["cell"]] == b, "the clearly stronger enemy got legal title to the cell it holds")
+
+
+## Armies cut off deep in enemy land walk home instead of starving; supplied or home armies are left alone.
+func test_ai_pulls_starving_armies_back() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	sim.wars.append({"a": a, "b": b, "start": 0})
+	var deep := -1
+	for q in sim.provinces()[f["cell"]]["land_neighbors"]:
+		if sim.owner[q] == b:
+			deep = q
+			break
+	check(deep >= 0, "an enemy cell next to the border")
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != deep)
+	var army := sim._add_army(a, deep, [sim._make_div("infantry")])
+	army["supply"] = 10
+	check(sim._ai_retreat_starving(a) >= 1, "a starving army in enemy land is ordered back")
+	check(not army["path"].is_empty() and sim.owner[army["path"][army["path"].size() - 1]] == a, "its route ends on its own land")
+	army["path"] = []
+	army["supply"] = 90
+	check(sim._ai_retreat_starving(a) == 0 and army["path"].is_empty(), "a well supplied army stays")
+	army["supply"] = 10
+	army["prov"] = f["cell"]   # our own cell
+	check(sim._ai_retreat_starving(a) == 0, "a starving army on its own land is not moved")
+
+
+## The state hash must see recognised ownership: two games that differ only in legal[] are out of sync.
+func test_checksum_covers_legal_ownership() -> void:
+	var a := _earth()
+	var b := _earth()
+	check(a.checksum() == b.checksum(), "identical games share a checksum")
+	var cell := 0
+	for i in b.owner.size():
+		if b.owner[i] >= 0:
+			cell = i
+			break
+	var other: int = (b.owner[cell] + 1) % b.countries.size()
+	b.legal[cell] = other
+	check(a.checksum() != b.checksum(), "a different legal[] changes the checksum")
