@@ -3829,6 +3829,25 @@ func _build_site(cid: int, kind: String, cell: int) -> Dictionary:
 	return {"ok": true}
 
 
+## Does `viewer` know about this site? Own and allied sites, any site seen through a strong agent network, and sites on or next to
+## the viewer's territory or next to its armies (same rule as for armies).
+func site_visible(viewer: int, st: Dictionary) -> bool:
+	var o: int = st["owner"]
+	if o == viewer or allied(viewer, o) or net_of_agent(viewer, o) >= 25:
+		return true
+	var provs := provinces()
+	var p: int = st["cell"]
+	if owner[p] == viewer:
+		return true
+	for q in provs[p]["neighbors"]:
+		if owner[q] == viewer:
+			return true
+	for b in armies:
+		if b["owner"] == viewer and (b["prov"] == p or provs[p]["neighbors"].has(b["prov"])):
+			return true
+	return false
+
+
 func sites_at(cell: int) -> Array:
 	return sites.filter(func(x): return x["cell"] == cell)
 

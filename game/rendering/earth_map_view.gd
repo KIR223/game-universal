@@ -1065,19 +1065,22 @@ func _draw_strikes(z: float) -> void:
 			draw_circle(b, 3.5 / z, Color(1.0, 0.85, 0.3, fade))
 
 
-## Own air-defence batteries and launch sites as small round markers (visible from mid zoom).
+## Air-defence batteries and launch sites as small round markers (visible from mid zoom): own ones, and foreign ones the player can see.
 func _draw_sites(z: float) -> void:
 	if z < 1.0 or sim.sites.is_empty():
 		return
 	var r := 7.0 / z
 	for st in sim.sites:
-		if st["owner"] != player_country:
-			continue
+		var mine: bool = st["owner"] == player_country
+		if not mine and (player_country < 0 or not sim.site_visible(player_country, st)):
+			continue   # foreign objects show only when the intelligence picture allows it
 		var pos := cell_world(int(st["cell"]))
 		if not cull.has_point(pos):
 			continue
 		var dmg: int = sim.damage[int(st["cell"])]
 		var col := Color(0.55, 0.85, 1.0) if st["kind"] == "ad" else Color(1.0, 0.75, 0.35)
+		if not mine:
+			col = Color(0.95, 0.4, 0.35)
 		if dmg >= 80:
 			col = Color(0.5, 0.5, 0.5)
 		pos += Vector2(r * 1.6, -r * 1.6)

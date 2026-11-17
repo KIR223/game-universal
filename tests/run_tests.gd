@@ -2260,3 +2260,37 @@ func test_tutorial_steps() -> void:
 	for st in Tutorial.STEPS:
 		all[st["id"]] = true
 	check(Tutorial.first_open(all) == Tutorial.STEPS.size(), "all steps done")
+
+
+func test_site_visibility() -> void:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"modern": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	var b := _find_border(sim)
+	var a: int = b["a"]
+	var d: int = b["b"]
+	var near: int = -1
+	for q in sim.provinces()[b["cell"]]["land_neighbors"]:
+		if sim.owner[q] == d:
+			near = q
+	var site := {"owner": d, "cell": near, "kind": "ad"}
+	check(sim.site_visible(d, site), "the owner sees its own site")
+	check(sim.site_visible(a, site), "a site next to my territory is visible")
+	# a deep interior enemy site stays hidden
+	var deep := -1
+	for p in sim.cells_of(d):
+		var seen := false
+		for q in sim.provinces()[p]["neighbors"]:
+			if sim.owner[q] == a:
+				seen = true
+		if not seen and p != near and not sim.provinces()[p]["land_neighbors"].has(b["cell"]):
+			var far_from_army := true
+			for arm in sim.armies:
+				if arm["owner"] == a and (arm["prov"] == p or sim.provinces()[p]["neighbors"].has(arm["prov"])):
+					far_from_army = false
+			if far_from_army:
+				deep = p
+				break
+	if deep >= 0 and sim.net_of_agent(a, d) < 25 and not sim.allied(a, d):
+		check(not sim.site_visible(a, {"owner": d, "cell": deep, "kind": "launch"}), "a deep foreign site is hidden without intelligence")
