@@ -386,6 +386,7 @@ func repaint_all() -> void:
 		return
 	_compute_context()
 	_agg.clear()
+	_ctl.fill(-1)   # forget the cached controllers, otherwise _write_info() would not rebuild the label totals
 	for p in sim.provinces():
 		if p["land"]:
 			_write_info(p["id"])
@@ -1019,7 +1020,11 @@ func _draw_labels() -> void:
 	if z > 5.0:
 		return
 	var font := ThemeDB.fallback_font
-	for cid in _agg:
+	# biggest countries first; a label is skipped when it would overlap one already placed (screen-space rectangles)
+	var order: Array = _agg.keys()
+	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x)
+	var placed: Array[Rect2] = []
+	for cid in order:
 		var a: Vector3 = _agg[cid]
 		if a.x < 1.0:
 			continue
@@ -1034,6 +1039,16 @@ func _draw_labels() -> void:
 			continue
 		var px := int(fs_px)
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+		var sp := pos * z
+		var rect := Rect2(sp + Vector2(-tw * 0.5 - 4.0, -px * 0.7), Vector2(tw + 8.0, px * 1.25))
+		var clash := false
+		for r in placed:
+			if r.intersects(rect):
+				clash = true
+				break
+		if clash:
+			continue
+		placed.append(rect)
 		_text(font, pos, nm, px, Color(1, 1, 1, 0.92), -tw * 0.5)
 
 
