@@ -688,8 +688,15 @@ def main():
         log("reading GeoNames Russian alternate names")
         def is_cyr(t):
             return any("\u0400" <= ch <= "\u04ff" for ch in t)
-        with zipfile.ZipFile(os.path.join(raw, "geonames", "RU.zip")) as zr:
-            for line in zr.open("RU.txt"):
+        # worldwide Russian names: geonames/alt_ru.txt = rows of alternateNamesV2.txt whose language column is "ru"
+        # (fallback: RU.zip, which holds only alternate names of places located in Russia)
+        alt_path = os.path.join(raw, "geonames", "alt_ru.txt")
+        if os.path.exists(alt_path):
+            src = open(alt_path, "rb")
+        else:
+            src = zipfile.ZipFile(os.path.join(raw, "geonames", "RU.zip")).open("RU.txt")
+        with src as zr:
+            for line in zr:
                 q = line.decode("utf-8").rstrip("\n").split("\t")
                 if len(q) < 8 or q[2] != "ru" or not is_cyr(q[3]) or q[7] == "1" or q[6] == "1":
                     continue

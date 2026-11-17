@@ -30,8 +30,8 @@
    "bytes": 579820
   },
   "countries.json.z": {
-   "sha256": "cf4bb14b003fd165134e25c76d29264f6fd1af7a3338c0437d9524a1eb00df47",
-   "bytes": 21971
+   "sha256": "b191e0b2f539943623b9ede71e3f605ff9e06181707c615002553586fcd9b65f",
+   "bytes": 22292
   },
   "facilities.json.z": {
    "sha256": "729b89fc05f50f011dc1d83b72275054d131dffcdde7ca9fe6f88a2e42478a5c",
@@ -74,9 +74,9 @@
    "bytes": 115936
   },
   "settlements.json.z": {
-   "sha256": "d323107106226f931481398bb3c9e4688bfece67d412096e1029b7bbb4ea250f",
-   "bytes": 9636545
+   "sha256": "181df299948f7252ce5edc4fb77713916743cf08275d34a0d5abc6d3eda3bfcf",
+   "bytes": 10096355
   }
  },
- "world_hash": "109c8757acc7cb4cd945d5431c83be2a1826e24bade3a3afd8712af66ab788bc"
+ "world_hash": "b272d58f4cdb0c46b4cd1e78f5991535246448d393dda1db61ffebc799a31c9a"
 }

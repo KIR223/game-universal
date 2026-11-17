@@ -64,5 +64,5 @@ venv/bin/python tools/world/build_world.py --raw RAW_DIR --out data/world
 `build_world.py --res 0.1 --cell-km2 6500 --sea-km2 500000 --adaptive --cities cities500 --dem-dir dem5 --dem-zoom 5 --world-version 3`:
 25 259 ячеек суши (~25 935 всего), 237 255 населённых пунктов GeoNames `cities500`, DEM Terrain Tiles zoom 5 (≈ 5 км). Сценарий `modern_world_hd` (`world_dataset`: `world_hd`).
 Базовый набор `data/world` заморожен (хэш `7b0225e198cffbe0`) — на нём построены эталонные контрольные суммы второго разработчика.
-Русские названия населённых пунктов: Natural Earth (`NAME_RU`) и GeoNames alternate names (`alternatenames/RU.zip`, CC BY 4.0), флаг `--ru-names`; у 11 678 из 237 255 пунктов есть русское название, у остальных показывается название GeoNames (часто латиницей). HD `world_hash` теперь `109c8757acc7cb4c`.
+Русские названия населённых пунктов: Natural Earth (`NAME_RU`) и GeoNames `alternateNamesV2` (строки языка `ru`, извлечены в `geonames/alt_ru.txt`; CC BY 4.0), флаг `--ru-names`. Покрытие: 996 из 1000 крупнейших пунктов, 4948 из 5000, всего 77 156 из 237 255; у остальных показывается название GeoNames (часто латиницей). HD `world_hd` хэш `b272d58f4cdb0c46`.
 Ячейки получены взвешенной кластеризацией (плотнее там, где больше населения/сложнее рельеф); число ячеек — не «реальные районы».
