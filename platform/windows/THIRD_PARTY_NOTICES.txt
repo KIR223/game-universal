@@ -1,0 +1,21 @@
+IRON DOMINION — third-party notices
+===================================
+
+Godot Engine — https://godotengine.org
+  Copyright (c) 2014-present Godot Engine contributors; Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.
+  Licensed under the MIT License (https://godotengine.org/license). The engine bundles further third-party
+  components (fonts, ICU, zlib, Vulkan loader, etc.); their full licenses are listed in the Godot editor
+  (Help → About Godot → Third-party Licenses) and at https://github.com/godotengine/godot/blob/master/COPYRIGHT.txt
+  The default font used by the game is the font bundled with Godot (see the list above).
+
+Map and game data (data/world, embedded in IronDominion.exe)
+  * Natural Earth 5.2.0 — https://www.naturalearthdata.com — public domain. Made with Natural Earth.
+  * Contains data from GeoNames (https://www.geonames.org), licensed under Creative Commons Attribution 4.0
+    (https://creativecommons.org/licenses/by/4.0/). Files: cities5000, admin1CodesASCII, admin2Codes.
+  * Elevation data: Terrain Tiles (Tilezen/Mapzen) on AWS Open Data — SRTM, GMTED2010, ETOPO1, NED and others;
+    attribution: https://github.com/tilezen/joerd/blob/master/docs/attribution.md
+  * Energy data: Our World in Data — https://ourworldindata.org/energy — CC BY 4.0.
+  Details, dates and limitations: LICENSES\DATA_SOURCES.md. Army sizes, treasuries and ideologies of countries are
+  estimates, not real orders of battle; borders are not a statement of legal status.
+
+The game itself uses no other third-party art, audio or fonts (see ASSET_LICENSES.md).

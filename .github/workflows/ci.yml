@@ -13,6 +13,8 @@ jobs:
         run: |
           python3 tools/validate_data.py
           python3 tools/check_licenses.py
+      - name: Secrets scan (keys, tokens, hard-coded credentials, keystores)
+        run: python3 tools/check_secrets.py
 
   tests:
     name: tests (${{ matrix.os }})
@@ -33,10 +35,15 @@ jobs:
           use-dotnet: false
       - name: Import project
         run: godot --headless --path . --import
+      - name: GDScript check (every script must compile)
+        run: godot --headless --path . -s tools/check_gdscript.gd
       - name: Unit + integration tests (headless; includes real-world dataset hash, cells, partial capture, saves)
         run: godot --headless --path . -s tests/run_tests.gd
       - name: UI smoke tests on the real map
         run: godot --headless --path . -s tests/run_ui_tests.gd
+      - name: UI audit (every button wired, layout at 9 resolutions/aspects)
+        if: hashFiles('tests/run_ui_audit.gd') != ''
+        run: godot --headless --path . -s tests/run_ui_audit.gd
 
   windows-build:
     name: windows x64 export
@@ -59,8 +66,21 @@ jobs:
         run: |
           mkdir -p build/windows
           godot --headless --path . --export-release "Windows x64" build/windows/IronDominion.exe
-          cp README.md ASSET_LICENSES.md build/windows/
+          ls -la build/windows
+      - name: Smoke test - the exported EXE starts and quits (loads the PCK and the main scene)
+        run: build/windows/IronDominion.exe --headless --quit-after 30
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package (README, VERSION, licenses, ZIP); refuses an EXE without the world data
+        run: python tools/package_windows.py --exe build/windows/IronDominion.exe --out build/release --godot 4.7.2
+      - name: Show version info
+        run: cat build/release/IronDominion-*/VERSION.txt
       - uses: actions/upload-artifact@v4
         with:
           name: IRON-DOMINION-WINDOWS-X64
-          path: build/windows/
+          path: build/release/IronDominion-*/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IRON-DOMINION-WINDOWS-X64-ZIP
+          path: build/release/IRON-DOMINION-WINDOWS-X64-*.zip
