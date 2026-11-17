@@ -1874,6 +1874,7 @@ func _menu_pressed(id: int) -> void:
 		3: _set_ui_scale(get_window().content_scale_factor - 0.1)
 		10: _show_settings_overlay()
 		4: _show_menu()
+		9: _net_reconnect()
 		8: _cycle_quality()
 		5: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
 		6: _change_display(func(d: DisplaySettings) -> void: d.toggle_borderless())
@@ -1886,7 +1887,6 @@ func _change_display(change: Callable) -> void:
 	change.call(display)
 	display.apply(get_window())
 	display.save_settings()
-		9: _net_reconnect()
 
 
 # ------------------------------------------------------------ multiplayer
