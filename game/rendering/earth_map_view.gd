@@ -29,7 +29,8 @@ var _tiles: Dictionary = {}          # col*100+row -> MeshInstance2D
 var _tile_lru: Array = []
 var _want_tiles: Array = []
 var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
-var quality := "medium" if MobileLayout.is_phone() else "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
+var _prof := GameSettings.profile()
+var quality: String = _prof["map_quality"]                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
 var _tile_grid := Vector2i(8, 4)
 var _world_w := 7200.0
 var _world_h := 4000.0
@@ -73,6 +74,14 @@ var _data_ready := false
 var _preload_started := false
 var _res := 0.2
 var _top := 84.0
+
+
+## Re-reads the graphics profile (tiles and label budgets) after the player changed it.
+func apply_quality() -> void:
+	_prof = GameSettings.profile()
+	quality = _prof["map_quality"]
+	_last_cam = Vector3.INF   # forces the tile / chunk update on the next frame
+	queue_redraw()
 
 
 func _ready() -> void:
@@ -659,6 +668,7 @@ func _process(delta: float) -> void:
 		queue_redraw()
 	_set_all("zoom", camera.zoom.x)
 	_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+	_set_all("water_fx", 1.0 if (_prof["effects"] and not GameSettings.reduce_motion()) else 0.0)
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
 		_set_all("sel_id", selected_province)
@@ -900,8 +910,10 @@ func _draw_settlements(z: float) -> void:
 	var font := ThemeDB.fallback_font
 	var r := 2.4 / z
 	var halo := 0.9 / z
-	var dots := PackedVector2Array()
-	var dots_halo := PackedVector2Array()
+	# three size classes by population so dense regions read as a hierarchy instead of a white smear
+	var dots: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var dots_halo: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var radii := [1.5 / z, 2.1 / z, 2.9 / z]
 	var caps: Array = []
 	var jobs: Array = []   # [position, settlement id, is capital]
 	for k in _visible_chunk_keys():
@@ -921,23 +933,26 @@ func _draw_settlements(z: float) -> void:
 			if cap:
 				caps.append(pos)
 			else:
-				dots_halo.append(pos - Vector2(r + halo, 0))
-				dots_halo.append(pos + Vector2(r + halo, 0))
-				dots.append(pos - Vector2(r, 0))
-				dots.append(pos + Vector2(r, 0))
+				var cls := 0 if pop < 60000 else (1 if pop < 600000 else 2)
+				var rr: float = radii[cls]
+				dots_halo[cls].append(pos - Vector2(rr + halo, 0))
+				dots_halo[cls].append(pos + Vector2(rr + halo, 0))
+				dots[cls].append(pos - Vector2(rr, 0))
+				dots[cls].append(pos + Vector2(rr, 0))
 			if z > 0.45 and (pop >= thr * 2 or z > 3.0 or cap):
 				jobs.append([pos, i, cap])
 	# one batched call per layer instead of thousands of circle draws
-	if not dots.is_empty():
-		draw_multiline(dots_halo, Color(0.03, 0.04, 0.06, 0.9), 2.0 * (r + halo))
-		draw_multiline(dots, Color(1, 1, 1, 0.95), 2.0 * r)
+	for cls in 3:
+		if not dots[cls].is_empty():
+			draw_multiline(dots_halo[cls], Color(0.03, 0.04, 0.06, 0.85), 2.0 * (radii[cls] + halo))
+			draw_multiline(dots[cls], Color(1, 1, 1, 0.95), 2.0 * radii[cls])
 	for pos in caps:
 		var d := r * 1.7
 		draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
 	var labels := 0
 	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
 	for job in jobs:
-		if labels >= 220:
+		if labels >= int(_prof["label_cap"]):
 			break
 		var pos2: Vector2 = job[0]
 		var gk := Vector2i(int(pos2.x * z / 90.0), int(pos2.y * z / 16.0))
@@ -997,7 +1012,7 @@ func _draw_region_labels(z: float, font: Font) -> void:
 	var taken := {}
 	var shown := 0
 	for ri in _region_info:
-		if shown >= 160:
+		if shown >= int(_prof["region_cap"]):
 			break
 		var pos := px_to_world(ri["pos"])
 		if not cull.has_point(pos):

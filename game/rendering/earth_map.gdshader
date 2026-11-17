@@ -19,6 +19,7 @@ uniform float zoom = 0.3;
 uniform int sel_id = -1;
 uniform int hover_id = -1;
 uniform float pulse = 0.0;
+uniform float water_fx = 1.0;          // 1: gentle animated shimmer on open water (graphics profile, off with reduced motion)
 
 int id16(vec4 v) {
 	return int(v.r * 255.0 + 0.5) + int(v.g * 255.0 + 0.5) * 256;
@@ -101,6 +102,12 @@ void fragment() {
 			col = mix(col, vec3(1.0, 0.88, 0.54), 0.18);
 		}
 		col = mix(col, vec3(1.0, 0.88, 0.54), sel_e * 0.95);
+	}
+	if (use_mask > 0.5 && water_fx > 0.5) {
+		float w = 1.0 - land_w;
+		vec2 q = uv * vec2(520.0, 300.0);
+		float sh = sin(q.x * 1.7 + TIME * 0.6) * sin(q.y * 2.3 - TIME * 0.45) + 0.5 * sin((q.x + q.y) * 3.1 + TIME * 0.8);
+		col += vec3(0.010, 0.014, 0.018) * sh * w * clamp(zoom * 0.5, 0.0, 1.0);
 	}
 	COLOR = vec4(col, 1.0);
 }

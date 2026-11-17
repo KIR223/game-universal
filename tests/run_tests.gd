@@ -1740,3 +1740,39 @@ func test_design_tokens() -> void:
 		var cr := Design.contrast(pair[0], pair[1])
 		check(cr >= pair[2], "contrast %.1f:1 >= %.1f for %s on %s" % [cr, pair[2], str(pair[0]), str(pair[1])])
 	check(Design.BTN_H_TOUCH * MobileLayout.PHONE_UI_SCALE >= 44.0, "touch buttons are at least 44 pt")
+
+
+func test_settings_and_sound() -> void:
+	GameSettings.path = "user://test_settings.cfg"
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(GameSettings.path))
+	GameSettings.reset_for_tests()
+	check(GameSettings.get_value("quality") == "high" and not GameSettings.reduce_motion(), "defaults on desktop")
+	check(is_equal_approx(float(GameSettings.get_value("vol_master")), 0.8), "default master volume")
+	for q in GameSettings.QUALITY:
+		GameSettings.set_value("quality", q)
+		check(GameSettings.profile()["map_quality"] in ["low", "medium", "high"], "profile %s maps to a tile quality" % q)
+	check(GameSettings.PROFILES["low"]["label_cap"] < GameSettings.PROFILES["ultra"]["label_cap"], "ultra shows more labels than low")
+	GameSettings.set_value("reduce_motion", true)
+	GameSettings.set_value("quality", "medium")
+	GameSettings.reset_for_tests()   # reload from disk
+	check(GameSettings.reduce_motion() and GameSettings.get_value("quality") == "medium", "settings persist on disk")
+	GameSettings.set_value("quality", "bogus")
+	GameSettings.reset_for_tests()
+	check(GameSettings.get_value("quality") == "high", "an invalid stored profile falls back to the default")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(GameSettings.path))
+	GameSettings.path = GameSettings.PATH
+	GameSettings.reset_for_tests()
+	# procedural sounds
+	var click := SoundKit.ui("click")
+	check(click.data.size() == int(SoundKit.RATE * 0.06) * 2, "click has the expected length")
+	var peak := 0
+	for i in range(0, click.data.size() / 2):
+		peak = maxi(peak, absi(click.data.decode_s16(i * 2)))
+	check(peak > 3000 and peak < 32768, "click is audible and not clipped (peak %d)" % peak)
+	check(SoundKit.ui("open") == SoundKit.ui("open"), "UI sounds are cached")
+	var amb := SoundKit.ambient(2)
+	check(amb.loop_mode == AudioStreamWAV.LOOP_FORWARD and amb.loop_end == 2 * 11025, "ambient pad loops over its whole length")
+	# seamless loop: first and last samples are close
+	var first := amb.data.decode_s16(0)
+	var last := amb.data.decode_s16((amb.loop_end - 1) * 2)
+	check(absi(first - last) < 4000, "ambient loop seam is smooth (%d vs %d)" % [first, last])

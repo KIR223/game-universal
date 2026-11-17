@@ -21,6 +21,8 @@ var _top_label: Label
 var _info: RichTextLabel
 var _actions: Container
 var _speed_buttons: Array[Button] = []
+## Height of the bottom card (selected territory / army / actions): compact on phones.
+var CARD_H: int = 156 if MobileLayout.is_phone() else 232
 const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
 const RIGHT_TABS := [["events", "События"], ["wars", "Войны"], ["fronts", "Фронты"], ["tasks", "Задачи"]]
 var _nav: Dictionary = {}
@@ -74,6 +76,10 @@ const EFFECT_NAMES := {
 	"research_slots": "слот исследований",
 }
 var _tech: PanelContainer
+var _snd_ui: AudioStreamPlayer
+var _snd_music: AudioStreamPlayer
+var _settings_panel: SettingsPanel
+var _music_thread: Thread
 var _tech_buttons := {}
 var _tech_queue_box: VBoxContainer
 var _pending_air := ""
@@ -129,7 +135,83 @@ func _ready() -> void:
 		get_window().content_scale_factor = MobileLayout.PHONE_UI_SCALE
 	get_window().size_changed.connect(_apply_safe_area)
 	_apply_safe_area()
+	_setup_audio()
+	apply_settings()
 	_show_menu()
+
+
+## Audio buses, players and button click sounds; the ambient pad is synthesised in a thread (skipped when there is no audio device).
+func _setup_audio() -> void:
+	for bus_name in ["UI", "Music"]:
+		if AudioServer.get_bus_index(bus_name) < 0:
+			AudioServer.add_bus()
+			var idx := AudioServer.bus_count - 1
+			AudioServer.set_bus_name(idx, bus_name)
+			AudioServer.set_bus_send(idx, "Master")
+	_snd_ui = AudioStreamPlayer.new()
+	_snd_ui.bus = "UI"
+	add_child(_snd_ui)
+	_snd_music = AudioStreamPlayer.new()
+	_snd_music.bus = "Music"
+	add_child(_snd_music)
+	get_tree().node_added.connect(func(n: Node):
+		if n is Button and not n.pressed.is_connected(_play_ui.bind("click")):
+			n.pressed.connect(_play_ui.bind("click")))
+	if DisplayServer.get_name() != "headless":
+		_music_thread = Thread.new()
+		_music_thread.start(func(): _music_ready.call_deferred(SoundKit.ambient(16)))
+
+
+func _music_ready(stream: AudioStreamWAV) -> void:
+	if _music_thread != null:
+		_music_thread.wait_to_finish()
+		_music_thread = null
+	_snd_music.stream = stream
+	_snd_music.play()
+
+
+func _play_ui(sound: String) -> void:
+	if _snd_ui == null or DisplayServer.get_name() == "headless":
+		return
+	_snd_ui.stream = SoundKit.ui(sound)
+	_snd_ui.play()
+
+
+## Applies saved settings: volumes, interface scale, graphics profile of the map.
+func apply_settings() -> void:
+	for pair in [["Master", "vol_master"], ["UI", "vol_ui"], ["Music", "vol_music"]]:
+		var idx := AudioServer.get_bus_index(pair[0])
+		if idx >= 0:
+			var vol := float(GameSettings.get_value(pair[1]))
+			AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(vol, 0.0001)))
+			AudioServer.set_bus_mute(idx, vol <= 0.001)
+	var base := MobileLayout.PHONE_UI_SCALE if MobileLayout.is_phone() else 1.0
+	get_window().content_scale_factor = base * float(GameSettings.get_value("ui_scale"))
+	if map_earth != null:
+		map_earth.apply_quality()
+
+
+func _open_settings() -> void:
+	if _settings_panel != null and is_instance_valid(_settings_panel):
+		return
+	_settings_panel = SettingsPanel.new()
+	_settings_panel.build(_theme)
+	var holder := CenterContainer.new()
+	holder.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var layer := Control.new()
+	layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+	layer.add_child(holder)
+	holder.add_child(_settings_panel)
+	ui.add_child(layer)
+	_settings_panel.changed.connect(apply_settings)
+	_settings_panel.closed.connect(func():
+		layer.queue_free()
+		_settings_panel = null)
+	_play_ui("open")
 
 
 func _make_theme() -> Theme:
@@ -280,6 +362,9 @@ func _show_menu() -> void:
 	_seed_edit.placeholder_text = "Seed"
 	_seed_edit.custom_minimum_size = Vector2(102, 40)
 	rnd_row.add_child(_seed_edit)
+	var sett := MenuKit.button("Настройки")
+	sett.pressed.connect(_open_settings)
+	box.add_child(sett)
 	var edit := MenuKit.button("Редактор сценариев")
 	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
 	box.add_child(edit)
@@ -614,6 +699,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				map.set_mode(EarthMapView.MODES[nxt][0])
 		KEY_F5: SaveSystem.save(sim, "quick")
 		KEY_ESCAPE:
+			if _settings_panel != null and is_instance_valid(_settings_panel):
+				_settings_panel.closed.emit()
+				return
+			if _open_panel_name != "":
+				_play_ui("close")
+				_close_all_panels()
+				_open_panel_name = ""
+				for k in _nav:
+					_nav[k].set_active(false)
+				return
 			if _search_panel != null and is_instance_valid(_search_panel):
 				_search_panel.queue_free()
 				_search_panel = null
@@ -628,6 +723,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
 		return
+	_play_ui("select")
 	if map.selected_wing >= 0 and _pending_air != "" and not sim.wing_by_id(map.selected_wing).is_empty():
 		var cmd: Dictionary
 		if _pending_air == "rebase":
@@ -991,6 +1087,8 @@ func _toggle_eco() -> void:
 func _eco_cmd(cmd: Dictionary) -> void:
 	var r := sim.apply_command(cmd)
 	var ok: bool = r["ok"]
+	if not ok:
+		_play_ui("error")
 	_log.append_text("[color=%s]%s[/color]\n" % ["#8ac58a" if ok else "#d9a05a", "Готово" if ok else "Отказ: %s" % _reason(r.get("reason", ""))])
 	_eco_refresh()
 	_refresh_top()
@@ -1724,7 +1822,7 @@ func _build_hud() -> void:
 	_right.offset_left = -352
 	_right.offset_right = -8
 	_right.offset_top = 56
-	_right.offset_bottom = -204
+	_right.offset_bottom = -(CARD_H + 8)
 	root.add_child(_right)
 	if MobileLayout.is_phone():
 		# phones: the journal panel starts closed and opens with a button, so the map keeps the screen
@@ -1767,7 +1865,7 @@ func _build_hud() -> void:
 	_bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_bottom.offset_left = 68
 	_bottom.offset_right = -8 if MobileLayout.is_phone() else -360
-	_bottom.offset_top = -196
+	_bottom.offset_top = -CARD_H
 	_bottom.offset_bottom = -8
 	root.add_child(_bottom)
 	var bh := HBoxContainer.new()
@@ -1798,8 +1896,8 @@ func _build_hud() -> void:
 	var modes := PanelContainer.new()
 	modes.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	modes.offset_left = 68
-	modes.offset_bottom = -204
-	modes.offset_top = -250
+	modes.offset_bottom = -(CARD_H + 8)
+	modes.offset_top = -(CARD_H + 54)
 	modes.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	root.add_child(modes)
 	var mh := HBoxContainer.new()
@@ -1837,6 +1935,7 @@ func _build_hud() -> void:
 	_main_menu.add_item("Масштаб интерфейса +", 2)
 	_main_menu.add_item("Масштаб интерфейса −", 3)
 	_main_menu.add_separator()
+	_main_menu.add_item("Настройки…", 5)
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
@@ -1858,6 +1957,7 @@ func _menu_pressed(id: int) -> void:
 		2: get_window().content_scale_factor = clampf(get_window().content_scale_factor + 0.1, 0.8, 1.8)
 		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
 		4: _show_menu()
+		5: _open_settings()
 
 
 # ------------------------------------------------------------ navigation rail
@@ -1877,6 +1977,8 @@ func _close_all_panels() -> void:
 func _animate_panel(p: Control) -> void:
 	if p == null or not is_instance_valid(p):
 		return
+	if GameSettings.reduce_motion():
+		return
 	var target := p.position
 	p.modulate.a = 0.0
 	p.position = target + Vector2(-16, 0)
@@ -1895,6 +1997,7 @@ func _nav_pressed(name: String) -> void:
 		return
 	_open_panel_name = name
 	_nav[name].set_active(true)
+	_play_ui("open")
 	match name:
 		"economy":
 			_toggle_eco()
