@@ -1000,7 +1000,7 @@ func _toggle_tech() -> void:
 		_tech.queue_free()
 		_tech = null
 		return
-	var cats: Array = JSON.parse_string(Simulation.read_data("techs.json")).get("categories", [])
+	var cats: Array = JSON.parse_string(Simulation.read_data("techs.json")).get("categories", []).filter(func(ct): return sim.tech_order.any(func(tid): return sim.tech_defs[tid]["category"] == ct["id"]))
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)

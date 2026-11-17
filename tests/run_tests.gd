@@ -1494,3 +1494,36 @@ func test_xl_world_dataset() -> void:
 		b.tick_day()
 	check(a.checksum() == b.checksum(), "XL simulation is deterministic")
 	EarthWorld.activate("world")
+
+
+func test_modern_warfare_rule() -> void:
+	var base := _earth()
+	check(not base.rule_modern and not base.tech_defs.has("drn1"), "modern techs are absent unless the scenario enables the rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"modern": true}
+	var a := Simulation.new()
+	check(a.setup_scenario(scn).is_empty(), "scenario with the modern rule loads")
+	for id in ["drn1", "drn2", "ew1", "sat1", "cyb1", "cyb2"]:
+		check(a.tech_defs.has(id), "tech %s is available" % id)
+	# cyber pressure: a cyber-capable enemy at war cuts income, cyber defence offsets it
+	var x := 0
+	var y := 1
+	for i in 3:
+		a.tick_day()
+	for c in a.countries:
+		if c["alive"] and c["id"] != x and c["income"] > a.countries[y]["income"]:
+			y = c["id"]
+	a.wars.append({"a": x, "b": y, "start": 0})
+	a.tick_day()
+	var calm: int = a.countries[y]["income"]
+	a.countries[x]["mods"]["cyber_pct"] = 20
+	a.tick_day()
+	var hit: int = a.countries[y]["income"]
+	check(calm > 20 and hit < calm, "enemy cyber operations cut income (%d -> %d)" % [calm, hit])
+	a.countries[y]["mods"]["cyber_def_pct"] = 20
+	a.tick_day()
+	var shielded: int = a.countries[y]["income"]
+	check(shielded > hit, "cyber defence offsets the loss (%d -> %d)" % [hit, shielded])
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_modern and r.tech_defs.has("cyb2"), "modern rule and techs survive save/load")
+	check(r.checksum() == a.checksum(), "checksum survives save/load with the modern rule")

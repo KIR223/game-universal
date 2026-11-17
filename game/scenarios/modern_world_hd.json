@@ -14,6 +14,7 @@
  "world_dataset": "world_hd",
  "rules": {
   "terrain": true,
-  "weather": true
+  "weather": true,
+  "modern": true
  }
 }

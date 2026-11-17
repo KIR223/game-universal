@@ -86,6 +86,7 @@ var _agg_key: Array = []
 var ai_war_chance := 1.0          # probability gate for AI war declarations (scenario-tunable)
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
 var rule_terrain := false         # terrain, roads and railways change movement and supply cost
+var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
 var rule_weather := false         # seasons, winter by latitude and local storms slow armies, supply and air operations
 var _cell_lat := PackedFloat32Array()
 var _start_doy := 1
@@ -241,6 +242,8 @@ func _load_techs() -> void:
 	if typeof(parsed) != TYPE_DICTIONARY:
 		return
 	for t in parsed.get("techs", []):
+		if t.get("rule", "") == "modern" and not rule_modern:
+			continue   # opt-in rule set: not part of scenarios that do not enable it
 		tech_defs[t["id"]] = t
 		tech_order.append(t["id"])
 
@@ -868,6 +871,9 @@ func setup_scenario(scn: Dictionary) -> Array:
 	ai_war_chance = float(scn.get("ai_war_chance", 1.0))
 	rule_terrain = bool(scn.get("rules", {}).get("terrain", false))
 	rule_weather = bool(scn.get("rules", {}).get("weather", false))
+	rule_modern = bool(scn.get("rules", {}).get("modern", false))
+	if rule_modern:
+		_load_techs()
 	_compute_start_doy()
 	scenario_id = str(scn.get("id", ""))
 	if is_earth:
@@ -2297,6 +2303,14 @@ func _economy() -> void:
 		if c["alive"]:
 			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) / 10000
 			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
+			if rule_modern:
+				# abstract cyber pressure: enemies at war reduce income, cyber defence offsets it (at most -25%)
+				var hit := 0
+				for e in enemies_of(c["id"]):
+					hit += mod(e, "cyber_pct")
+				hit = clampi(hit - mod(c["id"], "cyber_def_pct"), 0, 25)
+				if hit > 0:
+					c["income"] = c["income"] * (100 - hit) / 100
 	for c in countries:
 		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
@@ -3352,7 +3366,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3388,6 +3402,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.res_defs = load_resource_defs()
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
+	sim.rule_modern = bool(d.get("rule_modern", false))
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
 	sim.start_date = d["start_date"]
