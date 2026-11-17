@@ -1527,3 +1527,33 @@ func test_modern_warfare_rule() -> void:
 	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
 	check(r.rule_modern and r.tech_defs.has("cyb2"), "modern rule and techs survive save/load")
 	check(r.checksum() == a.checksum(), "checksum survives save/load with the modern rule")
+
+
+func test_incremental_aggregate_matches_rebuild() -> void:
+	var sim := _earth()
+	for i in 5:
+		sim.tick_day()
+	sim._aggregate()   # prime the incremental base
+	var rs := RandomNumberGenerator.new()
+	rs.seed = 11
+	var land: int = sim.world["land_count"]
+	for i in 400:
+		sim.set_owner(rs.randi_range(0, land - 1), rs.randi_range(0, sim.countries.size() - 1))
+	for i in 300:
+		sim.damage[rs.randi_range(0, land - 1)] = rs.randi_range(0, 100)
+	var inc: Dictionary = sim._aggregate().duplicate(true)
+	sim._agg_base = {}
+	sim._agg_base_ver = -1
+	sim._agg = {}
+	var fresh: Dictionary = sim._aggregate()
+	var same := inc.size() == fresh.size()
+	for o in fresh:
+		same = same and inc.has(o)
+		if inc.has(o):
+			for k in ["pop", "ind", "income"]:
+				if inc[o][k] != fresh[o][k]:
+					same = false
+			for r in fresh[o]["prod"]:
+				if inc[o]["prod"].get(r, 0) != fresh[o]["prod"][r]:
+					same = false
+	check(same, "incremental per-country aggregate equals a full rebuild")

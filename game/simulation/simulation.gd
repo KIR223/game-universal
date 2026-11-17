@@ -151,6 +151,12 @@ func set_owner(p: int, cid: int) -> void:
 	var old := owner[p]
 	if old == cid:
 		return
+	var base_ok := _agg_base_ver == _owner_ver and not _agg_base.is_empty()
+	if base_ok:
+		if old >= 0:
+			_agg_cell(_agg_base, old, p, -1)
+		if cid >= 0:
+			_agg_cell(_agg_base, cid, p, 1)
 	if old >= 0 and _cp.has(old):
 		var l: Array = _cp[old]
 		var i := l.bsearch(p)
@@ -164,6 +170,8 @@ func set_owner(p: int, cid: int) -> void:
 		var l2: Array = _cp[cid]
 		l2.insert(l2.bsearch(p), p)
 	_owner_ver += 1
+	if base_ok:
+		_agg_base_ver = _owner_ver
 
 
 ## Read-only view of the cells a country controls (do not modify).
@@ -2260,25 +2268,56 @@ func tick_day() -> void:
 				_new_general(c["id"])
 
 
+var _agg_base: Dictionary = {}
+var _agg_base_ver := -1
+
+
+## Adds (sign = 1) or removes (sign = -1) one cell's undamaged contribution to the per-country base sums.
+func _agg_cell(base: Dictionary, o: int, p: int, sign: int) -> void:
+	if not base.has(o):
+		base[o] = {"prod": {}, "pop": 0, "ind": 0, "income": 0, "n": 0}
+	var a: Dictionary = base[o]
+	var pv: Dictionary = provinces()[p]
+	for r in pv["deposits"]:
+		a["prod"][r] = a["prod"].get(r, 0) + sign * pv["deposits"][r]
+	a["pop"] += sign * pv["pop"]
+	a["ind"] += sign * ((pv["industry"] * 100 + 50) / 100)
+	a["income"] += sign * (pv["pop"] * pv["industry"] * 100 / 10000)
+	a["n"] += sign
+	if a["n"] == 0:
+		base.erase(o)
+
+
+## Per-country sums of production, population, industry and income. The undamaged sums are cached until ownership changes;
+## each call only adds the (exact, integer) correction of the currently damaged cells.
 func _aggregate() -> Dictionary:
+	var provs := provinces()
+	if _agg_base_ver != _owner_ver or _agg_base.is_empty():
+		var base := {}
+		for p in owner.size():
+			if owner[p] >= 0:
+				_agg_cell(base, owner[p], p, 1)
+		_agg_base = base
+		_agg_base_ver = _owner_ver
+		_agg_key = []
 	var key := [_owner_ver, hash(damage)]
 	if not _agg.is_empty() and _agg_key == key:
 		return _agg
-	var provs := provinces()
 	var agg := {}
-	for p in owner.size():
-		var o := owner[p]
-		if o < 0:
+	for o in _agg_base:
+		var b: Dictionary = _agg_base[o]
+		agg[o] = {"prod": b["prod"], "pop": b["pop"], "ind": b["ind"], "income": b["income"]}
+	for p in damage.size():
+		var d := damage[p]
+		if d == 0:
 			continue
-		if not agg.has(o):
-			agg[o] = {"prod": {}, "pop": 0, "ind": 0, "income": 0}
-		var a: Dictionary = agg[o]
-		var pv: Dictionary = provs[p]
-		for r in pv["deposits"]:
-			a["prod"][r] = a["prod"].get(r, 0) + pv["deposits"][r]
-		a["pop"] += pv["pop"]
-		a["ind"] += (pv["industry"] * (100 - damage[p]) + 50) / 100
-		a["income"] += pv["pop"] * pv["industry"] * (100 - damage[p]) / 10000
+		var o2 := owner[p]
+		if o2 < 0:
+			continue
+		var pv2: Dictionary = provs[p]
+		var a2: Dictionary = agg[o2]
+		a2["ind"] += (pv2["industry"] * (100 - d) + 50) / 100 - (pv2["industry"] * 100 + 50) / 100
+		a2["income"] += pv2["pop"] * pv2["industry"] * (100 - d) / 10000 - pv2["pop"] * pv2["industry"] * 100 / 10000
 	_agg = agg
 	_agg_key = key
 	return agg
@@ -2467,9 +2506,19 @@ func _logistics() -> void:
 			c["blockade"] = 0
 		return
 	var idx := _fleets_by_sea()
+	var fleet_owners := {}
+	for f in fleets:
+		if f["strength"] > 0:
+			fleet_owners[f["owner"]] = true
 	for c in countries:
 		if c["alive"]:
-			c["blockade"] = blockade_level(c["id"], idx)
+			# a port is blockaded only by a fleet of a country at war with the owner
+			var threatened := false
+			for e in enemies_of(c["id"]):
+				if fleet_owners.has(e):
+					threatened = true
+					break
+			c["blockade"] = blockade_level(c["id"], idx) if threatened else 0
 
 
 func _trade() -> void:
@@ -2518,6 +2567,18 @@ func _resources() -> void:
 			c["short"] = []
 			pop_sum[c["id"]] = 0
 			ind_sum[c["id"]] = 0
+	# per-owner military totals in one pass (each country only ever hurts its own armies below, so these stay valid)
+	var astr_of := {}
+	var fstr_of := {}
+	var armor_of := {}
+	for a in armies:
+		var ao: int = a["owner"]
+		astr_of[ao] = astr_of.get(ao, 0) + a["strength"]
+		for d in a["div"]:
+			if unit_defs[d["t"]]["oil"]:
+				armor_of[ao] = armor_of.get(ao, 0) + d["hp"]
+	for f in fleets:
+		fstr_of[f["owner"]] = fstr_of.get(f["owner"], 0) + f["strength"]
 	var agg := _aggregate()
 	for o in agg:
 		if not countries[o]["alive"]:
@@ -2535,15 +2596,9 @@ func _resources() -> void:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
 		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] / 90
-		var astr := army_strength(cid)
-		var fstr := 0
-		for f in fleets_of(cid):
-			fstr += f["strength"]
-		var armor_hp := 0
-		for a in armies_of(cid):
-			for d in a["div"]:
-				if unit_defs[d["t"]]["oil"]:
-					armor_hp += d["hp"]
+		var astr: int = astr_of.get(cid, 0)
+		var fstr: int = fstr_of.get(cid, 0)
+		var armor_hp: int = armor_of.get(cid, 0)
 		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000 + air_oil(cid)
 		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
@@ -3013,6 +3068,13 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	var need := {}
 	for t in targets:
 		need[t] = true
+	var enemy_set := {}
+	for e in enemies_of(cid):
+		enemy_set[e] = true
+	var ally_set := {}
+	for al in allies_of(cid):
+		ally_set[al] = true
+	var terr_extra := _terrain_supply_extra() if rule_terrain else PackedInt32Array()
 	for d in SUPPLY_RANGE + 1:
 		for p in buckets[d]:
 			if dist[p] != d:
@@ -3023,18 +3085,64 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 					return dist  # every army's supply distance is final
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
-				var hostile := o >= 0 and o != cid and at_war(cid, o)
-				var cost: int = (10 - eff_infra(q)) if (o == cid or allied(cid, o)) else (25 - eff_infra(q))
+				var hostile := o >= 0 and o != cid and enemy_set.has(o)
+				var eff := maxi(1, infra[q] - damage[q] / 30)
+				var cost: int = (10 - eff) if (o == cid or ally_set.has(o)) else (25 - eff)
 				if rule_terrain:
-					cost += TERRAIN_SUPPLY_EXTRA.get(provs[q]["terrain"], 0)
+					cost += terr_extra[q]
 				if rule_weather:
-					cost += winter_at(q) / 20
+					cost += _winter_cached(q) / 20
 				var nd := d + cost
 				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
 					dist[q] = nd
 					if not hostile:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
 						buckets[nd].append(q)
 	return dist
+
+
+var _terr_extra_cache := PackedInt32Array()
+var _winter_val := PackedInt32Array()
+var _winter_stamp := PackedInt32Array()
+
+
+func _terrain_supply_extra() -> PackedInt32Array:
+	var provs := provinces()
+	if _terr_extra_cache.size() != provs.size():
+		_terr_extra_cache = PackedInt32Array()
+		_terr_extra_cache.resize(provs.size())
+		for p in provs:
+			_terr_extra_cache[p["id"]] = TERRAIN_SUPPLY_EXTRA.get(p["terrain"], 0)
+	return _terr_extra_cache
+
+
+## winter_at() memoised per day (it is called for the same cells many times during supply searches).
+func _winter_cached(cell: int) -> int:
+	if _winter_val.size() != provinces().size():
+		_winter_val.resize(provinces().size())
+		_winter_stamp.resize(provinces().size())
+		_winter_stamp.fill(-1)
+	if _winter_stamp[cell] != day:
+		_winter_val[cell] = winter_at(cell)
+		_winter_stamp[cell] = day
+	return _winter_val[cell]
+
+
+var _ind_ver := -1
+var _ind_cache := {}
+
+
+## Raw industry sum of a country, cached until the ownership of any cell changes.
+func _industry_of(cid: int) -> int:
+	if _ind_ver != _owner_ver:
+		_ind_cache = {}
+		_ind_ver = _owner_ver
+	if not _ind_cache.has(cid):
+		var provs := provinces()
+		var sum := 0
+		for p in cells_of(cid):
+			sum += provs[p]["industry"]
+		_ind_cache[cid] = sum
+	return _ind_cache[cid]
 
 
 func _supply() -> void:
@@ -3058,9 +3166,7 @@ func _supply() -> void:
 			if provs[a["prov"]]["land"]:
 				targets.append(a["prov"])
 		var dist := _supply_dist(cid, targets)
-		var industry := 0
-		for p in cells_of(cid):
-			industry += provs[p]["industry"]
+		var industry := _industry_of(cid)
 		var factor := minf(1.0, float(6 + industry) * (100 + mod(cid, "supply_pct")) / 100.0 / maxf(demand, 1.0))
 		for a in mine:
 			var d: int = dist.get(a["prov"], 9999)
