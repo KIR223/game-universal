@@ -2294,3 +2294,62 @@ func test_site_visibility() -> void:
 				break
 	if deep >= 0 and sim.net_of_agent(a, d) < 25 and not sim.allied(a, d):
 		check(not sim.site_visible(a, {"owner": d, "cell": deep, "kind": "launch"}), "a deep foreign site is hidden without intelligence")
+
+
+func test_organization() -> void:
+	var plain := _earth()
+	var pa: Dictionary = plain.armies_of(0)[0]
+	check(not plain.rule_organization and plain.army_org(pa) == 100 and not pa.has("org"), "organisation is off by default and armies carry no extra state")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"organization": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	var a: Dictionary = sim.armies_of(0)[0]
+	check(sim.army_org(a) == 100, "armies start at full organisation")
+	# marching wears organisation down, resting in supply restores it
+	var nb: int = sim.provinces()[a["prov"]]["land_neighbors"][0]
+	a["path"] = [nb]
+	a["supply"] = 100
+	sim._organization()
+	check(sim.army_org(a) == 99, "a marching army loses organisation")
+	a["path"] = []
+	a["org"] = 50
+	sim._organization()
+	check(sim.army_org(a) == 53, "a resting army in supply regains organisation")
+	a["supply"] = 10
+	sim._organization()
+	check(sim.army_org(a) == 52, "an unsupplied army loses organisation")
+	# weaker organisation, weaker fight
+	a["supply"] = 100
+	a["org"] = 100
+	var full: float = sim.army_power(a, true)
+	a["org"] = 0
+	var empty: float = sim.army_power(a, true)
+	check(is_equal_approx(empty, full * 0.5), "zero organisation halves the army's power (%.1f vs %.1f)" % [empty, full])
+	a["org"] = 100
+	# battle costs organisation (attacker more than defender)
+	var b := _find_border(sim)
+	var x: int = b["a"]
+	var y: int = b["b"]
+	sim.wars.append({"a": x, "b": y, "start": 0})
+	var ax: Dictionary = sim.armies_of(x)[0]
+	var ay: Dictionary = sim.armies_of(y)[0]
+	var cell: int = b["cell"]
+	ax["prov"] = cell
+	ay["prov"] = cell
+	ax["org"] = 100
+	ay["org"] = 100
+	sim._battles()
+	var ox := sim.army_org(ax)
+	var oy := sim.army_org(ay)
+	check(ox < 100 and oy < 100, "both sides lose organisation in a battle (%d / %d)" % [ox, oy])
+	var r := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r.rule_organization and r.checksum() == sim.checksum(), "organisation survives save/load")
+	var a2 := Simulation.new()
+	a2.setup_scenario(scn)
+	var b2 := Simulation.new()
+	b2.setup_scenario(scn)
+	for i in 30:
+		a2.tick_day()
+		b2.tick_day()
+	check(a2.checksum() == b2.checksum(), "simulation with organisation is deterministic")

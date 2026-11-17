@@ -1028,7 +1028,7 @@ func _refresh_info() -> void:
 			if seen < 0:
 				t += "#%d  [color=%s]%s[/color]  состав и сила неизвестны (нужна разведка)%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], mark]
 			elif a["owner"] == player or sim.allied(player, a["owner"]):
-				t += "#%d  [color=%s]%s[/color]  %s  сила %d  снабж. %d%%%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), a["strength"], a["supply"], mark]
+				t += "#%d  [color=%s]%s[/color]  %s  сила %d  снабж. %d%%%s%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), a["strength"], a["supply"], ("  орг. %d%%" % sim.army_org(a)) if sim.rule_organization else "", mark]
 			else:
 				t += "#%d  [color=%s]%s[/color]  %s  сила ≈%d%s\n" % [a["id"], sim.countries[a["owner"]]["color"], sim.countries[a["owner"]]["name"], sim.army_label(a), seen, mark]
 			if a["gen"] >= 0 and seen >= 0:
@@ -3109,7 +3109,7 @@ func _g_army() -> void:
 				_grp_sel.erase(pick_id))
 		row.add_child(pick)
 		var l := Label.new()
-		l.text = "#%d  %s · сила %d · снабж. %d%% · %s" % [a["id"], sim.army_label(a), a["strength"], a["supply"], _where(a["prov"])]
+		l.text = "#%d  %s · сила %d · снабж. %d%%%s · %s" % [a["id"], sim.army_label(a), a["strength"], a["supply"], (" · орг. %d%%" % sim.army_org(a)) if sim.rule_organization else "", _where(a["prov"])]
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		row.add_child(l)

@@ -17,6 +17,7 @@
   "weather": true,
   "modern": true,
   "markets": true,
-  "templates": true
+  "templates": true,
+  "organization": true
  }
 }
