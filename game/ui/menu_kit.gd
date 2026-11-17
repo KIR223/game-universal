@@ -24,7 +24,7 @@ static func backdrop(root: Control) -> void:
 			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			root.add_child(tr)
 			tr.resized.connect(func(): tr.pivot_offset = tr.size * 0.5)
-			if not GameSettings.reduce_motion():
+			if not GameSettings.reduce_motion() and not MobileLayout.is_phone():   # a never-ending tween keeps a phone rendering (battery)
 				var tw := tr.create_tween().set_loops()
 				tw.tween_property(tr, "scale", Vector2(1.12, 1.12), 40.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 				tw.tween_property(tr, "scale", Vector2.ONE, 40.0).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)

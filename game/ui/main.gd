@@ -31,6 +31,19 @@ var _info: RichTextLabel
 var _actions: Container
 var _speed_buttons: Array[Button] = []
 ## Height of the bottom card (selected territory / army / actions): compact on phones.
+## Phones draw 30 frames per second while nothing is touched and 60 while the player interacts (battery, heat).
+const IDLE_FPS := 30
+const ACTIVE_FPS := 60
+var _last_input_ms := 0
+
+
+func _input(event: InputEvent) -> void:
+	if MobileLayout.is_phone() and (event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventMouseButton or event is InputEventMouseMotion):
+		_last_input_ms = Time.get_ticks_msec()
+		if Engine.max_fps != ACTIVE_FPS:
+			Engine.max_fps = ACTIVE_FPS
+
+
 var CARD_H: int = 156 if MobileLayout.is_phone() else 232
 ## Space kept free at the bottom: the phone navigation bar (nothing on desktop).
 var NAV_H: int = 58
@@ -159,6 +172,9 @@ func _ready() -> void:
 	_apply_safe_area()
 	_setup_audio()
 	apply_settings()
+	if MobileLayout.is_phone():
+		OS.low_processor_usage_mode = true      # redraw only when something changed: battery and heat
+		Engine.max_fps = IDLE_FPS                # 60 only while the player touches the screen (see _input), 30 otherwise
 	_show_menu()
 
 
@@ -710,6 +726,8 @@ func _set_speed(i: int) -> void:
 
 
 func _process(delta: float) -> void:
+	if MobileLayout.is_phone() and Engine.max_fps == ACTIVE_FPS and Time.get_ticks_msec() - _last_input_ms > 700:
+		Engine.max_fps = IDLE_FPS
 	if net != null:
 		_net_frame()
 	if sim == null or player < 0:
@@ -897,6 +915,10 @@ func _refresh_top() -> void:
 	_chip("steel", "%d (%+d)" % [c["stock"]["steel"], sim.net_of(player, "steel")], Color("cfd6df") if sim.net_of(player, "steel") >= 0 else Color("e0b45a"))
 	_chip("oil", "%d (%+d)" % [c["stock"]["oil"], sim.net_of(player, "oil")], Color("cfd6df") if sim.net_of(player, "oil") >= 0 else Color("e0b45a"))
 	_chip("food", "%d (%+d)" % [c["stock"]["food"], sim.net_of(player, "food")], Color("cfd6df") if sim.net_of(player, "food") >= 0 else Color("e0675a"))
+	if sim.rule_modern:
+		_chip("missile", "%d/%d · %d%%" % [sim.missile_count(player, "tactical"), sim.missile_count(player, "strategic"), sim.air_defense(player)], Design.C_TEXT)
+	if sim.rule_markets:
+		_chip("market", "%.1f%%" % (float(sim.pop_index(player)) / 100.0), Design.C_TEXT)
 	_chip("flag", str(sim.enemies_of(player).size()), Color("e0675a") if not sim.enemies_of(player).is_empty() else Color("8a96a6"))
 	if _bell != null:
 		_bell.set_badge(maxi(0, sim.log_lines.size() - _notif_seen))
@@ -1824,7 +1846,7 @@ func _muted(text: String) -> Label:
 
 
 ## Where a click on a top-bar resource chip leads ("@wars" = the Wars tab of the right panel).
-const CHIP_TARGETS := {"coin": "economy", "influence": "politics", "stability": "politics", "manpower": "army", "steel": "economy", "oil": "economy", "food": "economy", "flag": "@wars"}
+const CHIP_TARGETS := {"coin": "economy", "influence": "politics", "stability": "politics", "manpower": "army", "steel": "economy", "oil": "economy", "food": "economy", "flag": "@wars", "missile": "army", "market": "economy"}
 
 
 func _chip_clicked(kind: String) -> void:
@@ -1910,6 +1932,10 @@ func _build_hud() -> void:
 	for chip in [["coin", "Казна: запас (доход минус расходы в день)"], ["influence", "Политическое влияние (+1 в день)"], ["stability", "Стабильность"],
 			["manpower", "Людские ресурсы"], ["steel", "Сталь: запас (баланс в день)"], ["oil", "Нефть: запас (баланс в день)"], ["food", "Продовольствие: запас (баланс в день)"], ["flag", "Войны, в которых вы участвуете"]]:
 		hb.add_child(_make_chip(chip[0], chip[1]))
+	if sim.rule_modern:
+		hb.add_child(_make_chip("missile", "Ракеты в запасе: тактические / дальние, ПВО страны"))
+	if sim.rule_markets:
+		hb.add_child(_make_chip("market", "Население страны (индекс); цены — в панели «Экономика»"))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(spacer)

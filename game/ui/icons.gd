@@ -6,6 +6,7 @@ extends RefCounted
 const NAMES := [
 	"state", "economy", "build", "diplomacy", "army", "tech", "politics", "intel", "stats", "bell", "search", "layers", "menu",
 	"coin", "influence", "stability", "manpower", "steel", "oil", "food", "pause", "play", "fast", "faster", "fastest", "close", "plus", "flag", "gear",
+	"air", "fleet", "missile", "drone", "market", "weather", "satellite",
 ]
 
 
@@ -107,5 +108,39 @@ static func draw(ci: CanvasItem, kind: String, r: Rect2, col: Color, w: float = 
 			for k in 8:
 				var a := TAU * k / 8.0
 				ci.draw_line(c + Vector2(cos(a), sin(a)) * 6.0 * u, c + Vector2(cos(a), sin(a)) * 9.0 * u, col, w * 1.4)
+		"air":  # aeroplane seen from above
+			ci.draw_line(P.call(0, -9), P.call(0, 8), col, w * 1.5)
+			ci.draw_colored_polygon(PackedVector2Array([P.call(0, -2), P.call(9, 3), P.call(9, 5), P.call(0, 2), P.call(-9, 5), P.call(-9, 3)]), col)
+			ci.draw_colored_polygon(PackedVector2Array([P.call(0, 5), P.call(4, 8), P.call(-4, 8)]), col)
+		"fleet":  # ship: hull and mast
+			ci.draw_colored_polygon(PackedVector2Array([P.call(-9, 2), P.call(9, 2), P.call(6, 8), P.call(-6, 8)]), col)
+			ci.draw_line(P.call(0, 2), P.call(0, -8), col, w)
+			ci.draw_colored_polygon(PackedVector2Array([P.call(0, -8), P.call(6, -1), P.call(0, -1)]), col)
+		"missile":  # body, nose and fins
+			ci.draw_colored_polygon(PackedVector2Array([P.call(0, -9), P.call(3, -4), P.call(3, 5), P.call(-3, 5), P.call(-3, -4)]), col)
+			ci.draw_colored_polygon(PackedVector2Array([P.call(3, 1), P.call(7, 8), P.call(3, 6)]), col)
+			ci.draw_colored_polygon(PackedVector2Array([P.call(-3, 1), P.call(-7, 8), P.call(-3, 6)]), col)
+			ci.draw_line(P.call(0, 6), P.call(0, 9), col, w)
+		"drone":  # four rotors and a body
+			for sx in [-1, 1]:
+				for sy in [-1, 1]:
+					ci.draw_line(c, P.call(6.0 * sx, 6.0 * sy), col, w)
+					ci.draw_arc(P.call(6.5 * sx, 6.5 * sy), 2.6 * u, 0, TAU, 12, col, w * 0.9)
+			ci.draw_circle(c, 2.4 * u, col)
+		"market":  # rising bars with a trend line
+			ci.draw_rect(Rect2(P.call(-8, 2), Vector2(4, 6) * u), col)
+			ci.draw_rect(Rect2(P.call(-2, -2), Vector2(4, 10) * u), col)
+			ci.draw_rect(Rect2(P.call(4, -6), Vector2(4, 14) * u), col)
+			ci.draw_line(P.call(-8, -3), P.call(8, -9), col, w * 0.9)
+		"weather":  # cloud
+			ci.draw_arc(P.call(-3, 1), 4.0 * u, PI * 0.5, PI * 1.5, 10, col, w)
+			ci.draw_arc(P.call(1, -2), 5.0 * u, PI, TAU, 12, col, w)
+			ci.draw_arc(P.call(5, 2), 3.5 * u, -PI * 0.5, PI * 0.5, 10, col, w)
+			ci.draw_line(P.call(-3, 5), P.call(5, 5.5), col, w)
+		"satellite":  # body, solar panels and a signal arc
+			ci.draw_rect(Rect2(P.call(-2.5, -2.5), Vector2(5, 5) * u), col)
+			ci.draw_rect(Rect2(P.call(-9, -2), Vector2(5, 4) * u), col, false, w)
+			ci.draw_rect(Rect2(P.call(4, -2), Vector2(5, 4) * u), col, false, w)
+			ci.draw_arc(P.call(0, 3), 5.0 * u, PI * 0.15, PI * 0.85, 8, col, w * 0.9)
 		_:
 			ci.draw_arc(c, 6.0 * u, 0, TAU, 16, col, w)

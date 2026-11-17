@@ -28,6 +28,7 @@ var _overview: MeshInstance2D
 var _tiles: Dictionary = {}          # col*100+row -> MeshInstance2D
 var _tile_lru: Array = []
 var _want_tiles: Array = []
+var _fx_t := 0.0                    # throttle of the animated shader uniforms
 var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
 var quality := "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
 var detail := GraphicsQuality.Level.HIGH   # same setting as `quality`, as a GraphicsQuality level (labels, city density, roads)
@@ -177,6 +178,8 @@ func world_pos_of(lon: float, lat: float) -> Vector2:
 
 
 func _set_all(name: String, value: Variant) -> void:
+	if _params.has(name) and _params[name] == value:
+		return   # unchanged uniforms must not touch the materials: any change forces a redraw of the whole map every frame
 	_params[name] = value
 	for m in _mats:
 		m.set_shader_parameter(name, value)
@@ -670,8 +673,14 @@ func _process(delta: float) -> void:
 		_update_tiles()
 		queue_redraw()
 	_set_all("zoom", camera.zoom.x)
-	_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
-	_set_all("water_fx", 1.0 if (detail != GraphicsQuality.Level.LOW and not GameSettings.reduce_motion()) else 0.0)
+	# animated uniforms change at 10 Hz (not every frame): with the low-processor mode of phones the map then only redraws when needed
+	_fx_t += delta
+	if _fx_t >= 0.1:
+		_fx_t = 0.0
+		if sim != null and (not _war_pairs.is_empty() or not _flash.is_empty()):   # the pulse only matters on contested cells
+			_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+		# the water shimmer is a TIME-based animation: only on the High profile, never on battery-saving phones' default (Medium)
+		_set_all("water_fx", 1.0 if (detail == GraphicsQuality.Level.HIGH and not GameSettings.reduce_motion()) else 0.0)
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
 		_set_all("sel_id", selected_province)

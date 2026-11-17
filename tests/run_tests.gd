@@ -2078,3 +2078,8 @@ func test_ui_motion_helpers() -> void:
 	check(ToastHost.kind_of("Россия объявляет войну Украине") == "war", "war lines become red toasts")
 	check(ToastHost.kind_of("Заключён мир") == "peace", "peace lines become green toasts")
 	check(ToastHost.kind_of("Что-то произошло") == "info", "other lines are neutral")
+
+
+func test_icon_set_is_complete() -> void:
+	for n in ["air", "fleet", "missile", "drone", "market", "weather", "satellite"]:
+		check(Icons.NAMES.has(n), "icon %s is registered" % n)
