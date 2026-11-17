@@ -2069,3 +2069,12 @@ func test_weather_fx_intensity() -> void:
 	check(storm["rain"] > 0.5 and storm["snow"] == 0.0, "a summer storm brings rain")
 	var wstorm := WeatherFx.state_for(80, true, 2.0, true, false)
 	check(wstorm["rain"] == 0.0 and wstorm["snow"] >= 0.9, "a winter storm brings snow, not rain")
+
+
+func test_ui_motion_helpers() -> void:
+	check(UiMotion.leading_number("120 (+3)") == 120, "leading number of a chip text")
+	check(UiMotion.leading_number("-5 (x)") == -5, "negative leading number")
+	check(UiMotion.leading_number("абв") == -1, "no number gives -1")
+	check(ToastHost.kind_of("Россия объявляет войну Украине") == "war", "war lines become red toasts")
+	check(ToastHost.kind_of("Заключён мир") == "peace", "peace lines become green toasts")
+	check(ToastHost.kind_of("Что-то произошло") == "info", "other lines are neutral")

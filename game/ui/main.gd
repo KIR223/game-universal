@@ -93,6 +93,7 @@ const EFFECT_NAMES := {
 var _tech: PanelContainer
 var _snd_ui: AudioStreamPlayer
 var _weather_fx: WeatherFx
+var _toasts: ToastHost
 var _weather_t := 0.0
 var _snd_music: AudioStreamPlayer
 var _settings_panel: SettingsPanel
@@ -177,7 +178,8 @@ func _setup_audio() -> void:
 	add_child(_snd_music)
 	get_tree().node_added.connect(func(n: Node):
 		if n is Button and not n.pressed.is_connected(_play_ui.bind("click")):
-			n.pressed.connect(_play_ui.bind("click")))
+			n.pressed.connect(_play_ui.bind("click"))
+			UiMotion.hover_button(n))
 	if DisplayServer.get_name() != "headless":
 		_music_thread = Thread.new()
 		_music_thread.start(func(): _music_ready.call_deferred(SoundKit.ambient(16)))
@@ -333,9 +335,10 @@ func _show_menu() -> void:
 	MenuKit.backdrop(root)
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 84)
-	margin.add_theme_constant_override("margin_top", 48)
-	margin.add_theme_constant_override("margin_bottom", 56)
+	var phone := MobileLayout.is_phone()
+	margin.add_theme_constant_override("margin_left", 40 if phone else 84)
+	margin.add_theme_constant_override("margin_top", 16 if phone else 48)
+	margin.add_theme_constant_override("margin_bottom", 40 if phone else 56)
 	root.add_child(margin)
 	var box := VBoxContainer.new()
 	box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -345,7 +348,7 @@ func _show_menu() -> void:
 	margin.add_child(box)
 	var title := Label.new()
 	title.text = "IRON DOMINION"
-	title.add_theme_font_size_override("font_size", 64)
+	title.add_theme_font_size_override("font_size", 40 if phone else 64)
 	title.add_theme_color_override("font_color", MenuKit.GOLD)
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
 	title.add_theme_constant_override("outline_size", 6)
@@ -368,12 +371,21 @@ func _show_menu() -> void:
 				return
 		_show_scenarios())
 	box.add_child(play)
+	# phones: the secondary buttons sit in two columns so the whole menu fits a landscape screen
+	var rest: Container = box
+	if MobileLayout.is_phone():
+		var g := GridContainer.new()
+		g.columns = 2
+		g.add_theme_constant_override("h_separation", 8)
+		g.add_theme_constant_override("v_separation", 8)
+		box.add_child(g)
+		rest = g
 	var scen := MenuKit.button("Выбрать сценарий и размер карты")
 	scen.pressed.connect(_show_scenarios)
-	box.add_child(scen)
+	rest.add_child(scen)
 	var rnd_row := HBoxContainer.new()
 	rnd_row.add_theme_constant_override("separation", 6)
-	box.add_child(rnd_row)
+	rest.add_child(rnd_row)
 	var start := MenuKit.button("Случайный мир", "normal", 232)
 	start.pressed.connect(_new_game)
 	rnd_row.add_child(start)
@@ -384,24 +396,25 @@ func _show_menu() -> void:
 	rnd_row.add_child(_seed_edit)
 	var edit := MenuKit.button("Редактор сценариев")
 	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
-	box.add_child(edit)
+	rest.add_child(edit)
 	if SaveSystem.exists("auto"):
 		var cont := MenuKit.button("Продолжить (автосохранение)")
 		cont.pressed.connect(_load_game.bind("auto"))
-		box.add_child(cont)
+		rest.add_child(cont)
 	var net_btn := MenuKit.button("Сетевая игра")
 	net_btn.pressed.connect(_show_net_menu)
-	box.add_child(net_btn)
+	rest.add_child(net_btn)
 	var settings_btn := MenuKit.button("Настройки")
 	settings_btn.pressed.connect(_show_settings_screen)
-	box.add_child(settings_btn)
+	rest.add_child(settings_btn)
 	var load_btn := MenuKit.button("Загрузить игру  (F9)")
 	load_btn.pressed.connect(_load_game)
-	box.add_child(load_btn)
+	rest.add_child(load_btn)
 	var quit := MenuKit.button("Выход")
 	quit.pressed.connect(func(): get_tree().quit())
-	box.add_child(quit)
+	rest.add_child(quit)
 	_menu_root = root
+	UiMotion.stagger_in(box.get_children())
 	var credits := Label.new()
 	credits.text = "Карта: Natural Earth (общественное достояние) · GeoNames (CC BY 4.0) · Terrain Tiles (AWS Open Data; SRTM, GMTED, ETOPO) · Our World in Data (CC BY 4.0)  —  docs/DATA_SOURCES.md"
 	credits.add_theme_font_size_override("font_size", 12)
@@ -859,6 +872,12 @@ func _refresh_all() -> void:
 	_check_events()
 	while log_seen < sim.log_lines.size():
 		_log.append_text(sim.log_lines[log_seen] + "\n")
+		# only the newest couple of lines of a burst become toasts (fast game speed would otherwise flood the screen)
+		if _toasts != null and is_instance_valid(_toasts) and log_seen >= sim.log_lines.size() - 2:
+			var tk := ToastHost.kind_of(sim.log_lines[log_seen])
+			_toasts.show_toast(sim.log_lines[log_seen], tk)
+			if tk == "war":
+				_play_ui("notify")
 		log_seen += 1
 
 
@@ -1839,6 +1858,10 @@ func _make_chip(kind: String, tip: String) -> HBoxContainer:
 func _chip(kind: String, text: String, color: Color) -> void:
 	var l: Label = _chips.get(kind)
 	if l != null and is_instance_valid(l):
+		var old_n := UiMotion.leading_number(l.text)
+		var new_n := UiMotion.leading_number(text)
+		if l.text != "" and old_n != new_n and old_n >= 0 and new_n >= 0:
+			UiMotion.flash(l, Design.C_OK if new_n > old_n else Design.C_BAD)
 		l.text = text
 		l.add_theme_color_override("font_color", color)
 
@@ -2058,6 +2081,8 @@ func _build_hud() -> void:
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
+	_toasts = ToastHost.new()
+	root.add_child(_toasts)
 	_weather_fx = WeatherFx.new()
 	root.add_child(_weather_fx)
 	root.move_child(_weather_fx, 0)   # behind every panel, above the map
@@ -2459,7 +2484,7 @@ func _show_settings_overlay() -> void:
 func _close_all_panels() -> void:
 	for pn in [_eco, _tech, _pol, _intel, _generic, _notif_panel]:
 		if pn != null and is_instance_valid(pn):
-			pn.queue_free()
+			UiMotion.fade_out_free(pn)
 	_eco = null
 	_tech = null
 	_pol = null

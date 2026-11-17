@@ -648,6 +648,8 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	if animate_armies(delta):
+		queue_redraw()
 	if _touch.long_press_due(Time.get_ticks_msec() / 1000.0) and sim != null:
 		var rid := province_at(get_global_mouse_position())
 		if rid >= 0:

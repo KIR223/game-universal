@@ -36,6 +36,7 @@ var _drag_start := Vector2.ZERO
 var _rc_start := Vector2.ZERO
 var _dragging := false
 var _touch := TouchGestures.new()
+var _army_vis := {}   # army id -> drawn world position (eases towards its cell so armies glide instead of jumping)
 var _drag_moved := false
 var _press_ms := 0
 
@@ -192,6 +193,30 @@ func _draw_base() -> void:
 		draw_arc(cell_world(selected_province), 14.0, 0, TAU, 32, Color("ffe08a"), 2.0)
 
 
+## Eases every army's drawn position towards its cell; returns true while something still moves (the map keeps redrawing).
+func animate_armies(delta: float) -> bool:
+	if sim == null:
+		return false
+	var moving := false
+	var snap := GameSettings.reduce_motion() or lod_compact
+	var live := {}
+	for a in sim.armies:
+		var id: int = a["id"]
+		live[id] = true
+		var target := cell_world(a["prov"])
+		var cur: Vector2 = _army_vis.get(id, target)
+		if snap or cur.distance_squared_to(target) < 0.25:
+			cur = target
+		else:
+			cur = cur.lerp(target, 1.0 - exp(-delta * 7.0))
+			moving = true
+		_army_vis[id] = cur
+	for id in _army_vis.keys():
+		if not live.has(id):
+			_army_vis.erase(id)
+	return moving
+
+
 func _draw_units() -> void:
 	var provs := sim.provinces()
 	var us := ui_scale
@@ -203,7 +228,7 @@ func _draw_units() -> void:
 		var p: int = a["prov"]
 		var i: int = slot.get(p, 0)
 		slot[p] = i + 1
-		var base: Vector2 = cell_world(p)
+		var base: Vector2 = _army_vis.get(a["id"], cell_world(p))
 		if not cull.has_point(base):
 			continue
 		var col := Color(sim.countries[a["owner"]]["color"])

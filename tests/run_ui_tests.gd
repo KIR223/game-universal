@@ -94,6 +94,24 @@ func run_checks() -> void:
 	check(fr >= 0, "France exists")
 	main._start_playing(fr)
 	check(main._chips.size() == 8 and main._nav.size() == 9 and main._speed_btns.size() == 5, "HUD: resource chips, nav rail, speed controls")
+	# armies glide to their new cell (with motion on) instead of jumping; reduced motion snaps at once
+	var mv: EarthMapView = main.map
+	var army: Dictionary = main.sim.armies[0]
+	var cell_a: int = army["prov"]
+	mv.animate_armies(0.016)
+	var glide_to: int = main.sim.provinces()[cell_a]["land_neighbors"][0]
+	army["prov"] = glide_to
+	GameSettings.set_value("reduce_motion", false)
+	var moving := mv.animate_armies(0.016)
+	var mid: Vector2 = mv._army_vis[army["id"]]
+	check(moving and mid.distance_to(mv.cell_world(glide_to)) > 0.5, "an army eases towards its new cell")
+	for i in 120:
+		mv.animate_armies(0.05)
+	check(not mv.animate_armies(0.05) and mv._army_vis[army["id"]].distance_to(mv.cell_world(glide_to)) < 0.5, "the glide ends exactly on the cell")
+	GameSettings.set_value("reduce_motion", true)
+	army["prov"] = cell_a
+	mv.animate_armies(0.016)
+	check(mv._army_vis[army["id"]].distance_to(mv.cell_world(cell_a)) < 0.01, "reduced motion snaps armies to their cell")
 	# every map mode computes a palette and never fails
 	var m: EarthMapView = main.map
 	for mode in EarthMapView.MODES:
