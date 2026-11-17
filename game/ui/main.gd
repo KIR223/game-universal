@@ -129,6 +129,8 @@ func _ready() -> void:
 
 func _make_theme() -> Theme:
 	var t := Theme.new()
+	t.default_font = UiFont.regular()
+	t.set_font("bold_font", "RichTextLabel", UiFont.bold())
 	var panel := StyleBoxFlat.new()
 	panel.bg_color = Color(0.082, 0.092, 0.112, 0.95)
 	panel.border_color = Color(0.34, 0.4, 0.48, 0.75)

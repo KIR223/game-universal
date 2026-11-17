@@ -650,7 +650,7 @@ func _draw_settlements(z: float) -> void:
 		return
 	var qp := GraphicsQuality.params(quality)
 	var thr := int(_pop_threshold(z) * qp["pop_scale"])
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	var r := 2.4 / z
 	var halo := 0.9 / z
 	var dots := PackedVector2Array()
@@ -726,7 +726,7 @@ func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	for l in label_layout():
 		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
 
@@ -738,7 +738,7 @@ func label_layout() -> Array:
 	var z := camera.zoom.x
 	if z > 5.0 or sim == null:
 		return out
-	var font := ThemeDB.fallback_font
+	var font := UiFont.bold()
 	var order: Array = _agg.keys()
 	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x or (_agg[x].x == _agg[y].x and x < y))
 	var placed: Array[Rect2] = []
