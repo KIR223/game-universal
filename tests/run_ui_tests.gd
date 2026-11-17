@@ -205,6 +205,57 @@ func run_checks() -> void:
 		if not main._ctx.is_item_separator(i):
 			ids2[main._ctx.get_item_id(i)] = main._ctx.get_item_text(i)
 	check(ids2.has(13) and str(ids2[13]).begins_with("Эмбарго") and not ids2.has(14), "for a country at peace id 13 is the embargo and there is no annexation entry")
+	# settings screen: window mode / resolution / UI scale / quality apply at once and persist per machine
+	var holder := VBoxContainer.new()
+	main.add_child(holder)
+	main._build_settings(holder, func(): pass)
+	var opts: Array = []
+	var sliders: Array = []
+	var btns: Array = []
+	var stack: Array = [holder]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is OptionButton:
+			opts.append(n)
+		elif n is HSlider:
+			sliders.append(n)
+		elif n is Button:
+			btns.append(n)
+		stack.append_array(n.get_children())
+	opts.sort_custom(func(a, b): return a.get_index() < b.get_index() if a.get_parent() == b.get_parent() else a.get_global_rect().position.y < b.get_global_rect().position.y)
+	check(opts.size() == 3 and sliders.size() == 1 and btns.size() == 2, "settings: window mode, resolution, quality, scale slider, Auto and Close (%d/%d/%d)" % [opts.size(), sliders.size(), btns.size()])
+	var mode_o: OptionButton = holder.get_child(2)
+	var res_o: OptionButton = holder.get_child(3)
+	mode_o.item_selected.emit(DisplaySettings.Mode.BORDERLESS)
+	check(main.display.mode == DisplaySettings.Mode.BORDERLESS, "settings: the window mode option applies")
+	res_o.item_selected.emit(2)
+	check(main.display.mode == DisplaySettings.Mode.WINDOWED and main.display.resolution_index == 2 and mode_o.selected == DisplaySettings.Mode.WINDOWED, "settings: choosing a resolution returns to windowed mode")
+	sliders[0].value = 1.3
+	check(is_equal_approx(main.get_window().content_scale_factor, 1.3) and is_equal_approx(main.display.ui_scale, 1.3), "settings: the UI scale slider applies")
+	check(is_equal_approx(DisplaySettings.load_settings().ui_scale, 1.3) and DisplaySettings.load_settings().resolution_index == 2, "settings: the choice is stored per machine")
+	for b in btns:
+		if b.text == "Авто":
+			b.pressed.emit()
+	check(main.display.ui_scale < 0.0 and is_equal_approx(main.get_window().content_scale_factor, 1.0), "settings: Auto returns to the default scale")
+	var q_o: OptionButton = holder.get_child(7)
+	q_o.item_selected.emit(0)
+	check(main._quality == 0 and (main.map as EarthMapView).quality == 0, "settings: the graphics quality option applies to the map")
+	var keys_text := ""
+	for n in holder.get_children():
+		if n is Label and (n as Label).text.find("F11") >= 0:
+			keys_text = (n as Label).text
+	check(keys_text.find("F9") >= 0 and keys_text.find("Пробел") >= 0, "settings: the controls help lists the hotkeys")
+	main._show_settings_overlay()
+	check(main._settings_overlay != null and is_instance_valid(main._settings_overlay), "the in-game settings window opens")
+	main._show_settings_overlay()
+	check(main._settings_overlay == null or not is_instance_valid(main._settings_overlay) or main._settings_overlay.is_queued_for_deletion(), "...and closes again")
+	holder.queue_free()
+	main._quality = GraphicsQuality.Level.HIGH
+	main._apply_quality()
+	main.get_window().content_scale_factor = 1.0
+	main.display = DisplaySettings.new()
+	for f in ["display.cfg", "graphics.cfg"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path("user://" + f))
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])
