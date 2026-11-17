@@ -73,8 +73,7 @@ func refresh(map: MapView, sim: Simulation) -> void:
 	if cell < 0:
 		_apply({"snow": 0.0, "rain": 0.0})
 		return
-	var prof := GameSettings.profile()
-	_apply(state_for(sim.winter_at(cell), sim.storm_at(cell), map.camera.zoom.x, prof["effects"], GameSettings.reduce_motion()))
+	_apply(state_for(sim.winter_at(cell), sim.storm_at(cell), map.camera.zoom.x, (map as EarthMapView).detail != GraphicsQuality.Level.LOW, GameSettings.reduce_motion()))
 
 
 func _apply(st: Dictionary) -> void:

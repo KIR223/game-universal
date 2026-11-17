@@ -5,11 +5,20 @@ extends Node
 const SPEEDS := [0.0, 1.0, 3.0, 8.0, 20.0]
 
 var sim: Simulation
+var display := DisplaySettings.new()
 var map: MapView
 var map_legacy: MapView
 var map_earth: EarthMapView
 var ui: Control   # every screen is added here; on phones its offsets keep the UI inside the safe area (a plain Control: children keep their own sizes)
 var player := -1
+var _quality := GraphicsQuality.Level.HIGH
+var net: NetSession = null          # multiplayer session (host or client); null in single player
+var _net_pending := {}               # host flow: the game is being set up (country select) before the server starts
+var _net_status: Label = null
+var _net_last_day := -1
+var _net_last_events := -1
+var _net_silent := false             # while true, speed changes do not send pause requests (HUD set-up on join)
+var _settings_overlay: Control = null
 var speed_idx := 1
 var accum := 0.0
 var log_seen := 0
@@ -65,9 +74,11 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
-	"already embargoed": "эмбарго уже введено", "no missiles": "нет ракет в запасе", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", "no embargo": "эмбарго не было", "no port": "нет порта",
+	"already sanctioned": "санкции уже введены", "no sanctions": "санкций нет",
+	"no missiles": "нет ракет в запасе", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", 
+	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
 const EFFECT_NAMES := {
@@ -120,6 +131,11 @@ func _apply_safe_area() -> void:
 
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
+	_quality = GraphicsQuality.load_level(GraphicsQuality.PATH, OS.has_feature("mobile"))
+	display = DisplaySettings.load_settings()
+	if FileAccess.file_exists(DisplaySettings.PATH):
+		display.apply(get_window())   # only after the player chose something; keeps --resolution/tests intact
+	get_window().content_scale_factor = display.ui_scale if display.ui_scale > 0.0 else TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
 	_theme = _make_theme()
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
@@ -131,14 +147,13 @@ func _ready() -> void:
 	add_child(map_earth)
 	map_earth.set_active(false)
 	map = map_legacy
+	_apply_quality()
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	ui = Control.new()
 	ui.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(ui)
-	if MobileLayout.is_phone():
-		get_window().content_scale_factor = MobileLayout.PHONE_UI_SCALE
 	get_window().size_changed.connect(_apply_safe_area)
 	_apply_safe_area()
 	_setup_audio()
@@ -191,10 +206,6 @@ func apply_settings() -> void:
 			var vol := float(GameSettings.get_value(pair[1]))
 			AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(vol, 0.0001)))
 			AudioServer.set_bus_mute(idx, vol <= 0.001)
-	var base := MobileLayout.PHONE_UI_SCALE if MobileLayout.is_phone() else 1.0
-	get_window().content_scale_factor = base * float(GameSettings.get_value("ui_scale"))
-	if map_earth != null:
-		map_earth.apply_quality()
 
 
 func _open_settings() -> void:
@@ -222,6 +233,8 @@ func _open_settings() -> void:
 
 func _make_theme() -> Theme:
 	var t := Theme.new()
+	t.default_font = UiFont.regular()
+	t.set_font("bold_font", "RichTextLabel", UiFont.bold())
 	var panel := StyleBoxFlat.new()
 	panel.bg_color = Color(0.082, 0.092, 0.112, 0.95)
 	panel.border_color = Color(0.34, 0.4, 0.48, 0.75)
@@ -309,6 +322,7 @@ func _clear_ui() -> void:
 # ------------------------------------------------------------------ menu
 
 func _show_menu() -> void:
+	_net_end()
 	_clear_ui()
 	player = -1
 	sim = null
@@ -368,12 +382,19 @@ func _show_menu() -> void:
 	_seed_edit.placeholder_text = "Seed"
 	_seed_edit.custom_minimum_size = Vector2(102, 40)
 	rnd_row.add_child(_seed_edit)
-	var sett := MenuKit.button("Настройки")
-	sett.pressed.connect(_open_settings)
-	box.add_child(sett)
 	var edit := MenuKit.button("Редактор сценариев")
 	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
 	box.add_child(edit)
+	if SaveSystem.exists("auto"):
+		var cont := MenuKit.button("Продолжить (автосохранение)")
+		cont.pressed.connect(_load_game.bind("auto"))
+		box.add_child(cont)
+	var net_btn := MenuKit.button("Сетевая игра")
+	net_btn.pressed.connect(_show_net_menu)
+	box.add_child(net_btn)
+	var settings_btn := MenuKit.button("Настройки")
+	settings_btn.pressed.connect(_show_settings_screen)
+	box.add_child(settings_btn)
 	var load_btn := MenuKit.button("Загрузить игру  (F9)")
 	load_btn.pressed.connect(_load_game)
 	box.add_child(load_btn)
@@ -386,7 +407,10 @@ func _show_menu() -> void:
 	credits.add_theme_font_size_override("font_size", 12)
 	credits.add_theme_color_override("font_color", Color("6f7c8e"))
 	credits.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	credits.offset_top = -30
+	credits.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # wraps instead of being cut off at large UI scale
+	credits.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	credits.offset_top = -8
+	credits.offset_bottom = -8
 	credits.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(credits)
 
@@ -539,8 +563,14 @@ func _open_editor(scn: Dictionary) -> void:
 		_start_scenario(s))
 
 
-func _load_game() -> void:
-	var loaded := SaveSystem.load_slot("quick")
+## Mobile OSes can kill a backgrounded app without notice: save the running game when it goes to the background.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED and sim != null and player >= 0:
+		SaveSystem.save(sim, "auto")
+
+
+func _load_game(slot: String = "quick") -> void:
+	var loaded := SaveSystem.load_slot(slot)
 	if loaded == null:
 		return
 	sim = loaded
@@ -562,7 +592,7 @@ func _show_country_select() -> void:
 	var panel := PanelContainer.new()
 	panel.position = Vector2(16, 16)
 	panel.custom_minimum_size = Vector2(430, 0)
-	panel.size = Vector2(430, 868)
+	panel.size = Vector2(430, minf(868.0, get_viewport().get_visible_rect().size.y - 32.0))   # fits small virtual viewports (phones at a larger UI scale)
 	root.add_child(panel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
@@ -631,8 +661,9 @@ func _show_country_select() -> void:
 
 func _start_playing(cid: int) -> void:
 	player = cid
-	for c in sim.countries:
-		c["ai"] = c["id"] != cid
+	if net == null:   # in a network game the host decides who is AI (a client must not overwrite it: desync)
+		for c in sim.countries:
+			c["ai"] = c["id"] != cid
 	map.player_country = cid
 	map.selected_province = sim.countries[cid]["capital"]
 	map.selected_army = -1
@@ -649,22 +680,33 @@ func _start_playing(cid: int) -> void:
 	_refresh_all()
 	_log.append_text("[color=#e0c070][b]%s[/b][/color] — %s\n" % [sim.countries[cid]["name"], sim.date_string()])
 	_log.append_text("[color=#93a3b8]Игра начинается на паузе.\nПробел — пауза · 1–4 — скорость · M — режим карты · колесо — масштаб, перетаскивание — сдвиг · ЛКМ — выбрать, ПКМ — приказ · / или Ctrl+F — поиск места · F5 — сохранить · Esc — меню.[/color]\n")
+	if _net_pending.get("mode") == "host":
+		_net_launch_host()
 
 
 func _set_speed(i: int) -> void:
 	speed_idx = i
+	if net != null and not _net_silent:
+		if net.is_host():
+			net.host.set_paused(i == 0)
+		elif net.is_client():
+			net.client.request_pause(i == 0)   # the host owns the clock
 	for k in _speed_btns.size():
 		_speed_btns[k].set_active(k == i)
 	_refresh_top()
 
 
 func _process(delta: float) -> void:
+	if net != null:
+		_net_frame()
 	if sim == null or player < 0:
 		return
 	_weather_t += delta
 	if _weather_t >= 0.4 and _weather_fx != null and is_instance_valid(_weather_fx):
 		_weather_t = 0.0
 		_weather_fx.refresh(map, sim)
+	if net != null and net.is_client():
+		return   # a client never advances time itself: it follows the host's ticks (see _net_frame)
 	var rate: float = SPEEDS[speed_idx]
 	if rate <= 0.0 or (_event_panel != null and is_instance_valid(_event_panel)):
 		return
@@ -673,7 +715,10 @@ func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
 	while accum >= 1.0 and (not stepped or Time.get_ticks_usec() - t0 < 14000):  # frame-time budget: never freeze the UI
 		accum -= 1.0
-		sim.tick_day()
+		if net != null and net.is_host():
+			net.tick()   # advances the day and announces it to every client
+		else:
+			sim.tick_day()
 		stepped = true
 	if accum > 3.0:
 		accum = 3.0  # the simulation cannot keep up at this speed: drop the backlog
@@ -687,27 +732,43 @@ func _process(delta: float) -> void:
 			_log.append_text("[color=#d96a5a]Ваше государство уничтожено.[/color]\n")
 
 
+## Hotkeys follow the physical key position, so they work with any keyboard layout (e.g. the Russian one,
+## where the M key produces 'ь' and `keycode` would never equal KEY_M).
+func _hotkey(ke: InputEventKey) -> Key:
+	return ke.physical_keycode if ke.physical_keycode != KEY_NONE else ke.keycode
+
+
+## Next map mode (key M and the layers icon next to the mode selector).
+func _cycle_map_mode() -> void:
+	if map is EarthMapView and _mode_opt != null:
+		var nxt := (EarthMapView.MODES.size() + _mode_opt.selected + 1) % EarthMapView.MODES.size()
+		_mode_opt.select(nxt)
+		map.set_mode(EarthMapView.MODES[nxt][0])
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
+	# F9 is advertised on the main menu button, so it must work from the menu too (no game running yet)
+	if event is InputEventKey and event.pressed and not event.echo and _hotkey(event) == KEY_F9:
+		_load_game()
+		get_viewport().set_input_as_handled()
+		return
 	if not (event is InputEventKey) or not event.pressed or event.echo or sim == null or player < 0:
 		return
 	var ke := event as InputEventKey
-	if (ke.keycode == KEY_F and (ke.ctrl_pressed or ke.meta_pressed)) or ke.keycode == KEY_SLASH:
+	if (_hotkey(ke) == KEY_F and (ke.ctrl_pressed or ke.meta_pressed)) or _hotkey(ke) == KEY_SLASH:
 		if _search != null:
 			_search.grab_focus()
 			get_viewport().set_input_as_handled()
 		return
-	match ke.keycode:
+	match _hotkey(ke):
 		KEY_SPACE: _set_speed(0 if speed_idx > 0 else 1)
 		KEY_1: _set_speed(1)
 		KEY_2: _set_speed(2)
 		KEY_3: _set_speed(3)
 		KEY_4: _set_speed(4)
-		KEY_M:
-			if map is EarthMapView and _mode_opt != null:
-				var nxt := (EarthMapView.MODES.size() + _mode_opt.selected + 1) % EarthMapView.MODES.size()
-				_mode_opt.select(nxt)
-				map.set_mode(EarthMapView.MODES[nxt][0])
+		KEY_M: _cycle_map_mode()
 		KEY_F5: SaveSystem.save(sim, "quick")
+		KEY_F11: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
 		KEY_ESCAPE:
 			if _settings_panel != null and is_instance_valid(_settings_panel):
 				_settings_panel.closed.emit()
@@ -804,9 +865,10 @@ func _refresh_all() -> void:
 func _refresh_top() -> void:
 	if _date_label == null or not is_instance_valid(_date_label):
 		return
+	_date_label.tooltip_text = net.describe() if net != null else ""
 	var c: Dictionary = sim.countries[player]
 	_name_label.text = c["name"]
-	_date_label.text = sim.date_string()
+	_date_label.text = sim.date_string() + (("  ·  " + net.describe()) if net != null else "")
 	var net: int = c["income"] - c["upkeep"]
 	_chip("coin", "%d (%+d)" % [c["treasury"], net], Color("e8c46a") if net >= 0 else Color("e0675a"))
 	_chip("influence", str(c["pp"]), Color("cfd6df"))
@@ -986,16 +1048,35 @@ func _refresh_info() -> void:
 		_diplomacy_buttons(o)
 
 
+## Peace that also makes the occupation permanent: legal title to the cells we hold from the enemy.
+func _annex_button(o: int, parent: Container = null) -> void:
+	var held := sim.cells_held_from(player, o).size()
+	if held > 0:
+		_cmd_button("Мир с аннексией занятого (%d яч.)" % held, {"type": "propose_peace", "country": player, "target": o, "terms": "annex"}, parent)
+
+
 func _diplomacy_buttons(o: int) -> void:
 	var oname: String = sim.countries[o]["name"]
 	if sim.allied(player, o):
 		_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o})
 	elif sim.at_war(player, o):
 		_cmd_button("Предложить мир: %s" % oname, {"type": "propose_peace", "country": player, "target": o})
+		_annex_button(o)
 	else:
 		_cmd_button("Предложить союз: %s" % oname, {"type": "propose_alliance", "country": player, "target": o})
 		if sim.can_declare_war(player, o):
 			_cmd_button("Объявить войну: %s" % oname, {"type": "declare_war", "country": player, "target": o})
+	if not sim.allied(player, o):
+		_sanction_button(o)
+
+
+## Financial sanctions: cost influence, take a share of the target's income (stacks per sanctioning country).
+func _sanction_button(o: int, parent: Container = null) -> void:
+	var oname: String = sim.countries[o]["name"]
+	if sim.sanctioned_by(player, o):
+		_cmd_button("Снять санкции: %s" % oname, {"type": "lift_sanctions", "country": player, "target": o}, parent)
+	else:
+		_cmd_button("Санкции: %s (−%d влияния)" % [oname, Simulation.SANCTION_COST_PP], {"type": "impose_sanctions", "country": player, "target": o}, parent)
 
 
 func _cmd_button(label: String, cmd: Dictionary, parent: Container = null) -> void:
@@ -1723,11 +1804,27 @@ func _muted(text: String) -> Label:
 	return l
 
 
+## Where a click on a top-bar resource chip leads ("@wars" = the Wars tab of the right panel).
+const CHIP_TARGETS := {"coin": "economy", "influence": "politics", "stability": "politics", "manpower": "army", "steel": "economy", "oil": "economy", "food": "economy", "flag": "@wars"}
+
+
+func _chip_clicked(kind: String) -> void:
+	var target: String = CHIP_TARGETS.get(kind, "")
+	if target == "@wars":
+		_right_set_tab("wars")
+	elif target != "" and _open_panel_name != target:
+		_nav_pressed(target)
+
+
 func _make_chip(kind: String, tip: String) -> HBoxContainer:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 3)
 	hb.tooltip_text = tip
 	hb.mouse_filter = Control.MOUSE_FILTER_STOP
+	hb.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	hb.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_chip_clicked(kind))
 	var ic := IconButton.new(kind, tip, Vector2(22, 22))
 	ic.pad = 3.0
 	ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1920,7 +2017,7 @@ func _build_hud() -> void:
 	modes.add_child(mh)
 	var lic := IconButton.new("layers", "Режим карты (M)", Vector2(30, 30))
 	lic.pad = 5.0
-	lic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lic.pressed.connect(_cycle_map_mode)
 	mh.add_child(lic)
 	_mode_opt = OptionButton.new()
 	_mode_opt.custom_minimum_size = Vector2(190, 0)
@@ -1949,8 +2046,15 @@ func _build_hud() -> void:
 	_main_menu.add_separator()
 	_main_menu.add_item("Масштаб интерфейса +", 2)
 	_main_menu.add_item("Масштаб интерфейса −", 3)
+	_main_menu.add_item("Настройки…", 10)
+	_main_menu.add_item("Качество графики: %s" % GraphicsQuality.label(_quality), 8)
 	_main_menu.add_separator()
-	_main_menu.add_item("Настройки…", 5)
+	_main_menu.add_item("Полный экран (F11)", 5)
+	_main_menu.add_item("Окно без рамки", 6)
+	_main_menu.add_item("Разрешение окна: далее", 7)
+	_main_menu.add_separator()
+	_main_menu.add_item("Переподключиться к хосту", 9)
+	_main_menu.add_item("Звук и анимации…", 11)
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
@@ -1968,14 +2072,386 @@ func _mode_index(m: String) -> int:
 	return 0
 
 
+## Low -> Medium -> High map drawing quality; stored per machine, rendering only.
+func _cycle_quality() -> void:
+	_quality = GraphicsQuality.next(_quality)
+	GraphicsQuality.save_level(_quality)
+	_apply_quality()
+	var i := _main_menu.get_item_index(8)
+	if i >= 0:
+		_main_menu.set_item_text(i, "Качество графики: %s" % GraphicsQuality.label(_quality))
+
+
+func _apply_quality() -> void:
+	for m in [map_earth, map_legacy]:
+		if m is EarthMapView:
+			m.set_quality(_quality)
+
+
 func _menu_pressed(id: int) -> void:
 	match id:
 		0: SaveSystem.save(sim, "quick")
 		1: _load_game()
-		2: get_window().content_scale_factor = clampf(get_window().content_scale_factor + 0.1, 0.8, 1.8)
-		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
+		2: _set_ui_scale(get_window().content_scale_factor + 0.1)
+		3: _set_ui_scale(get_window().content_scale_factor - 0.1)
+		10: _show_settings_overlay()
+		11: _open_settings()
 		4: _show_menu()
-		5: _open_settings()
+		9: _net_reconnect()
+		8: _cycle_quality()
+		5: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
+		6: _change_display(func(d: DisplaySettings) -> void: d.toggle_borderless())
+		7: _change_display(func(d: DisplaySettings) -> void:
+			d.mode = DisplaySettings.Mode.WINDOWED
+			d.next_resolution())
+
+
+func _change_display(change: Callable) -> void:
+	change.call(display)
+	display.apply(get_window())
+	display.save_settings()
+
+
+# ------------------------------------------------------------ multiplayer
+
+func _net_end() -> void:
+	if net != null:
+		net.close()
+		net = null
+	_net_pending = {}
+
+
+func _show_net_menu(message: String = "") -> void:
+	_net_end()
+	_clear_ui()
+	player = -1
+	sim = null
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.theme = _theme
+	ui.add_child(root)
+	var bg := ColorRect.new()
+	bg.color = Color("0b1119")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.custom_minimum_size = Vector2(420, 0)
+	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	box.grow_vertical = Control.GROW_DIRECTION_BOTH
+	box.add_theme_constant_override("separation", 10)
+	root.add_child(box)
+	box.add_child(_h1("Сетевая игра"))
+	box.add_child(_muted("Хост ведёт игру и часы, клиенты шлют команды. Все должны иметь одну версию игры и данных. Порт по умолчанию — %d (UDP)." % NetProtocol.DEFAULT_PORT))
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "Ваше имя"
+	name_edit.text = "Игрок"
+	box.add_child(name_edit)
+	var addr_edit := LineEdit.new()
+	addr_edit.placeholder_text = "Адрес хоста"
+	addr_edit.text = "127.0.0.1"
+	box.add_child(addr_edit)
+	var port_edit := LineEdit.new()
+	port_edit.placeholder_text = "Порт"
+	port_edit.text = str(NetProtocol.DEFAULT_PORT)
+	box.add_child(port_edit)
+	_net_status = Label.new()
+	_net_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_net_status.add_theme_color_override("font_color", Color("d9a05a"))
+	_net_status.text = message
+	var host_btn := Button.new()
+	host_btn.text = "Создать игру (Современный мир)"
+	host_btn.pressed.connect(func():
+		_net_host_start(NetProtocol.clean_name(name_edit.text), port_edit.text.to_int() if port_edit.text.is_valid_int() else NetProtocol.DEFAULT_PORT))
+	box.add_child(host_btn)
+	var join_btn := Button.new()
+	join_btn.text = "Подключиться"
+	join_btn.pressed.connect(func():
+		_net_join_start(NetProtocol.clean_name(name_edit.text), addr_edit.text.strip_edges(), port_edit.text.to_int() if port_edit.text.is_valid_int() else NetProtocol.DEFAULT_PORT))
+	box.add_child(join_btn)
+	box.add_child(_net_status)
+	var back := Button.new()
+	back.text = "← Назад"
+	back.pressed.connect(_show_menu)
+	box.add_child(back)
+
+
+## Host: set the real-world scenario up, let the player pick a country, then the server starts (see _start_playing).
+func _net_host_start(pname: String, port: int) -> void:
+	_net_pending = {"mode": "host", "port": port, "name": pname}
+	_start_scenario(ScenarioLoader.read_file("res://game/scenarios/modern_world.json"))
+
+
+func _net_launch_host() -> void:
+	var port: int = _net_pending.get("port", NetProtocol.DEFAULT_PORT)
+	_net_pending = {}
+	var t := ENetServerTransport.new()
+	var err := t.listen(port)
+	if err != OK:
+		_log.append_text("[color=#d96a5a]Не удалось открыть порт %d (ошибка %d): сетевая игра не запущена.[/color]\n" % [port, err])
+		return
+	_net_attach_host(NetHost.new(sim, t))
+	_log.append_text("[color=#8ac58a]Сервер запущен на порту %d. Игра на паузе: нажмите скорость, когда игроки подключатся.[/color]\n" % port)
+
+
+func _net_attach_host(h: NetHost) -> void:
+	net = NetSession.for_host(h)
+	h.set_host_country(player)
+	h.log_added.connect(func(text: String):
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: %s[/color]\n" % text))
+	_set_speed(0)
+
+
+func _net_join_start(pname: String, address: String, port: int) -> void:
+	var t := ENetClientTransport.new()
+	if address == "" or t.connect_to(address, port) != OK:
+		_net_status.text = "Не удалось начать подключение к %s:%d" % [address, port]
+		return
+	_net_attach_client(NetClient.new(t, pname), address, port)
+	_net_status.text = "Подключение к %s:%d…" % [address, port]
+
+
+func _net_attach_client(c: NetClient, address: String = "127.0.0.1", port: int = NetProtocol.DEFAULT_PORT) -> void:
+	net = NetSession.for_client(c, address, port)
+	_net_hook_client(c)
+
+
+func _net_hook_client(c: NetClient) -> void:
+	c.sim_replaced.connect(_net_on_sim_replaced)
+	c.log_added.connect(func(text: String):
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: %s[/color]\n" % text))
+
+
+func _net_reconnect() -> void:
+	if net == null or not net.is_client() or net.client.state == "playing":
+		return
+	if net.reconnect():
+		_net_hook_client(net.client)
+		_net_last_day = -1
+		if _log != null and is_instance_valid(_log):
+			_log.append_text("[color=#8ab4d9]Сеть: переподключение…[/color]\n")
+
+
+## Every frame of a multiplayer session: pump the network, start the client game when the host welcomed us, refresh.
+func _net_frame() -> void:
+	net.poll()
+	if _net_status != null and is_instance_valid(_net_status) and net.is_client() and player < 0:
+		_net_status.text = net.describe()
+		if net.client.state == "rejected" or net.client.state == "disconnected":
+			var why := net.client.last_error
+			_net_end()
+			_show_net_menu("Отказ: %s" % why if why != "" else "Нет соединения")
+			return
+	if net.is_client() and net.client.state == "playing":
+		if player < 0 or sim != net.client.sim:
+			_net_client_ready()
+		_net_sync_speed_ui()
+		var ev: int = net.client.stats["events"]
+		if sim.day != _net_last_day or ev != _net_last_events:
+			_net_last_day = sim.day
+			_net_last_events = ev
+			var dirty := sim.dirty_provinces.duplicate()
+			sim.dirty_provinces.clear()
+			map.refresh(dirty)
+			_refresh_all()
+	elif net.is_host() and sim != null and player >= 0:
+		var n: int = net.host.connected_count()
+		if n != _net_last_events:
+			_net_last_events = n
+			_refresh_top()
+
+
+func _net_client_ready() -> void:
+	sim = net.client.sim
+	_bind_map(sim)
+	_net_silent = true
+	_start_playing(net.client.country)   # keeps the network's AI flags (see _start_playing)
+	_net_silent = false
+	_net_last_day = sim.day
+	_net_last_events = -1
+	_net_sync_speed_ui()
+
+
+## A client's speed buttons only show what the host does (paused or running); they never change the host's clock by themselves.
+func _net_sync_speed_ui() -> void:
+	var want := 0 if net.client.paused else maxi(1, speed_idx)
+	if want != speed_idx:
+		_net_silent = true
+		_set_speed(want)
+		_net_silent = false
+
+
+## The host sent a snapshot after a desync: continue with the repaired simulation.
+func _net_on_sim_replaced() -> void:
+	if player < 0 or net == null or not net.is_client():
+		return
+	sim = net.client.sim
+	_bind_map(sim)
+	map.player_country = player
+	if map is EarthMapView:
+		map.repaint_all()
+	_net_last_day = -1
+	_refresh_all()
+
+
+# ------------------------------------------------------------ settings
+
+const HOTKEYS_TEXT := """Мышь: ЛКМ — выбор клетки / цель приказа, перетаскивание — камера, колесо — масштаб (к курсору), ПКМ — контекстное меню
+(на сенсорном экране: касание, перетаскивание, щипок, долгое нажатие вместо ПКМ)
+Пробел — пауза · 1–4 — скорость · M — режим карты · Ctrl+F или / — поиск
+F5 — быстрое сохранение · F9 — загрузить · F11 — полный экран · Esc — снять выбор
+Горячие клавиши работают на любой раскладке (учитывается положение клавиши)."""
+
+
+func _set_ui_scale(v: float) -> void:
+	var scale := clampf(snappedf(v, 0.05), 0.8, 1.8)
+	get_window().content_scale_factor = scale
+	display.ui_scale = scale
+	display.save_settings()
+
+
+func _reset_ui_scale() -> void:
+	display.ui_scale = -1.0
+	display.save_settings()
+	get_window().content_scale_factor = TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
+
+
+## The Settings screen: window mode and size, interface scale, graphics quality, controls help. Everything applies
+## immediately and is stored per machine (display.cfg, graphics.cfg).
+## Sound and reduced-motion rows, inserted above the Close button of a settings screen built by _build_settings().
+func _add_sound_rows(box: Container) -> void:
+	var close_btn: Node = box.get_child(box.get_child_count() - 1)
+	box.add_child(_muted("Звук и анимации"))
+	SettingsPanel.add_rows(box, apply_settings)
+	box.move_child(close_btn, box.get_child_count() - 1)
+
+
+func _build_settings(parent: Container, on_close: Callable) -> void:
+	parent.add_child(_h1("Настройки"))
+	parent.add_child(_muted("Окно"))
+	var mode_opt := OptionButton.new()
+	for t in ["Оконный", "Полный экран (F11)", "Окно без рамки"]:
+		mode_opt.add_item(t)
+	mode_opt.select(display.mode)
+	mode_opt.item_selected.connect(func(i: int): _change_display(func(d: DisplaySettings) -> void: d.mode = i))
+	parent.add_child(mode_opt)
+	var res_opt := OptionButton.new()
+	for r in DisplaySettings.RESOLUTIONS:
+		res_opt.add_item("%d × %d" % [r.x, r.y])
+	res_opt.select(display.resolution_index)
+	res_opt.item_selected.connect(func(i: int): _change_display(func(d: DisplaySettings) -> void:
+		d.mode = DisplaySettings.Mode.WINDOWED
+		d.resolution_index = i
+		mode_opt.select(DisplaySettings.Mode.WINDOWED)))
+	parent.add_child(res_opt)
+	parent.add_child(_muted("Интерфейс"))
+	var scale_row := HBoxContainer.new()
+	parent.add_child(scale_row)
+	var scale_label := Label.new()
+	scale_label.custom_minimum_size = Vector2(150, 0)
+	scale_row.add_child(scale_label)
+	var slider := HSlider.new()
+	slider.min_value = 0.8
+	slider.max_value = 1.8
+	slider.step = 0.05
+	slider.custom_minimum_size = Vector2(200, 24)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.value = get_window().content_scale_factor
+	scale_label.text = "Масштаб: %d %%" % roundi(slider.value * 100.0)
+	slider.value_changed.connect(func(v: float):
+		_set_ui_scale(v)
+		scale_label.text = "Масштаб: %d %%" % roundi(get_window().content_scale_factor * 100.0))
+	scale_row.add_child(slider)
+	var auto_btn := Button.new()
+	auto_btn.text = "Авто"
+	auto_btn.tooltip_text = "Масштаб по умолчанию для этого экрана (DPI на телефонах)"
+	auto_btn.pressed.connect(func():
+		_reset_ui_scale()
+		slider.set_value_no_signal(get_window().content_scale_factor)
+		scale_label.text = "Масштаб: %d %%" % roundi(get_window().content_scale_factor * 100.0))
+	scale_row.add_child(auto_btn)
+	parent.add_child(_muted("Графика"))
+	var q_opt := OptionButton.new()
+	for lvl in 3:
+		q_opt.add_item("Качество карты: %s" % GraphicsQuality.label(lvl))
+	q_opt.select(_quality)
+	q_opt.item_selected.connect(func(i: int):
+		_quality = i
+		GraphicsQuality.save_level(_quality)
+		_apply_quality())
+	parent.add_child(q_opt)
+	parent.add_child(_muted("Управление"))
+	var keys := Label.new()
+	keys.text = HOTKEYS_TEXT
+	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	keys.custom_minimum_size = Vector2(440, 0)
+	keys.add_theme_font_size_override("font_size", 13)
+	parent.add_child(keys)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(on_close)
+	parent.add_child(close)
+
+
+## From the main menu: a full screen.
+func _show_settings_screen() -> void:
+	_clear_ui()
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.theme = _theme
+	ui.add_child(root)
+	var bg := ColorRect.new()
+	bg.color = Color("0b1119")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(scroll)
+	var outer := VBoxContainer.new()
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.alignment = BoxContainer.ALIGNMENT_CENTER
+	scroll.add_child(outer)
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(460, 0)
+	box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	box.add_theme_constant_override("separation", 8)
+	outer.add_child(box)
+	_build_settings(box, _show_menu)
+	_add_sound_rows(box)
+
+
+## From a running game: a window over the map (the game keeps its state).
+func _show_settings_overlay() -> void:
+	if _settings_overlay != null and is_instance_valid(_settings_overlay):
+		_settings_overlay.queue_free()
+		_settings_overlay = null
+		return
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	dim.theme = _theme
+	ui.add_child(dim)
+	_settings_overlay = dim
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	dim.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(500, minf(560.0, get_viewport().get_visible_rect().size.y - 60.0))
+	panel.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 8)
+	scroll.add_child(box)
+	_build_settings(box, _show_settings_overlay)
+	_add_sound_rows(box)
 
 
 # ------------------------------------------------------------ navigation rail
@@ -2251,6 +2727,7 @@ func _g_dip() -> void:
 			_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o}, acts)
 		elif sim.at_war(player, o):
 			_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": o}, acts)
+			_annex_button(o, acts)
 		else:
 			_cmd_button("Союз", {"type": "propose_alliance", "country": player, "target": o}, acts)
 			if sim.can_declare_war(player, o):
@@ -2411,6 +2888,7 @@ func _fill_wars() -> void:
 		row.add_child(l)
 		var acts := HFlowContainer.new()
 		_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": enemy}, acts)
+		_annex_button(enemy, acts)
 		row.add_child(acts)
 		v.add_child(row)
 	v.add_child(HSeparator.new())
@@ -2640,12 +3118,20 @@ func _on_province_right_clicked(pid: int, screen_pos: Vector2) -> void:
 		var oname: String = sim.countries[o]["name"]
 		if sim.at_war(player, o):
 			_ctx.add_item("Предложить мир: %s" % oname, 12)
+			var held := sim.cells_held_from(player, o).size()
+			if held > 0:
+				_ctx.add_item("Мир с аннексией занятого (%d яч.): %s" % [held, oname], 14)
 		else:
 			if sim.can_declare_war(player, o) and not sim.allied(player, o):
 				_ctx.add_item("Объявить войну: %s" % oname, 10)
 			if not sim.allied(player, o):
 				_ctx.add_item("Предложить союз: %s" % oname, 11)
 			_ctx.add_item("Эмбарго: %s" % oname, 13)
+		if not sim.allied(player, o):
+			if sim.sanctioned_by(player, o):
+				_ctx.add_item("Снять санкции: %s" % oname, 16)
+			else:
+				_ctx.add_item("Санкции: %s (−%d влияния)" % [oname, Simulation.SANCTION_COST_PP], 15)
 	if sim.is_earth_world() and not EarthWorld.settlements_in_cell(pid).is_empty():
 		_ctx.add_separator()
 		_ctx.add_item("Главный населённый пункт ячейки", 20)
@@ -2665,7 +3151,10 @@ func _ctx_pressed(id: int) -> void:
 		10: _pol_cmd_log({"type": "declare_war", "country": player, "target": o})
 		11: _pol_cmd_log({"type": "propose_alliance", "country": player, "target": o})
 		12: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o})
+		14: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o, "terms": "annex"})
 		13: _pol_cmd_log({"type": "embargo", "country": player, "target": o})
+		15: _pol_cmd_log({"type": "impose_sanctions", "country": player, "target": o})
+		16: _pol_cmd_log({"type": "lift_sanctions", "country": player, "target": o})
 		20:
 			var ids := EarthWorld.settlements_in_cell(pid)
 			if not ids.is_empty():

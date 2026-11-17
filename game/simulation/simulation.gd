@@ -6,6 +6,10 @@ extends RefCounted
 const SAVE_VERSION := 11
 const MIN_SAVE_VERSION := 10
 const SUPPLY_RANGE := 140
+const STARVING_SUPPLY := 25   # AI armies below this supply % retreat to their own land
+const SANCTION_COST_PP := 25      # political influence paid by the country that imposes sanctions
+const SANCTION_INCOME_PCT := 12   # income lost by the target per sanctioning country
+const SANCTION_MAX_PCT := 48
 const SUPPLY_EVERY := 3  # supply is recomputed per country every N days (staggered)
 const ARMY_COST := 60
 const ARMY_BASE_STRENGTH := 1000
@@ -46,6 +50,7 @@ var next_fleet_id := 1
 var trades: Array = []  # {"id","seller","buyer","res","amount","price","fails"}
 var next_trade_id := 1
 var embargoes: Array = []  # {"a": embargoer, "b": target}
+var sanctions: Array = []  # {"a": imposer, "b": target, "since": day}: financial pressure, see sanction_pct()
 var res_defs: Array = []
 var unit_defs: Dictionary = {}
 var name_pool: Dictionary = {}
@@ -82,6 +87,7 @@ var _nc_ver := -1
 var _owner_ver := 0
 var _coastal := PackedByteArray()
 var _agg: Dictionary = {}         # country id -> {"prod","pop","ind","income"} (exact; rebuilt when ownership/damage/deposits change)
+var _blockade_key: Array = []   # inputs of the last blockade computation (see _logistics)
 var _agg_key: Array = []
 var ai_war_chance := 1.0          # probability gate for AI war declarations (scenario-tunable)
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
@@ -1977,7 +1983,29 @@ func date_string() -> String:
 # --------------------------------------------------------------- commands
 
 ## Validated entry point for every player/network action.
+## Multiplayer hooks (both unset in single player; never serialised):
+##  - command_sink: a network CLIENT forwards every command to the host instead of applying it here;
+##  - command_hook: the network HOST is told about every command that was applied, to broadcast it.
+var command_sink := Callable()
+var command_hook := Callable()
+
+
+var _in_tick := false   # commands the simulation issues itself (AI) while a day is processed are replayed by every peer
+
+
 func apply_command(cmd: Dictionary) -> Dictionary:
+	if command_sink.is_valid() and not _in_tick:
+		return command_sink.call(cmd)
+	var res := _validate_and_run(cmd)
+	if res["ok"]:
+		command_log.append({"day": day, "cmd": cmd})
+		if command_hook.is_valid() and not _in_tick:
+			command_hook.call(cmd)
+	return res
+
+
+## A network client applies the host's already validated commands here (bypasses command_sink and command_hook).
+func apply_remote_command(cmd: Dictionary) -> Dictionary:
 	var res := _validate_and_run(cmd)
 	if res["ok"]:
 		command_log.append({"day": day, "cmd": cmd})
@@ -2195,6 +2223,28 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			var before := embargoes.size()
 			embargoes = embargoes.filter(func(e): return not (e["a"] == cid and e["b"] == lt))
 			return {"ok": embargoes.size() != before, "reason": "no embargo"}
+		"impose_sanctions":
+			var st: int = cmd.get("target", -1)
+			if st < 0 or st >= countries.size() or st == cid or not countries[st]["alive"]:
+				return _fail("invalid target")
+			if allied(cid, st):
+				return _fail("ally")
+			if sanctioned_by(cid, st):
+				return _fail("already sanctioned")
+			if countries[cid]["pp"] < SANCTION_COST_PP:
+				return _fail("not enough influence")
+			countries[cid]["pp"] -= SANCTION_COST_PP
+			sanctions.append({"a": cid, "b": st, "since": day})
+			_log("%s: %s вводит санкции против %s (доход −%d%%)" % [date_string(), countries[cid]["name"], countries[st]["name"], sanction_pct(st)])
+			return {"ok": true}
+		"lift_sanctions":
+			var ls: int = cmd.get("target", -1)
+			var n_before := sanctions.size()
+			sanctions = sanctions.filter(func(x): return not (x["a"] == cid and x["b"] == ls))
+			if sanctions.size() == n_before:
+				return _fail("no sanctions")
+			_log("%s: %s снимает санкции с %s" % [date_string(), countries[cid]["name"], countries[ls]["name"]])
+			return {"ok": true}
 		"move_fleet":
 			var f := fleet_by_id(cmd.get("fleet", -1))
 			if f.is_empty() or f["owner"] != cid:
@@ -2233,9 +2283,18 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 				return _fail("not at war")
 			if not countries[t4]["ai"]:
 				return _fail("human target")
+			var terms: String = cmd.get("terms", "status_quo")
+			if terms != "status_quo" and terms != "annex":
+				return _fail("invalid terms")
+			if terms == "annex" and cells_held_from(cid, t4).is_empty():
+				return _fail("nothing to annex")
 			if not _ai_accepts_peace(t4, cid):
 				return _fail("refused")
+			if terms == "annex" and not _ai_accepts_annex(t4, cid):
+				return _fail("refused terms")
 			_end_war(cid, t4, "мирный договор")
+			if terms == "annex":
+				_settle_annex(cid, t4)
 			return {"ok": true}
 		"move_army":
 			var a := army_by_id(cmd.get("army", -1))
@@ -2276,6 +2335,7 @@ func _fail(reason: String) -> Dictionary:
 # --------------------------------------------------------------- time step
 
 func tick_day() -> void:
+	_in_tick = true
 	day += 1
 	_logistics()
 	_economy()
@@ -2301,6 +2361,7 @@ func tick_day() -> void:
 		for c in countries:
 			if c["alive"] and c["generals"].size() < MAX_GENERALS:
 				_new_general(c["id"])
+	_in_tick = false
 
 
 var _agg_base: Dictionary = {}
@@ -2375,7 +2436,7 @@ func _economy() -> void:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
 		if c["alive"]:
-			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) / 10000
+			c["income"] = c["income"] * (100 + mod(c["id"], "income_pct")) * (100 - c["blockade"] / 5) * (100 - sanction_pct(c["id"])) / 1000000
 			c["upkeep"] = c["upkeep"] * (100 + mod(c["id"], "upkeep_pct")) / 100
 			if rule_modern:
 				# abstract cyber pressure: enemies at war reduce income, cyber defence offsets it (at most -25%)
@@ -2394,6 +2455,27 @@ func _economy() -> void:
 				for a in armies:
 					if a["owner"] == c["id"]:
 						_hurt(a, a["strength"] / 50)
+
+
+func sanctioned_by(a: int, b: int) -> bool:
+	for x in sanctions:
+		if x["a"] == a and x["b"] == b:
+			return true
+	return false
+
+
+## How many (living) countries sanction `target`.
+func sanction_level(target: int) -> int:
+	var n := 0
+	for x in sanctions:
+		if x["b"] == target and countries[x["a"]]["alive"]:
+			n += 1
+	return n
+
+
+## Share of its income `target` loses to sanctions (stacks per sanctioning country, capped).
+func sanction_pct(target: int) -> int:
+	return mini(SANCTION_MAX_PCT, SANCTION_INCOME_PCT * sanction_level(target))
 
 
 func _embargoed(a: int, b: int) -> bool:
@@ -2539,7 +2621,19 @@ func _logistics() -> void:
 	if fleets.is_empty():
 		for c in countries:
 			c["blockade"] = 0
+		_blockade_key = []   # values were reset: the next non-empty computation must not be skipped
 		return
+	# the blockade is a pure function of cell owners, fleet positions, wars and alliances: skip the O(all cells) pass
+	# when none of them changed since the last computation
+	var fleet_key := PackedInt32Array()
+	for f in fleets:
+		if f["strength"] > 0:
+			fleet_key.append(f["prov"])
+			fleet_key.append(f["owner"])
+	var key := [_owner_ver, fleet_key, hash(wars), hash(alliances), countries.size(), alive_count()]
+	if _blockade_key == key:
+		return
+	_blockade_key = key
 	var idx := _fleets_by_sea()
 	var fleet_owners := {}
 	for f in fleets:
@@ -2615,6 +2709,12 @@ func _resources() -> void:
 	for f in fleets:
 		fstr_of[f["owner"]] = fstr_of.get(f["owner"], 0) + f["strength"]
 	var agg := _aggregate()
+	var armies_by_owner := {}   # one pass instead of a scan over all armies per country (O(countries x armies))
+	for a in armies:
+		var ao: int = a["owner"]
+		if not armies_by_owner.has(ao):
+			armies_by_owner[ao] = []
+		armies_by_owner[ao].append(a)
 	for o in agg:
 		if not countries[o]["alive"]:
 			continue
@@ -2649,9 +2749,8 @@ func _resources() -> void:
 			st[r] = mini(st[r], STOCK_CAP)
 		# shortages hurt the army
 		if c["short"].has("oil") or c["short"].has("food"):
-			for a in armies:
-				if a["owner"] == cid:
-					_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
+			for a in armies_by_owner.get(cid, []):
+				_hurt(a, a["strength"] / (100 if c["short"].has("oil") else 200) * (100 - mini(mod(cid, "attrition_pct"), 90)) / 100)
 
 
 func net_of(cid: int, res: String) -> int:
@@ -2858,6 +2957,7 @@ func _capital_fell(loser: int, winner: int) -> void:
 	if not rest.is_empty():
 		countries[loser]["capital"] = rest[0]
 	_end_war(loser, winner, "капитуляция")
+	_settle_annex(winner, loser)   # surrender is a treaty too: what the winner holds becomes recognised
 
 
 func _peace() -> void:
@@ -2890,6 +2990,7 @@ func _eliminate() -> void:
 			fleets = fleets.filter(func(f): return f["owner"] != c["id"])
 			alliances = alliances.filter(func(al): return al["a"] != c["id"] and al["b"] != c["id"])
 			trades = trades.filter(func(t): return t["buyer"] != c["id"] and t["seller"] != c["id"])
+			sanctions = sanctions.filter(func(x): return x["a"] != c["id"] and x["b"] != c["id"])
 
 
 func _declare_war(a: int, b: int) -> void:
@@ -3264,6 +3365,40 @@ func _ai_accepts_alliance(ai: int, other: int) -> bool:
 	return _common_enemy(ai, other) or _common_threat(ai, other)
 
 
+## Cells `holder` controls (owner[]) that are legally (legal[]) another country's.
+func cells_held_from(holder: int, legal_owner: int) -> Array[int]:
+	var out: Array[int] = []
+	for p in cells_of(holder):
+		if legal[p] == legal_owner:
+			out.append(p)
+	return out
+
+
+## The only way recognised ownership (legal[]) changes in a war: a peace treaty with the "annex" term.
+## The winner gets legal title to everything it holds from the loser; whatever the loser still holds of the
+## winner's legal land is handed back. Control (owner[]) of annexed cells does not change.
+func _settle_annex(winner: int, loser: int) -> void:
+	var annexed := cells_held_from(winner, loser)
+	for p in annexed:
+		legal[p] = winner
+		dirty_provinces.append(p)
+	var returned := cells_held_from(loser, winner)
+	for p in returned:
+		set_owner(p, winner)
+		dirty_provinces.append(p)
+	var cap: int = countries[loser]["capital"]
+	if cap < 0 or owner[cap] != loser:
+		var rest := cells_of(loser)
+		if not rest.is_empty():
+			countries[loser]["capital"] = rest[0]
+	_log("%s: договор — %s: признано за ним %d яч. государства %s%s" % [date_string(), countries[winner]["name"], annexed.size(), countries[loser]["name"], ", возвращено ему %d яч." % returned.size() if not returned.is_empty() else ""])
+
+
+## An AI only accepts losing recognised land to a clearly stronger enemy (on top of the normal peace conditions).
+func _ai_accepts_annex(ai: int, other: int) -> bool:
+	return army_strength(other) >= army_strength(ai) * 1.5
+
+
 ## Would AI country `ai` agree to peace with `other`?
 func _ai_accepts_peace(ai: int, other: int) -> bool:
 	var age := 0
@@ -3607,6 +3742,8 @@ func _ai() -> void:
 		for e in enemies.duplicate():
 			if day - _war_start(cid, e) >= 90 and my_str < army_strength(e) and countries[e]["ai"]:
 				_end_war(cid, e, "усталость от войны")
+				if not cells_held_from(e, cid).is_empty() and army_strength(e) >= my_str * 1.5:
+					_settle_annex(e, cid)   # the clearly stronger side keeps what it holds (same rule as the player's treaty)
 				enemies = enemies_of(cid)
 		# naval: build fleets
 		if day % 10 == 0:
@@ -3640,6 +3777,7 @@ func _ai() -> void:
 		# military: send idle armies at the nearest enemy target
 		if enemies.is_empty():
 			continue
+		_ai_retreat_starving(cid)
 		for a in armies_of(cid):
 			if not a["path"].is_empty():
 				continue
@@ -3660,6 +3798,24 @@ func _ai() -> void:
 					continue
 				a["path"] = path
 				a["move"] = 0
+
+
+## Armies deep in enemy land lose supply (and 1%/day strength below 20%): the AI pulls them back to its own territory
+## instead of letting them starve. Returns the number of armies ordered back.
+func _ai_retreat_starving(cid: int) -> int:
+	var ordered := 0
+	for a in armies_of(cid):
+		if a["supply"] >= STARVING_SUPPLY or not provinces()[a["prov"]]["land"]:
+			continue
+		var here := owner[a["prov"]]
+		if here == cid or allied(cid, here):
+			continue
+		var path := _bfs(a["prov"], cid, func(p): return owner[p] == cid, false)
+		if not path.is_empty():
+			a["path"] = path
+			a["move"] = 0
+			ordered += 1
+	return ordered
 
 
 func _enemy_fleet_in(p: int, enemies: Array) -> bool:
@@ -3734,7 +3890,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3767,6 +3923,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.trades = d["trades"]
 	sim.next_trade_id = d["next_trade_id"]
 	sim.embargoes = d["embargoes"]
+	sim.sanctions = d.get("sanctions", [])   # saves from before sanctions have none
 	sim.res_defs = load_resource_defs()
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
@@ -3808,9 +3965,12 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
-	var state := [day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
+	# legal[] is part of the state hash: treaties and capitulations change it, a multiplayer desync there must be detected
+	var parts := [day, owner, legal, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
+	if not sanctions.is_empty():
+		parts.append(sanctions)   # only when present: a game without sanctions keeps the checksum it always had
 	if rule_markets:
-		state.append([pop_bp, market_pct, _market_flow])
+		parts.append([pop_bp, market_pct, _market_flow])
 	if rule_modern:
-		state.append([missile_stock, strikes])   # only with the rule: other scenarios keep their reference checksums
-	return var_to_str(state).hash()
+		parts.append([missile_stock, strikes])   # only with the rule: other scenarios keep their reference checksums
+	return var_to_str(parts).hash()
