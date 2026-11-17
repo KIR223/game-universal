@@ -36,6 +36,7 @@ var _drag_start := Vector2.ZERO
 var _rc_start := Vector2.ZERO
 var _dragging := false
 var _drag_moved := false
+var _press_ms := 0
 
 
 func _ready() -> void:
@@ -319,11 +320,15 @@ func _unhandled_input(event: InputEvent) -> void:
 				_dragging = true
 				_drag_moved = false
 				_drag_start = mb.position
+				_press_ms = Time.get_ticks_msec()
 			else:
 				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT:
 					var pid := province_at(get_global_mouse_position())
 					if pid >= 0:
-						province_clicked.emit(pid)
+						if TouchSupport.is_long_press(Time.get_ticks_msec() - _press_ms, _drag_moved, OS.has_feature("mobile")):
+							province_right_clicked.emit(pid, get_viewport().get_mouse_position())
+						else:
+							province_clicked.emit(pid)
 				_dragging = false
 	elif event is InputEventMouseMotion and _dragging:
 		var mm := event as InputEventMouseMotion

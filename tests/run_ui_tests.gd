@@ -155,6 +155,13 @@ func run_checks() -> void:
 				if under_cell < 0 or main.sim.owner[under_cell] != l["cid"]:
 					off.append(l["name"])
 			check(off.is_empty(), "zoom %.2f: every label sits on its own country's land (off: %s)" % [zl, str(off)])
+	# touch support: DPI-based UI scale and long press as right click (mobile only)
+	check(is_equal_approx(TouchSupport.ui_scale(420, true), 1.4), "420 dpi phone gets UI scale 1.4")
+	check(TouchSupport.ui_scale(96, true) == 1.0 and TouchSupport.ui_scale(600, true) == 1.5, "mobile UI scale is clamped to 1.0..1.5")
+	check(TouchSupport.ui_scale(420, false) == 1.0, "desktop UI scale is not changed by DPI")
+	check(TouchSupport.is_long_press(500, false, true), "held touch is a long press")
+	check(not TouchSupport.is_long_press(200, false, true) and not TouchSupport.is_long_press(900, true, true), "short or moving touch is not a long press")
+	check(not TouchSupport.is_long_press(900, false, false), "a long mouse click on desktop is never a context menu")
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])
