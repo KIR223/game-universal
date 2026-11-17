@@ -1580,3 +1580,70 @@ func test_checksum_covers_legal_ownership() -> void:
 	var other: int = (b.owner[cell] + 1) % b.countries.size()
 	b.legal[cell] = other
 	check(a.checksum() != b.checksum(), "a different legal[] changes the checksum")
+
+
+## Sanctions: financial pressure that costs the imposer influence and takes a share of the target's income,
+## stacks per sanctioning country (capped), can be lifted, survives saves, and changes nothing when unused.
+func test_sanctions() -> void:
+	var sim := _earth()
+	var base_sum := sim.checksum()
+	var target: int = sim.countries.find_custom(func(c): return c["name"] == "Франция")
+	var imposers: Array[int] = []
+	for c in sim.countries:
+		if c["id"] != target and c["alive"] and not sim.allied(c["id"], target) and imposers.size() < 6 and not sim.cells_of(c["id"]).is_empty():
+			imposers.append(c["id"])
+	for id in imposers:
+		sim.countries[id]["pp"] = 200
+	# validation
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": imposers[0]})["ok"], "no sanctions against oneself")
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": 9999})["ok"], "no sanctions against a country that does not exist")
+	sim.countries[imposers[0]]["pp"] = Simulation.SANCTION_COST_PP - 1
+	check(sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target}).get("reason", "") == "not enough influence", "sanctions cost political influence")
+	sim.countries[imposers[0]]["pp"] = 200
+	check(sim.checksum() != base_sum, "(sanity) the treasury edits above changed the state")
+	# effect on income
+	sim._economy()
+	var income0: int = sim.countries[target]["income"]
+	check(income0 > 0, "the target has income (%d)" % income0)
+	var pp_before: int = sim.countries[imposers[0]]["pp"]
+	check(sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target})["ok"], "sanctions are imposed")
+	check(sim.countries[imposers[0]]["pp"] == pp_before - Simulation.SANCTION_COST_PP, "the imposer paid %d influence" % Simulation.SANCTION_COST_PP)
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target})["ok"], "the same sanctions cannot be imposed twice")
+	check(sim.sanction_level(target) == 1 and sim.sanction_pct(target) == Simulation.SANCTION_INCOME_PCT, "one sanctioning country = %d%%" % Simulation.SANCTION_INCOME_PCT)
+	sim._economy()
+	var income1: int = sim.countries[target]["income"]
+	check(absi(income1 - income0 * 88 / 100) <= 1, "income fell by 12%% (%d -> %d)" % [income0, income1])
+	# stacking and the cap
+	for i in range(1, imposers.size()):
+		sim.apply_command({"type": "impose_sanctions", "country": imposers[i], "target": target})
+	check(sim.sanction_level(target) == imposers.size() and sim.sanction_pct(target) == Simulation.SANCTION_MAX_PCT, "sanctions stack and are capped at %d%% (%d countries)" % [Simulation.SANCTION_MAX_PCT, imposers.size()])
+	sim._economy()
+	check(absi(sim.countries[target]["income"] - income0 * 52 / 100) <= 1, "income at the cap is 52%% of normal (%d)" % sim.countries[target]["income"])
+	# lifting
+	check(not sim.apply_command({"type": "lift_sanctions", "country": target, "target": imposers[0]})["ok"], "a country cannot lift sanctions it never imposed")
+	var level_before: int = sim.sanction_level(target)
+	check(sim.apply_command({"type": "lift_sanctions", "country": imposers[1], "target": target})["ok"], "an imposer lifts its own sanctions")
+	check(sim.sanction_level(target) == level_before - 1 and sim.sanctioned_by(imposers[0], target) and not sim.sanctioned_by(imposers[1], target), "...and only its own: the others stay (level %d -> %d)" % [level_before, sim.sanction_level(target)])
+	for id in imposers:
+		sim.apply_command({"type": "lift_sanctions", "country": id, "target": target})
+	check(sim.sanctions.is_empty() and sim.sanction_pct(target) == 0, "all sanctions lifted")
+	sim._economy()
+	check(sim.countries[target]["income"] == income0, "income is back to normal (%d)" % sim.countries[target]["income"])
+	# save / load keeps them; a game that never used them is unchanged
+	sim.apply_command({"type": "impose_sanctions", "country": imposers[1], "target": target})
+	var with_sanctions := sim.checksum()
+	check(SaveSystem.save(sim, "sanctest"), "save with sanctions")
+	var loaded := SaveSystem.load_slot("sanctest")
+	check(loaded != null and loaded.sanctions == sim.sanctions and loaded.checksum() == with_sanctions, "sanctions survive save/load")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/sanctest.sav"))
+	sim.apply_command({"type": "lift_sanctions", "country": imposers[1], "target": target})
+	var fresh := _earth()
+	var fresh_sum := fresh.checksum()
+	check(fresh.sanctions.is_empty() and fresh_sum == base_sum, "a fresh game has no sanctions and its checksum is unchanged")
+	# a destroyed country takes its sanctions with it
+	fresh.countries[imposers[2]]["pp"] = 100
+	fresh.apply_command({"type": "impose_sanctions", "country": imposers[2], "target": target})
+	for p in fresh.cells_of(imposers[2]).duplicate():
+		fresh.set_owner(p, target)
+	fresh._eliminate()
+	check(not fresh.countries[imposers[2]]["alive"] and fresh.sanctions.is_empty(), "sanctions of a destroyed country disappear")

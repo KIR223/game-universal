@@ -205,6 +205,20 @@ func run_checks() -> void:
 		if not main._ctx.is_item_separator(i):
 			ids2[main._ctx.get_item_id(i)] = main._ctx.get_item_text(i)
 	check(ids2.has(13) and str(ids2[13]).begins_with("Эмбарго") and not ids2.has(14), "for a country at peace id 13 is the embargo and there is no annexation entry")
+	check(ids2.has(15) and str(ids2[15]).begins_with("Санкции") and not ids2.has(16), "the menu offers sanctions against a country at peace")
+	main.sim.countries[fr]["pp"] = 100
+	var pp_was: int = main.sim.countries[fr]["pp"]
+	main._ctx_cell = main.sim.cells_of(peaceful)[0]
+	main._ctx_pressed(15)
+	check(main.sim.sanctioned_by(fr, peaceful) and main.sim.countries[fr]["pp"] == pp_was - Simulation.SANCTION_COST_PP, "choosing 'Санкции' imposes them and costs influence")
+	main._on_province_right_clicked(main.sim.cells_of(peaceful)[0], Vector2(300, 300))
+	var ids3 := {}
+	for i in main._ctx.item_count:
+		if not main._ctx.is_item_separator(i):
+			ids3[main._ctx.get_item_id(i)] = main._ctx.get_item_text(i)
+	check(ids3.has(16) and str(ids3[16]).begins_with("Снять санкции") and not ids3.has(15), "afterwards the menu offers to lift them")
+	main._ctx_pressed(16)
+	check(not main.sim.sanctioned_by(fr, peaceful), "choosing 'Снять санкции' lifts them")
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])
