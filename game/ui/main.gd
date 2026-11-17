@@ -5,6 +5,7 @@ extends Node
 const SPEEDS := [0.0, 1.0, 3.0, 8.0, 20.0]
 
 var sim: Simulation
+var display := DisplaySettings.new()
 var map: MapView
 var map_legacy: MapView
 var map_earth: EarthMapView
@@ -97,6 +98,9 @@ var _t_amount := 3
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
 	_quality = GraphicsQuality.load_level(GraphicsQuality.PATH, OS.has_feature("mobile"))
+	display = DisplaySettings.load_settings()
+	if FileAccess.file_exists(DisplaySettings.PATH):
+		display.apply(get_window())   # only after the player chose something; keeps --resolution/tests intact
 	_theme = _make_theme()
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
@@ -546,6 +550,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_mode_opt.select(nxt)
 				map.set_mode(EarthMapView.MODES[nxt][0])
 		KEY_F5: SaveSystem.save(sim, "quick")
+		KEY_F11: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
 		KEY_ESCAPE:
 			if _search_panel != null and is_instance_valid(_search_panel):
 				_search_panel.queue_free()
@@ -1717,6 +1722,10 @@ func _build_hud() -> void:
 	_main_menu.add_item("Масштаб интерфейса −", 3)
 	_main_menu.add_item("Качество графики: %s" % GraphicsQuality.label(_quality), 8)
 	_main_menu.add_separator()
+	_main_menu.add_item("Полный экран (F11)", 5)
+	_main_menu.add_item("Окно без рамки", 6)
+	_main_menu.add_item("Разрешение окна: далее", 7)
+	_main_menu.add_separator()
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
@@ -1755,6 +1764,17 @@ func _menu_pressed(id: int) -> void:
 		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
 		4: _show_menu()
 		8: _cycle_quality()
+		5: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
+		6: _change_display(func(d: DisplaySettings) -> void: d.toggle_borderless())
+		7: _change_display(func(d: DisplaySettings) -> void:
+			d.mode = DisplaySettings.Mode.WINDOWED
+			d.next_resolution())
+
+
+func _change_display(change: Callable) -> void:
+	change.call(display)
+	display.apply(get_window())
+	display.save_settings()
 
 
 # ------------------------------------------------------------ navigation rail

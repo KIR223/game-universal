@@ -89,6 +89,30 @@ func run_checks() -> void:
 	main._quality = q_before
 	main._apply_quality()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(GraphicsQuality.PATH))
+	# display settings: modes, resolution cycle, per-machine config round trip
+	var ds := DisplaySettings.new()
+	ds.toggle_fullscreen()
+	check(ds.mode == DisplaySettings.Mode.FULLSCREEN, "F11 toggles to fullscreen")
+	ds.toggle_fullscreen()
+	check(ds.mode == DisplaySettings.Mode.WINDOWED, "F11 toggles back to windowed")
+	ds.toggle_borderless()
+	check(ds.mode == DisplaySettings.Mode.BORDERLESS, "borderless mode")
+	var seen := {}
+	for i in DisplaySettings.RESOLUTIONS.size() + 1:
+		ds.next_resolution()
+		seen[ds.resolution()] = true
+	check(seen.size() == DisplaySettings.RESOLUTIONS.size(), "resolution cycle covers 1366x768..3840x2160")
+	var tmp := "user://display_test.cfg"
+	ds.mode = DisplaySettings.Mode.FULLSCREEN
+	ds.resolution_index = 3
+	check(ds.save_settings(tmp), "display settings are written")
+	var back := DisplaySettings.load_settings(tmp)
+	check(back.mode == DisplaySettings.Mode.FULLSCREEN and back.resolution_index == 3, "display settings round-trip")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	check(DisplaySettings.load_settings("user://missing_display.cfg").mode == DisplaySettings.Mode.WINDOWED, "missing display config falls back to windowed")
+	main._menu_pressed(5)
+	main._menu_pressed(5)
+	check(main.display.mode == DisplaySettings.Mode.WINDOWED, "menu fullscreen item toggles twice back to windowed")
 	# panels open and close
 	for it in main.NAV_ITEMS:
 		main._nav_pressed(it[0])
