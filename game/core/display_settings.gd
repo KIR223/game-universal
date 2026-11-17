@@ -10,6 +10,7 @@ enum Mode { WINDOWED, FULLSCREEN, BORDERLESS }
 
 var mode: int = Mode.WINDOWED
 var resolution_index: int = 1
+var ui_scale: float = -1.0   # < 0 = automatic (screen DPI on phones, 1.0 on desktop); otherwise the player's choice
 
 
 static func load_settings(path: String = PATH) -> DisplaySettings:
@@ -18,6 +19,7 @@ static func load_settings(path: String = PATH) -> DisplaySettings:
 	if cfg.load(path) == OK:
 		s.mode = clampi(int(cfg.get_value("display", "mode", Mode.WINDOWED)), 0, Mode.BORDERLESS)
 		s.resolution_index = clampi(int(cfg.get_value("display", "resolution", 1)), 0, RESOLUTIONS.size() - 1)
+		s.ui_scale = float(cfg.get_value("display", "ui_scale", -1.0))
 	return s
 
 
@@ -25,6 +27,7 @@ func save_settings(path: String = PATH) -> bool:
 	var cfg := ConfigFile.new()
 	cfg.set_value("display", "mode", mode)
 	cfg.set_value("display", "resolution", resolution_index)
+	cfg.set_value("display", "ui_scale", ui_scale)
 	return cfg.save(path) == OK
 
 

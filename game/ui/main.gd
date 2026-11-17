@@ -12,6 +12,7 @@ var map_earth: EarthMapView
 var ui: CanvasLayer
 var player := -1
 var _quality := GraphicsQuality.Level.HIGH
+var _settings_overlay: Control = null
 var speed_idx := 1
 var accum := 0.0
 var log_seen := 0
@@ -101,7 +102,7 @@ func _ready() -> void:
 	display = DisplaySettings.load_settings()
 	if FileAccess.file_exists(DisplaySettings.PATH):
 		display.apply(get_window())   # only after the player chose something; keeps --resolution/tests intact
-	get_window().content_scale_factor = TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
+	get_window().content_scale_factor = display.ui_scale if display.ui_scale > 0.0 else TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
 	_theme = _make_theme()
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
@@ -254,6 +255,10 @@ func _show_menu() -> void:
 		cont.text = "Продолжить (автосохранение)"
 		cont.pressed.connect(_load_game.bind("auto"))
 		box.add_child(cont)
+	var settings_btn := Button.new()
+	settings_btn.text = "Настройки"
+	settings_btn.pressed.connect(_show_settings_screen)
+	box.add_child(settings_btn)
 	var load_btn := Button.new()
 	load_btn.text = "Загрузить (F9)"
 	load_btn.pressed.connect(_load_game)
@@ -1782,6 +1787,7 @@ func _build_hud() -> void:
 	_main_menu.add_separator()
 	_main_menu.add_item("Масштаб интерфейса +", 2)
 	_main_menu.add_item("Масштаб интерфейса −", 3)
+	_main_menu.add_item("Настройки…", 10)
 	_main_menu.add_item("Качество графики: %s" % GraphicsQuality.label(_quality), 8)
 	_main_menu.add_separator()
 	_main_menu.add_item("Полный экран (F11)", 5)
@@ -1822,8 +1828,9 @@ func _menu_pressed(id: int) -> void:
 	match id:
 		0: SaveSystem.save(sim, "quick")
 		1: _load_game()
-		2: get_window().content_scale_factor = clampf(get_window().content_scale_factor + 0.1, 0.8, 1.8)
-		3: get_window().content_scale_factor = clampf(get_window().content_scale_factor - 0.1, 0.8, 1.8)
+		2: _set_ui_scale(get_window().content_scale_factor + 0.1)
+		3: _set_ui_scale(get_window().content_scale_factor - 0.1)
+		10: _show_settings_overlay()
 		4: _show_menu()
 		8: _cycle_quality()
 		5: _change_display(func(d: DisplaySettings) -> void: d.toggle_fullscreen())
@@ -1837,6 +1844,154 @@ func _change_display(change: Callable) -> void:
 	change.call(display)
 	display.apply(get_window())
 	display.save_settings()
+
+
+# ------------------------------------------------------------ settings
+
+const HOTKEYS_TEXT := """Мышь: ЛКМ — выбор клетки / цель приказа, перетаскивание — камера, колесо — масштаб (к курсору), ПКМ — контекстное меню
+(на сенсорном экране: касание, перетаскивание, щипок, долгое нажатие вместо ПКМ)
+Пробел — пауза · 1–4 — скорость · M — режим карты · Ctrl+F или / — поиск
+F5 — быстрое сохранение · F9 — загрузить · F11 — полный экран · Esc — снять выбор
+Горячие клавиши работают на любой раскладке (учитывается положение клавиши)."""
+
+
+func _set_ui_scale(v: float) -> void:
+	var scale := clampf(snappedf(v, 0.05), 0.8, 1.8)
+	get_window().content_scale_factor = scale
+	display.ui_scale = scale
+	display.save_settings()
+
+
+func _reset_ui_scale() -> void:
+	display.ui_scale = -1.0
+	display.save_settings()
+	get_window().content_scale_factor = TouchSupport.ui_scale(DisplayServer.screen_get_dpi(), OS.has_feature("mobile"))
+
+
+## The Settings screen: window mode and size, interface scale, graphics quality, controls help. Everything applies
+## immediately and is stored per machine (display.cfg, graphics.cfg).
+func _build_settings(parent: Container, on_close: Callable) -> void:
+	parent.add_child(_h1("Настройки"))
+	parent.add_child(_muted("Окно"))
+	var mode_opt := OptionButton.new()
+	for t in ["Оконный", "Полный экран (F11)", "Окно без рамки"]:
+		mode_opt.add_item(t)
+	mode_opt.select(display.mode)
+	mode_opt.item_selected.connect(func(i: int): _change_display(func(d: DisplaySettings) -> void: d.mode = i))
+	parent.add_child(mode_opt)
+	var res_opt := OptionButton.new()
+	for r in DisplaySettings.RESOLUTIONS:
+		res_opt.add_item("%d × %d" % [r.x, r.y])
+	res_opt.select(display.resolution_index)
+	res_opt.item_selected.connect(func(i: int): _change_display(func(d: DisplaySettings) -> void:
+		d.mode = DisplaySettings.Mode.WINDOWED
+		d.resolution_index = i
+		mode_opt.select(DisplaySettings.Mode.WINDOWED)))
+	parent.add_child(res_opt)
+	parent.add_child(_muted("Интерфейс"))
+	var scale_row := HBoxContainer.new()
+	parent.add_child(scale_row)
+	var scale_label := Label.new()
+	scale_label.custom_minimum_size = Vector2(150, 0)
+	scale_row.add_child(scale_label)
+	var slider := HSlider.new()
+	slider.min_value = 0.8
+	slider.max_value = 1.8
+	slider.step = 0.05
+	slider.custom_minimum_size = Vector2(200, 24)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.value = get_window().content_scale_factor
+	scale_label.text = "Масштаб: %d %%" % roundi(slider.value * 100.0)
+	slider.value_changed.connect(func(v: float):
+		_set_ui_scale(v)
+		scale_label.text = "Масштаб: %d %%" % roundi(get_window().content_scale_factor * 100.0))
+	scale_row.add_child(slider)
+	var auto_btn := Button.new()
+	auto_btn.text = "Авто"
+	auto_btn.tooltip_text = "Масштаб по умолчанию для этого экрана (DPI на телефонах)"
+	auto_btn.pressed.connect(func():
+		_reset_ui_scale()
+		slider.set_value_no_signal(get_window().content_scale_factor)
+		scale_label.text = "Масштаб: %d %%" % roundi(get_window().content_scale_factor * 100.0))
+	scale_row.add_child(auto_btn)
+	parent.add_child(_muted("Графика"))
+	var q_opt := OptionButton.new()
+	for lvl in 3:
+		q_opt.add_item("Качество карты: %s" % GraphicsQuality.label(lvl))
+	q_opt.select(_quality)
+	q_opt.item_selected.connect(func(i: int):
+		_quality = i
+		GraphicsQuality.save_level(_quality)
+		_apply_quality())
+	parent.add_child(q_opt)
+	parent.add_child(_muted("Управление"))
+	var keys := Label.new()
+	keys.text = HOTKEYS_TEXT
+	keys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	keys.custom_minimum_size = Vector2(440, 0)
+	keys.add_theme_font_size_override("font_size", 13)
+	parent.add_child(keys)
+	var close := Button.new()
+	close.text = "Закрыть"
+	close.pressed.connect(on_close)
+	parent.add_child(close)
+
+
+## From the main menu: a full screen.
+func _show_settings_screen() -> void:
+	_clear_ui()
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.theme = _theme
+	ui.add_child(root)
+	var bg := ColorRect.new()
+	bg.color = Color("0b1119")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(bg)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	root.add_child(scroll)
+	var outer := VBoxContainer.new()
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.alignment = BoxContainer.ALIGNMENT_CENTER
+	scroll.add_child(outer)
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(460, 0)
+	box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	box.add_theme_constant_override("separation", 8)
+	outer.add_child(box)
+	_build_settings(box, _show_menu)
+
+
+## From a running game: a window over the map (the game keeps its state).
+func _show_settings_overlay() -> void:
+	if _settings_overlay != null and is_instance_valid(_settings_overlay):
+		_settings_overlay.queue_free()
+		_settings_overlay = null
+		return
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	dim.theme = _theme
+	ui.add_child(dim)
+	_settings_overlay = dim
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	dim.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(500, minf(560.0, get_viewport().get_visible_rect().size.y - 60.0))
+	panel.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 8)
+	scroll.add_child(box)
+	_build_settings(box, _show_settings_overlay)
 
 
 # ------------------------------------------------------------ navigation rail

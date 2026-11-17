@@ -95,6 +95,10 @@ func run() -> void:
 		main._nav_pressed(it)
 	for s in _stubs:
 		printerr("  STUB: ", s)
+	# the in-game settings window: all its buttons are wired and it fits every screen
+	main._show_settings_overlay()
+	_audit("settings overlay", 2)
+	main._show_settings_overlay()
 	# resource chips in the top bar are clickable and lead somewhere
 	for kind in main._chips:
 		var chip: Control = main._chips[kind].get_parent()
@@ -157,6 +161,12 @@ func run() -> void:
 				continue
 			rects[k] = p.get_global_rect()
 			check(vis.grow(1.0).encloses(rects[k]), "%dx%d: %s panel inside the window (%s in %s)" % [res.x, res.y, k, str(rects[k]), str(vis)])
+		main._show_settings_overlay()
+		var ov: Control = main._settings_overlay
+		if ov != null and is_instance_valid(ov):
+			var op: Control = ov.get_child(0)
+			check(vis.grow(1.0).encloses(op.get_global_rect()), "%dx%d: the settings window fits the screen (%s in %s)" % [res.x, res.y, str(op.get_global_rect()), str(vis)])
+			main._show_settings_overlay()
 		var keys := rects.keys()
 		for i in keys.size():
 			for j in range(i + 1, keys.size()):
