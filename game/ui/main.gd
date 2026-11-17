@@ -476,8 +476,7 @@ func _start_playing(cid: int) -> void:
 	map.player_country = cid
 	map.selected_province = sim.countries[cid]["capital"]
 	map.selected_army = -1
-	var cap: Vector2 = sim.provinces()[sim.countries[cid]["capital"]]["center"] * MapView.CELL
-	map.camera.position = cap
+	map.camera.position = map.cell_world(sim.countries[cid]["capital"])
 	map.camera.zoom = Vector2.ONE * (2.2 if sim.is_earth_world() else 2.0)
 	if map is EarthMapView:
 		map.repaint_all()
@@ -1916,7 +1915,7 @@ func _g_state() -> void:
 func _focus_cell(cell: int, zoom_level: float = 3.0) -> void:
 	if cell < 0:
 		return
-	map.camera.position = sim.provinces()[cell]["center"] * MapView.CELL
+	map.camera.position = map.cell_world(cell)
 	map.camera.zoom = Vector2.ONE * clampf(zoom_level, map.min_zoom, map.max_zoom)
 	map.queue_redraw()
 

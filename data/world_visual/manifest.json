@@ -1,0 +1,180 @@
+{
+ "visual_version": 1,
+ "built": "2026-11-17",
+ "imagery": {
+  "px_deg": 0.05,
+  "w": 7200,
+  "h": 2880,
+  "tile_w": 900,
+  "tile_h": 720,
+  "lat_top": 84.0,
+  "lat_bottom": -60.0
+ },
+ "linked_world": {
+  "dir": "world_hd",
+  "world_hash": "897a56cfe832aa16e524a430845648a821e1c3259b6d94c90a46d86fbc6e142b"
+ },
+ "linked_worlds": {
+  "world_hd": "897a56cfe832aa16e524a430845648a821e1c3259b6d94c90a46d86fbc6e142b",
+  "world": "7b0225e198cffbe074180257248599271cc886e553b03f51b46acbae922ec060"
+ },
+ "sources": [
+  "Natural Earth II 50m shaded relief + water (public domain)",
+  "Natural Earth 10m land, lakes, rivers, admin (public domain)"
+ ],
+ "visual_hash": "006110fb79ad9c6f8bb2abf7478e41c1ed01182becf62007740a657e08f695e1",
+ "files": {
+  "ext_world.bin": {
+   "sha256": "d149f1c4831920be735de836341c36886a028d833c72ed3ea19d93cede33de71",
+   "bytes": 180748
+  },
+  "ext_world_hd.bin": {
+   "sha256": "75e59c041d471965be5718822c67f2fe5e93fc3c2e6bde1ac911b7ffd33a758b",
+   "bytes": 470701
+  },
+  "land_fraction_world.bin": {
+   "sha256": "79114de0c2e1755f31e186b6390bc7d2badff45be992ad187a97e068ecefc202",
+   "bytes": 75577
+  },
+  "land_fraction_world_hd.bin": {
+   "sha256": "a0ff87e6e19075a444f1c5fada79c1e3fc31eb98ad7eb1c3dca95e1c13c74194",
+   "bytes": 148638
+  },
+  "overview.bin": {
+   "sha256": "42c78890c00ff0a20e6bf3fd436af1ac2f200b36d85c76985b0fca17a280df21",
+   "bytes": 242728
+  },
+  "vectors.json.z": {
+   "sha256": "30a436888650e08eff416f2d677713271611438a14e6f07186e1f60dcd408134",
+   "bytes": 4684831
+  },
+  "tiles/t_0_0.bin": {
+   "sha256": "a21351ca9678da7063de2058861629396a88e713f17ec3e66cc88dfbdbb4fd84",
+   "bytes": 58274
+  },
+  "tiles/t_0_1.bin": {
+   "sha256": "0c9010349563c12eafad79b550f840f1013f9747586ea2eaa232f60053bac91c",
+   "bytes": 36476
+  },
+  "tiles/t_0_2.bin": {
+   "sha256": "6e1957483072e2002bedb464c0d4e18bb12d7f348c9a3cb21ab832389335c1b8",
+   "bytes": 52568
+  },
+  "tiles/t_0_3.bin": {
+   "sha256": "c77e43b44c82e94792ac0948c8c3524ae87d1a9d2614193cf71f03992caab698",
+   "bytes": 40606
+  },
+  "tiles/t_1_0.bin": {
+   "sha256": "12a457b022262846c05dc7cf95f72ecb82a293b63009e917fc3fc8525f977e67",
+   "bytes": 95924
+  },
+  "tiles/t_1_1.bin": {
+   "sha256": "bdf5f22b62fefaba2ce71cc9169d54c579a15421c9f05bd77b5436e91dc86ecc",
+   "bytes": 89864
+  },
+  "tiles/t_1_2.bin": {
+   "sha256": "30cd42860eb90d572a1e5f57dd6de1622d7701667099ec0ec25e46698af58c85",
+   "bytes": 33026
+  },
+  "tiles/t_1_3.bin": {
+   "sha256": "a3b37eb404b555d75555ec3ccb11353da8bc9804169346383f4f7c93d3f34441",
+   "bytes": 44458
+  },
+  "tiles/t_2_0.bin": {
+   "sha256": "30f2d19561fce8a3085e817917cc20640c47d37a5989f982fe7d80c9d5b1a91a",
+   "bytes": 84244
+  },
+  "tiles/t_2_1.bin": {
+   "sha256": "d5ea12ff2fe0cd282dcac1d4912b2f9a462c9d2cf955dcf0631d83370633fdf7",
+   "bytes": 66770
+  },
+  "tiles/t_2_2.bin": {
+   "sha256": "f2e3a97260d7c4f8f504f441a76b24dfe4464ad26e24f64c0f5a8e47cf1c09a4",
+   "bytes": 80932
+  },
+  "tiles/t_2_3.bin": {
+   "sha256": "7297da604ccdb195e786898dfeb9b6c4a8acc974a927757e1d87966921a2f823",
+   "bytes": 67250
+  },
+  "tiles/t_3_0.bin": {
+   "sha256": "4fb69eb6cd9f3c876646748ca871dd1bf49042831e9f75b753c44c09e7a38ebe",
+   "bytes": 52576
+  },
+  "tiles/t_3_1.bin": {
+   "sha256": "fa9f0df86dce0966b9e969285fb3b05d986b5f5813543b933f878c8931ab14b3",
+   "bytes": 64288
+  },
+  "tiles/t_3_2.bin": {
+   "sha256": "16c10587281737357c19bc2b225c7c7c3814954a5b79d32956074a4b20978f93",
+   "bytes": 65982
+  },
+  "tiles/t_3_3.bin": {
+   "sha256": "1ddd1e5a1bcae935c885611ac6b28d121fe546ecf68b12a5b607fb4d709a8233",
+   "bytes": 47204
+  },
+  "tiles/t_4_0.bin": {
+   "sha256": "e2db6d8228daea9efe2408159fcc033038959f3d748cf973b5592019653b147e",
+   "bytes": 62930
+  },
+  "tiles/t_4_1.bin": {
+   "sha256": "81cadca2731b7c0a4e7c17fcbf9d48a975a25fc2d41c4518157bd29ff6064dc1",
+   "bytes": 93438
+  },
+  "tiles/t_4_2.bin": {
+   "sha256": "24a06a5bf9d2d7ce1cb0ca9c4a21e3ed85a511be7a7750cf8deab156649fda15",
+   "bytes": 72030
+  },
+  "tiles/t_4_3.bin": {
+   "sha256": "fb900496aadf4dbddd752e6668e4a1985c6d01abf8d7a57b24371e6bec914695",
+   "bytes": 49520
+  },
+  "tiles/t_5_0.bin": {
+   "sha256": "0e1b2aa6d456538857adc6a8968bd0fc3a8fe0d1b7b28b961dfa70f502264fc7",
+   "bytes": 54268
+  },
+  "tiles/t_5_1.bin": {
+   "sha256": "20a12f93d2eadcc552ab9cb41881aa88dec8eb2da5a309dd107d5412e0ce0385",
+   "bytes": 104386
+  },
+  "tiles/t_5_2.bin": {
+   "sha256": "b37f2806f2287c0372d6d9314db8ae6954952aa523133d1e8e1438adfe58a963",
+   "bytes": 58184
+  },
+  "tiles/t_5_3.bin": {
+   "sha256": "7b1544802b8d7e593d0fd41b158794e990cc38274151637bbd337b1e3ae58b10",
+   "bytes": 42942
+  },
+  "tiles/t_6_0.bin": {
+   "sha256": "daea42393e0946d0fca8b6441fa0c3ae31056e11934945f6fca8cd70187faacd",
+   "bytes": 98372
+  },
+  "tiles/t_6_1.bin": {
+   "sha256": "9b0dba557feca51953fa04b2f597726c23f52dc5c4cabc4818488c5e30fd711e",
+   "bytes": 127240
+  },
+  "tiles/t_6_2.bin": {
+   "sha256": "690cb2d1928589a3857bce71cadd0563f6b9e38ace98a40e0c6b4cf8d8718049",
+   "bytes": 82534
+  },
+  "tiles/t_6_3.bin": {
+   "sha256": "1227663e7e6c33e1f94bd0f43133341731cb1eb116f528d3230a09ec82c3d580",
+   "bytes": 38468
+  },
+  "tiles/t_7_0.bin": {
+   "sha256": "7d669da7f5f414e476ebd7eb8f3e4668ec55aa0a3e5166d1755b241af59a4146",
+   "bytes": 67916
+  },
+  "tiles/t_7_1.bin": {
+   "sha256": "cfbfd63ea7420343bf82f9cb546378b855d1af4f33ba8ab9c8eba3ac745b825d",
+   "bytes": 58078
+  },
+  "tiles/t_7_2.bin": {
+   "sha256": "e382a788b2813c2dbabc7f06593c648fa246524b1197c43e572b22e28492fab2",
+   "bytes": 68310
+  },
+  "tiles/t_7_3.bin": {
+   "sha256": "bf397ada7f7c587ea09c4c84bbd848f5ff1c69228e259b4cc7f102dead680e2f",
+   "bytes": 53612
+  }
+ }
+}
