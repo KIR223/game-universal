@@ -32,6 +32,10 @@ def start(godot: str, args: list[str]) -> subprocess.Popen:
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # country names are Cyrillic; Windows consoles default to cp1252
+    except AttributeError:
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--godot", default=os.environ.get("GODOT") or shutil.which("godot") or "godot")
     ap.add_argument("--days", type=int, default=40)
