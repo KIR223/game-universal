@@ -386,6 +386,7 @@ def main():
     ap.add_argument("--res", type=float, default=0.2, help="simulation raster, degrees per pixel (0.2 base, 0.1 hd)")
     ap.add_argument("--cell-km2", type=float, default=12000.0, help="target land cell area")
     ap.add_argument("--sea-km2", type=float, default=700000.0, help="target sea zone area")
+    ap.add_argument("--ru-names", action="store_true", help="fill missing Russian settlement names from geonames/RU.zip (GeoNames alternate names, CC BY 4.0); changes world_hash")
     ap.add_argument("--adaptive", action="store_true", help="smaller cells near big cities and borders")
     ap.add_argument("--dem-dir", default="dem")
     ap.add_argument("--dem-zoom", type=int, default=4)
@@ -682,6 +683,21 @@ def main():
         dd = (yy_ + y0 - py) ** 2 + (xx_ + x0 - px) ** 2
         k = int(dd.argmin())
         cid_of[i] = sub[yy_[k], xx_[k]]
+    ru_alt = {}
+    if args.ru_names:
+        log("reading GeoNames Russian alternate names")
+        def is_cyr(t):
+            return any("\u0400" <= ch <= "\u04ff" for ch in t)
+        with zipfile.ZipFile(os.path.join(raw, "geonames", "RU.zip")) as zr:
+            for line in zr.open("RU.txt"):
+                q = line.decode("utf-8").rstrip("\n").split("\t")
+                if len(q) < 8 or q[2] != "ru" or not is_cyr(q[3]) or q[7] == "1" or q[6] == "1":
+                    continue
+                gid = int(q[1])
+                score = (q[4] == "1") * 2 + (q[5] != "1")   # preferred > short-form-free > anything
+                if gid not in ru_alt or score > ru_alt[gid][0]:
+                    ru_alt[gid] = (score, q[3])
+        log("Russian names available:", len(ru_alt))
     settlements = []
     xy_g = np.array([[s[5], s[4]] for s in sett])
     d_ne = np.zeros(len(xy_g))
@@ -712,10 +728,13 @@ def main():
                 if q.get("ADM0CAP") == 1:
                     rec["capital"] = 1
                 ne_taken[int(j)] = True
+        if not rec.get("name_ru") and int(s[0]) in ru_alt:
+            rec["name_ru"] = ru_alt[int(s[0])][1]
         settlements.append(rec)
     settlements.sort(key=lambda r: (-r["pop"], r["name"], r["gn"]))
     for i_, r_ in enumerate(settlements):
         r_["id"] = i_
+    log("with Russian name: %d of %d" % (sum(1 for r in settlements if r.get("name_ru")), len(settlements)))
     log("settlements kept:", len(settlements), "capitals:", sum(s["capital"] for s in settlements))
 
     # ------------------------------------------------------------ roads, rails, rivers
