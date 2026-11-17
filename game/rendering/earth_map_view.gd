@@ -9,18 +9,36 @@ const MODES := [
 	["political", "Политический"], ["admin", "Административный"], ["military", "Военный"], ["control", "Контроль территорий"],
 	["terrain", "Рельеф"], ["infra", "Инфраструктура"], ["economy", "Экономика"], ["resources", "Ресурсы"],
 	["population", "Население"], ["logistics", "Логистика"], ["diplomacy", "Дипломатия"], ["legal", "Признанные границы"],
+	["weather", "Погода и сезон"],
 ]
 const CHUNK_DEG := 15.0
 const CHUNK_COLS := 24
 const BUILD_BUDGET := 2500   # polylines turned into chunked segments per frame
 
 var mode := "political"
+var _weather_day := -1
 var is_earth := false
 var show_settlements := true
 var show_lines := true
 
-var _sprite: Sprite2D
-var _mat: ShaderMaterial
+var _shader: Shader
+var _mats: Array = []                # every ShaderMaterial (overview + loaded tiles); shared uniforms are applied to all
+var _params: Dictionary = {}         # last value of each shared uniform (applied to tiles created later)
+var _overview: MeshInstance2D
+var _tiles: Dictionary = {}          # col*100+row -> MeshInstance2D
+var _tile_lru: Array = []
+var _want_tiles: Array = []
+var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
+var quality := "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
+var _tile_grid := Vector2i(8, 4)
+var _world_w := 7200.0
+var _world_h := 4000.0
+var _k := 1146.0
+var _merc_top := 0.0
+var _cellpos := PackedVector2Array()
+var _ext_bytes := PackedByteArray()
+var _landf := PackedByteArray()
+var _layers_built := false
 var _pal_cur: Image
 var _pal_prev: Image
 var _info_a: Image
@@ -67,8 +85,7 @@ func _ready() -> void:
 func bind(sim_: Simulation) -> void:
 	if str(sim_.world.get("kind", "")) != "earth":
 		is_earth = false
-		if _sprite != null:
-			_sprite.visible = false
+		_set_layers_visible(false)
 		super.bind(sim_)
 		return
 	sim = sim_
@@ -77,23 +94,22 @@ func bind(sim_: Simulation) -> void:
 	max_zoom = 16.0
 	var w: int = int(sim.world["w"])
 	var h: int = int(sim.world["h"])
-	if _sprite == null:
-		_sprite = Sprite2D.new()
-		_sprite.centered = false
-		_sprite.z_index = -1
-		var shader := load("res://game/rendering/earth_map.gdshader") as Shader
-		_mat = ShaderMaterial.new()
-		_mat.shader = shader
-		_sprite.material = _mat
-		add_child(_sprite)
-		_sprite.texture = ImageTexture.create_from_image(EarthWorld.relief_image())
-		_mat.set_shader_parameter("relief", _sprite.texture)
-		_mat.set_shader_parameter("ids", ImageTexture.create_from_image(EarthWorld.ids_image()))
+	EarthWorld.activate(str(sim.world.get("dataset", "world")))
 	_res = float(sim.world["res"])
 	_top = float(sim.world["lat_top"])
+	# Web Mercator: familiar shapes (conformal). Geographic coordinates stay separate from screen coordinates.
+	_world_w = 7200.0   # world units are independent of the simulation raster resolution
+	_k = _world_w / TAU
+	_merc_top = _k * log(tan(PI / 4.0 + deg_to_rad(_top) / 2.0))
+	_world_h = project(0.0, _top - h * _res).y
 	_begin_preload()
-	_sprite.visible = true
-	_sprite.scale = Vector2(CELL, CELL)
+	_visual = EarthVisual.available()
+	_build_layers(w, h)
+	_set_layers_visible(true)
+	_cellpos = PackedVector2Array()
+	_cellpos.resize(sim.provinces().size())
+	for p in sim.provinces():
+		_cellpos[p["id"]] = px_to_world(p["center"])
 	var n: int = sim.provinces().size()
 	var rows: int = int(ceil(n / 256.0))
 	_pal_cur = Image.create(256, rows, false, Image.FORMAT_RGBA8)
@@ -104,17 +120,17 @@ func bind(sim_: Simulation) -> void:
 	_t_prev = ImageTexture.create_from_image(_pal_prev)
 	_t_a = ImageTexture.create_from_image(_info_a)
 	_t_b = ImageTexture.create_from_image(_info_b)
-	_mat.set_shader_parameter("pal_cur", _t_cur)
-	_mat.set_shader_parameter("pal_prev", _t_prev)
-	_mat.set_shader_parameter("info_a", _t_a)
-	_mat.set_shader_parameter("info_b", _t_b)
-	_mat.set_shader_parameter("pal_size", Vector2(256.0, float(rows)))
-	_mat.set_shader_parameter("fade", 1.0)
-	camera.position = Vector2(w, h) * CELL * 0.5
+	_set_all("pal_cur", _t_cur)
+	_set_all("pal_prev", _t_prev)
+	_set_all("info_a", _t_a)
+	_set_all("info_b", _t_b)
+	_set_all("pal_size", Vector2(256.0, float(rows)))
+	_set_all("fade", 1.0)
 	var vp := get_viewport_rect().size if is_inside_tree() else Vector2.ZERO
 	if vp.x < 1.0 or vp.y < 1.0:
 		vp = Vector2(1600, 900)
-	camera.zoom = Vector2.ONE * minf(vp.x / (w * CELL), vp.y / (h * CELL)) * 1.0
+	camera.position = world_size() * 0.5
+	camera.zoom = Vector2.ONE * minf(vp.x / _world_w, vp.y / _world_h)
 	_ctl = PackedInt32Array()
 	_ctl.resize(n)
 	_ctl.fill(-2)
@@ -123,6 +139,214 @@ func bind(sim_: Simulation) -> void:
 	_cut.clear()
 	_last_cam = Vector3(-1, -1, -1)
 	repaint_all()
+
+
+# ------------------------------------------------------- projection & layers
+
+func project(lon: float, lat: float) -> Vector2:
+	var phi := deg_to_rad(clampf(lat, -85.0, 85.0))
+	return Vector2((lon + 180.0) / 360.0 * _world_w, _merc_top - _k * log(tan(PI / 4.0 + phi / 2.0)))
+
+
+## World position -> (longitude, latitude).
+func unproject(p: Vector2) -> Vector2:
+	var m := (_merc_top - p.y) / _k
+	return Vector2(p.x / _world_w * 360.0 - 180.0, rad_to_deg(2.0 * atan(exp(m)) - PI / 2.0))
+
+
+## Simulation-raster pixel (equirectangular grid used by the cell data) -> world position.
+func px_to_world(px: Vector2) -> Vector2:
+	return project(-180.0 + (px.x + 0.5) * _res, _top - (px.y + 0.5) * _res)
+
+
+func cell_world(p: int) -> Vector2:
+	if is_earth and p < _cellpos.size():
+		return _cellpos[p]
+	return super.cell_world(p)
+
+
+func world_size() -> Vector2:
+	if is_earth:
+		return Vector2(_world_w, _world_h)
+	return super.world_size()
+
+
+func world_pos_of(lon: float, lat: float) -> Vector2:
+	return project(lon, lat)
+
+
+func _set_all(name: String, value: Variant) -> void:
+	_params[name] = value
+	for m in _mats:
+		m.set_shader_parameter(name, value)
+
+
+func _new_material() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = _shader
+	for k in _params:
+		m.set_shader_parameter(k, _params[k])
+	_mats.append(m)
+	return m
+
+
+## Grid mesh warped by the projection: x is linear, y follows Mercator; UVs are the tile's equirectangular texture coordinates.
+func _make_grid_mesh(x0: float, x1: float, lat_top: float, lat_bot: float, rows: int) -> ArrayMesh:
+	var verts := PackedVector2Array()
+	var uvs := PackedVector2Array()
+	var idx := PackedInt32Array()
+	for r in rows + 1:
+		var t := float(r) / rows
+		var y := project(0.0, lerpf(lat_top, lat_bot, t)).y
+		verts.append(Vector2(x0, y))
+		verts.append(Vector2(x1, y))
+		uvs.append(Vector2(0.0, t))
+		uvs.append(Vector2(1.0, t))
+	for r in rows:
+		var a := r * 2
+		idx.append_array(PackedInt32Array([a, a + 1, a + 2, a + 1, a + 3, a + 2]))
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _load_ids(w: int, h: int) -> void:
+	var ds := EarthWorld.dataset
+	var ids_img: Image
+	if _visual and FileAccess.file_exists("res://data/world_visual/ext_%s.bin" % ds):
+		ids_img = EarthVisual.ext_image(w, h, ds)
+		_ext_bytes = EarthVisual.ext_bytes(ds)
+		_landf = EarthVisual.land_fraction(ds)
+	else:
+		ids_img = EarthWorld.ids_image()
+		_ext_bytes = PackedByteArray()
+		_landf = PackedByteArray()
+	_set_all("ids", ImageTexture.create_from_image(ids_img))
+
+
+func _build_layers(w: int, h: int) -> void:
+	if _layers_built:
+		_load_ids(w, h)
+		return
+	_layers_built = true
+	_shader = load("res://game/rendering/earth_map.gdshader") as Shader
+	var bottom := _top - h * _res
+	var overview_img: Image = EarthVisual.overview_image() if _visual else EarthWorld.relief_image()
+	if _visual:
+		_tile_grid = EarthVisual.tile_grid()
+	var tex := ImageTexture.create_from_image(overview_img)
+	_params["use_mask"] = 1.0 if _visual else 0.0
+	_params["tint"] = 0.5 if _visual else 0.62
+	_overview = MeshInstance2D.new()
+	_overview.mesh = _make_grid_mesh(0.0, _world_w, _top, bottom, 72)
+	_overview.z_index = -3
+	var m := _new_material()
+	m.set_shader_parameter("relief", tex)
+	m.set_shader_parameter("origin", Vector2.ZERO)
+	m.set_shader_parameter("span", Vector2.ONE)
+	_overview.material = m
+	_overview.texture = tex
+	add_child(_overview)
+	_load_ids(w, h)
+
+
+func _set_layers_visible(on: bool) -> void:
+	if _overview != null:
+		_overview.visible = on
+	for k in _tiles:
+		_tiles[k].visible = on
+
+
+## Imagery tiles in view are decoded a couple per frame; far tiles are released (LRU), the overview always stays resident.
+func _update_tiles() -> void:
+	if not _visual or quality == "low":
+		_want_tiles.clear()
+		return
+	var thr := 0.5 if quality == "high" else 1.2
+	if camera.zoom.x < thr:
+		_want_tiles.clear()
+		return
+	var tl := unproject(cull.position)
+	var br := unproject(cull.end)
+	var lon_span := 360.0 / _tile_grid.x
+	var lat_span := (_top - (_top - float(sim.world["h"]) * _res)) / _tile_grid.y
+	var c0 := clampi(int((tl.x + 180.0) / lon_span), 0, _tile_grid.x - 1)
+	var c1 := clampi(int((br.x + 180.0) / lon_span), 0, _tile_grid.x - 1)
+	var r0 := clampi(int((_top - tl.y) / lat_span), 0, _tile_grid.y - 1)
+	var r1 := clampi(int((_top - br.y) / lat_span), 0, _tile_grid.y - 1)
+	_want_tiles.clear()
+	for r in range(r0, r1 + 1):
+		for c in range(c0, c1 + 1):
+			_want_tiles.append(c * 100 + r)
+
+
+func _pump_tiles() -> void:
+	var loaded := 0
+	for key in _want_tiles:
+		if _tiles.has(key):
+			_tile_lru.erase(key)
+			_tile_lru.append(key)
+			continue
+		if loaded >= 2:
+			break
+		var c: int = key / 100
+		var r: int = key % 100
+		var img := EarthVisual.tile_image(c, r)
+		if img == null:
+			_tiles[key] = null
+			continue
+		loaded += 1
+		var lon_span := 360.0 / _tile_grid.x
+		var lat_span := float(sim.world["h"]) * _res / _tile_grid.y
+		var node := MeshInstance2D.new()
+		var x0 := _world_w / _tile_grid.x * c
+		node.mesh = _make_grid_mesh(x0, x0 + _world_w / _tile_grid.x, _top - r * lat_span, _top - (r + 1) * lat_span, 36)
+		node.z_index = -2
+		var mat := _new_material()
+		var tex := ImageTexture.create_from_image(img)
+		mat.set_shader_parameter("relief", tex)
+		mat.set_shader_parameter("origin", Vector2(float(c) / _tile_grid.x, float(r) / _tile_grid.y))
+		mat.set_shader_parameter("span", Vector2(1.0 / _tile_grid.x, 1.0 / _tile_grid.y))
+		node.material = mat
+		node.texture = tex
+		add_child(node)
+		_tiles[key] = node
+		_tile_lru.append(key)
+	while _tile_lru.size() > 14:
+		var old: int = _tile_lru[0]
+		if _want_tiles.has(old):
+			break
+		_tile_lru.pop_front()
+		var nd: MeshInstance2D = _tiles[old]
+		if nd != null:
+			_mats.erase(nd.material)
+			nd.queue_free()
+		_tiles.erase(old)
+
+
+## Pick a cell under a world position. Uses the extended ids so coastal land is selectable, but keeps coastal sea selectable too.
+func province_at(world_pos: Vector2) -> int:
+	if not is_earth:
+		return super.province_at(world_pos)
+	var ll := unproject(world_pos)
+	var w: int = int(sim.world["w"])
+	var h: int = int(sim.world["h"])
+	var px := int((ll.x + 180.0) / _res)
+	var py := int((_top - ll.y) / _res)
+	if px < 0 or py < 0 or px >= w or py >= h:
+		return -1
+	var i := py * w + px
+	var base: int = sim.world["cell_prov"][i]
+	if _ext_bytes.size() >= 2 * (i + 1):
+		var e: int = _ext_bytes[2 * i] | (_ext_bytes[2 * i + 1] << 8)
+		if e != 65535 and e < int(sim.world["land_count"]) and (base < 0 or base >= int(sim.world["land_count"])) and _landf[i] >= 128:
+			return e
+	return base
 
 
 func set_mode(m: String) -> void:
@@ -162,6 +386,7 @@ func repaint_all() -> void:
 		return
 	_compute_context()
 	_agg.clear()
+	_ctl.fill(-1)   # forget the cached controllers, otherwise _write_info() would not rebuild the label totals
 	for p in sim.provinces():
 		if p["land"]:
 			_write_info(p["id"])
@@ -174,6 +399,10 @@ func refresh(dirty: Array[int]) -> void:
 	if not is_earth:
 		super.refresh(dirty)
 		return
+	if mode == "weather" and sim.day != _weather_day and sim.day % 2 == 0:
+		_weather_day = sim.day
+		_fill_palette_all()
+		_upload()
 	if not dirty.is_empty():
 		_war_pairs_rebuild()
 		var touched := {}
@@ -320,7 +549,7 @@ func _begin_fade() -> void:
 	_pal_prev.copy_from(_pal_cur)
 	_t_prev.update(_pal_prev)
 	_fade = 0.0
-	_mat.set_shader_parameter("fade", 0.0)
+	_set_all("fade", 0.0)
 
 
 func _begin_fade_cells(cells: Array) -> void:
@@ -329,7 +558,7 @@ func _begin_fade_cells(cells: Array) -> void:
 		_pal_prev.set_pixel(c % 256, c / 256, _pal_cur.get_pixel(c % 256, c / 256))
 	_t_prev.update(_pal_prev)
 	_fade = 0.0
-	_mat.set_shader_parameter("fade", 0.0)
+	_set_all("fade", 0.0)
 
 
 func _start_fade() -> void:
@@ -338,7 +567,7 @@ func _start_fade() -> void:
 	_tween = create_tween()
 	_tween.tween_method(func(v: float):
 		_fade = v
-		_mat.set_shader_parameter("fade", v), 0.0, 1.0, 0.45)
+		_set_all("fade", v), 0.0, 1.0, 0.45)
 	_tween.tween_callback(func():
 		_pal_prev.copy_from(_pal_cur)
 		_t_prev.update(_pal_prev))
@@ -398,6 +627,12 @@ func _cell_color(c: int) -> Color:
 			return Color(_rel.get(o, Color(0.5, 0.5, 0.5)), 0.9) if o >= 0 else Color(0, 0, 0, 0)
 		"legal":
 			return Color(_country_color(sim.legal[c]), 1.0)
+		"weather":
+			# winter severity (white-blue) and local storms (violet); meaningful only with the weather rule, but always shows the season
+			if sim.storm_at(c) and sim.rule_weather:
+				return Color("7d4fd0", 0.92)
+			var w := float(sim.winter_at(c)) / 100.0
+			return Color(_ramp(w, Color("5a8f4a"), Color("e8f2ff")), 0.9)
 	return Color(0, 0, 0, 0)
 
 
@@ -415,16 +650,17 @@ func _process(delta: float) -> void:
 		cull = Rect2(cam - half - Vector2(80, 80), half * 2.0 + Vector2(160, 160))
 		lod_compact = camera.zoom.x < 0.45
 		ui_scale = clampf(1.0 / camera.zoom.x, 0.3, 12.0)
+		_update_tiles()
 		queue_redraw()
-	_mat.set_shader_parameter("zoom", camera.zoom.x)
-	_mat.set_shader_parameter("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+	_set_all("zoom", camera.zoom.x)
+	_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
-		_mat.set_shader_parameter("sel_id", selected_province)
+		_set_all("sel_id", selected_province)
 	var hid := province_at(get_global_mouse_position())
 	if hid != _hover:
 		_hover = hid
-		_mat.set_shader_parameter("hover_id", hid)
+		_set_all("hover_id", hid)
 	if not _flash.is_empty():
 		var done: Array = []
 		for c in _flash:
@@ -441,6 +677,7 @@ func _process(delta: float) -> void:
 		_prep_thread = null
 		_data_ready = true
 		queue_redraw()
+	_pump_tiles()
 	_pump_vector_build()
 
 
@@ -458,13 +695,25 @@ func _begin_preload() -> void:
 func _preload_work() -> void:
 	EarthWorld.ensure_settlements()
 	EarthWorld.lines()
+	if EarthVisual.available():
+		EarthVisual.vectors()
+	# per chunk: capitals first, then the rest by falling population (ids are already ordered by population),
+	# so the draw loop can stop at the first small non-capital instead of scanning every village
+	var caps_c := {}
+	var rest_c := {}
 	for i in EarthWorld.S_POP.size():
 		var key := int((EarthWorld.S_LON[i] + 180.0) / CHUNK_DEG) + CHUNK_COLS * int((_top - EarthWorld.S_LAT[i]) / CHUNK_DEG)
-		if not _sett_chunks.has(key):
-			_sett_chunks[key] = PackedInt32Array()
-		var arr: PackedInt32Array = _sett_chunks[key]
+		var dst: Dictionary = caps_c if EarthWorld.S_CAP[i] == 1 else rest_c
+		if not dst.has(key):
+			dst[key] = PackedInt32Array()
+		var arr: PackedInt32Array = dst[key]
 		arr.append(i)
-		_sett_chunks[key] = arr
+		dst[key] = arr
+	for key in rest_c:
+		_sett_chunks[key] = (caps_c[key] + rest_c[key]) if caps_c.has(key) else rest_c[key]
+	for key in caps_c:
+		if not _sett_chunks.has(key):
+			_sett_chunks[key] = caps_c[key]
 
 
 func _exit_tree() -> void:
@@ -477,14 +726,29 @@ func _exit_tree() -> void:
 func _start_vectors() -> void:
 	_vectors_started = true
 	var lines := EarthWorld.lines()
-	for layer in ["rivers", "roads", "rails", "border1", "border0"]:
+	for layer in ["rivers", "roads", "rails", "border1", "border0", "coast", "lakes"]:
 		_chunks[layer] = {}
-	for ring in lines.get("border0", []):
-		_queue.append(["border0", ring[1]])
-	for ring in lines.get("border1", []):
-		_queue.append(["border1", ring[1]])
-	for l in lines.get("rivers", []):
-		_queue.append(["rivers", l])
+	var vis: Dictionary = EarthVisual.vectors() if _visual else {}
+	if not vis.is_empty():
+		# fine Natural Earth 10m geometry (coast, lakes, borders, rivers) from the visual layer
+		for ring in vis.get("coast", []):
+			_queue.append(["coast", ring])
+		for ring in vis.get("lakes", []):
+			_queue.append(["lakes", ring])
+		for ring in vis.get("border0", []):
+			_queue.append(["border0", ring])
+		for ring in vis.get("border1", []):
+			_queue.append(["border1", ring])
+		for l in vis.get("rivers", []):
+			if float(l[0]) <= 8.0:
+				_queue.append(["rivers", l.slice(1)])
+	else:
+		for ring in lines.get("border0", []):
+			_queue.append(["border0", ring[1]])
+		for ring in lines.get("border1", []):
+			_queue.append(["border1", ring[1]])
+		for l in lines.get("rivers", []):
+			_queue.append(["rivers", l])
 	for l in lines.get("roads", []):
 		_queue.append(["roads", l])
 	for l in lines.get("rails", []):
@@ -517,28 +781,25 @@ func _pump_vector_build() -> void:
 			if not store.has(key):
 				store[key] = PackedVector2Array()
 			var arr: PackedVector2Array = store[key]
-			arr.append(Vector2((float(a[0]) + 180.0) / _res * CELL, (_top - float(a[1])) / _res * CELL))
-			arr.append(Vector2((float(b[0]) + 180.0) / _res * CELL, (_top - float(b[1])) / _res * CELL))
+			arr.append(project(float(a[0]), float(a[1])))
+			arr.append(project(float(b[0]), float(b[1])))
 			store[key] = arr
 	if _qpos >= _queue.size():
 		_queue.clear()
 		_qpos = 0
 		_vec_done = true
 		EarthWorld.release_lines()   # ~70 MB of parsed Variants are no longer needed
+		EarthVisual.release_vectors()
 		queue_redraw()
 
 
 func _visible_chunk_keys() -> Array:
-	var res: float = float(sim.world["res"])
-	var top: float = float(sim.world["lat_top"])
-	var lon0 := cull.position.x / CELL * res - 180.0
-	var lon1 := cull.end.x / CELL * res - 180.0
-	var lat1 := top - cull.position.y / CELL * res
-	var lat0 := top - cull.end.y / CELL * res
-	var c0 := clampi(int((lon0 + 180.0) / CHUNK_DEG), 0, CHUNK_COLS - 1)
-	var c1 := clampi(int((lon1 + 180.0) / CHUNK_DEG), 0, CHUNK_COLS - 1)
-	var r0 := clampi(int((top - lat1) / CHUNK_DEG), 0, 9)
-	var r1 := clampi(int((top - lat0) / CHUNK_DEG), 0, 9)
+	var tl := unproject(cull.position)
+	var br := unproject(cull.end)
+	var c0 := clampi(int((tl.x + 180.0) / CHUNK_DEG), 0, CHUNK_COLS - 1)
+	var c1 := clampi(int((br.x + 180.0) / CHUNK_DEG), 0, CHUNK_COLS - 1)
+	var r0 := clampi(int((_top - tl.y) / CHUNK_DEG), 0, 9)
+	var r1 := clampi(int((_top - br.y) / CHUNK_DEG), 0, 9)
 	var keys: Array = []
 	for r in range(r0, r1 + 1):
 		for c in range(c0, c1 + 1):
@@ -585,16 +846,20 @@ func _draw_base() -> void:
 	var z := camera.zoom.x
 	var keys := _visible_chunk_keys()
 	if show_lines:
-		if z >= 0.7:
-			_draw_layer("rivers", keys, Color(0.45, 0.7, 0.95, 0.75), 1.0)
-		if z >= 0.18:
-			_draw_layer("border0", keys, Color(1, 1, 1, 0.35 if mode != "legal" else 0.7), 1.0)
+		if z >= 0.5:
+			_draw_layer("rivers", keys, Color(0.35, 0.62, 0.92, 0.85), 1.0)
+		if z >= 1.5:
+			_draw_layer("lakes", keys, Color(0.25, 0.5, 0.8, 0.8), 1.0)
+		if z >= 0.9:
+			_draw_layer("coast", keys, Color(0.04, 0.07, 0.12, 0.55), 1.0)
+		if z >= 0.15:
+			_draw_layer("border0", keys, Color(1, 1, 1, 0.45 if mode != "legal" else 0.8), 1.0)
 		if z >= 1.1 and (mode == "admin" or z >= 2.0):
-			_draw_layer("border1", keys, Color(1, 1, 1, 0.22), 0.8)
+			_draw_layer("border1", keys, Color(1, 1, 1, 0.26), 0.8)
 		if z >= 1.6 or mode == "logistics" or mode == "infra":
 			if z >= 0.8:
-				_draw_layer("roads", keys, Color(0.95, 0.85, 0.55, 0.5 if mode != "logistics" else 0.85), 0.8)
-				_draw_layer("rails", keys, Color(0.08, 0.08, 0.1, 0.55), 0.9)
+				_draw_layer("roads", keys, Color(0.95, 0.85, 0.55, 0.55 if mode != "logistics" else 0.9), 0.8)
+				_draw_layer("rails", keys, Color(0.08, 0.08, 0.1, 0.6), 0.9)
 	if show_settlements:
 		_draw_settlements(z)
 	if z >= 2.2:
@@ -616,12 +881,11 @@ func _pop_threshold(z: float) -> int:
 		return 40000
 	if z < 6.0:
 		return 12000
+	if z < 9.0:
+		return 3000
+	if z < 14.0:
+		return 800
 	return 0
-
-
-func world_pos_of(lon: float, lat: float) -> Vector2:
-	var res: float = float(sim.world["res"])
-	return Vector2((lon + 180.0) / res * CELL, (float(sim.world["lat_top"]) - lat) / res * CELL)
 
 
 func _draw_settlements(z: float) -> void:
@@ -641,8 +905,11 @@ func _draw_settlements(z: float) -> void:
 		for i in _sett_chunks[k]:
 			var pop: int = EarthWorld.S_POP[i]
 			var cap: bool = EarthWorld.S_CAP[i] == 1
-			if pop < thr and not (cap and z >= 0.25):
-				continue
+			if pop < thr:
+				if not cap:
+					break   # non-capitals are sorted by population: everything after is smaller
+				if z < 0.25:
+					continue
 			var pos := world_pos_of(EarthWorld.S_LON[i], EarthWorld.S_LAT[i])
 			if not cull.has_point(pos):
 				continue
@@ -690,19 +957,78 @@ func _draw_facilities(z: float) -> void:
 			draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
 
 
+## Region (admin-1) centroids in simulation-raster pixels, weighted by cell area; built once per dataset.
+var _region_info: Array = []   # [{id, pos(Vector2 px), pixels}]
+var _region_ds := ""
+
+
+func _build_region_info() -> void:
+	_region_ds = str(sim.world.get("dataset", ""))
+	var sums := {}
+	for p in sim.provinces():
+		if not p["land"] or int(p["region"]) <= 0:
+			continue
+		var w: float = p["cell_count"]
+		var a: Vector3 = sums.get(p["region"], Vector3.ZERO)
+		sums[p["region"]] = Vector3(a.x + w, a.y + p["center"].x * w, a.z + p["center"].y * w)
+	_region_info = []
+	for rid in sums:
+		var a2: Vector3 = sums[rid]
+		var r: Dictionary = sim.world["regions"][int(rid) - 1]
+		if r.get("kind") == "country":
+			continue   # countries without admin-1 data are labelled as countries
+		_region_info.append({"id": int(rid), "pos": Vector2(a2.y / a2.x, a2.z / a2.x), "pixels": a2.x})
+	_region_info.sort_custom(func(a, b): return a["pixels"] > b["pixels"])
+
+
+## Names of administrative regions, shown from mid zoom; only regions big enough on screen to hold their name, biggest first.
+func _draw_region_labels(z: float, font: Font) -> void:
+	if z < 1.5:
+		return
+	if _region_ds != str(sim.world.get("dataset", "")):
+		_build_region_info()
+	var res := float(sim.world.get("res", 0.2))
+	var alpha := clampf((z - 1.5) / 1.0, 0.0, 1.0) * 0.85
+	var taken := {}
+	var shown := 0
+	for ri in _region_info:
+		if shown >= 160:
+			break
+		var pos := px_to_world(ri["pos"])
+		if not cull.has_point(pos):
+			continue
+		var extent_px := sqrt(ri["pixels"]) * res * (_world_w / 360.0) * z
+		var nm := EarthWorld.region_name(sim.world, ri["id"])
+		var px := int(clampf(10.0 + extent_px / 90.0, 10.0, 15.0))
+		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+		if extent_px < tw * 0.9:
+			continue
+		var gk := Vector2i(int(pos.x * z / 110.0), int(pos.y * z / 18.0))
+		if taken.has(gk):
+			continue
+		taken[gk] = true
+		_text(font, pos, nm, px, Color(0.93, 0.95, 1.0, alpha), -tw * 0.5)
+		shown += 1
+
+
 func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
+	_draw_region_labels(z, ThemeDB.fallback_font)
 	if z > 5.0:
 		return
 	var font := ThemeDB.fallback_font
-	for cid in _agg:
+	# biggest countries first; a label is skipped when it would overlap one already placed (screen-space rectangles)
+	var order: Array = _agg.keys()
+	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x)
+	var placed: Array[Rect2] = []
+	for cid in order:
 		var a: Vector3 = _agg[cid]
 		if a.x < 1.0:
 			continue
-		var pos := Vector2(a.y / a.x, a.z / a.x) * CELL
+		var pos := px_to_world(Vector2(a.y / a.x, a.z / a.x))
 		if not cull.has_point(pos):
 			continue
 		var fs_px := clampf(9.0 + sqrt(a.x) * 0.9, 9.0, 26.0)
@@ -713,6 +1039,16 @@ func _draw_labels() -> void:
 			continue
 		var px := int(fs_px)
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+		var sp := pos * z
+		var rect := Rect2(sp + Vector2(-tw * 0.5 - 4.0, -px * 0.7), Vector2(tw + 8.0, px * 1.25))
+		var clash := false
+		for r in placed:
+			if r.intersects(rect):
+				clash = true
+				break
+		if clash:
+			continue
+		placed.append(rect)
 		_text(font, pos, nm, px, Color(1, 1, 1, 0.92), -tw * 0.5)
 
 
@@ -732,5 +1068,5 @@ func focus_lonlat(lon: float, lat: float, zoom_level: float = 4.0) -> void:
 
 
 func focus_lonlat_cell(cell: int, zoom_level: float = 2.0) -> void:
-	camera.position = sim.provinces()[cell]["center"] * CELL
+	camera.position = cell_world(cell)
 	camera.zoom = Vector2.ONE * clampf(zoom_level, min_zoom, max_zoom)

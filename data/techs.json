@@ -48,6 +48,10 @@
   {
    "id": "aviation",
    "name": "Авиация"
+  },
+  {
+   "id": "modern",
+   "name": "Современная война (абстрактно)"
   }
  ],
  "techs": [
@@ -501,6 +505,92 @@
     "air_fighter_pct": 25,
     "air_bomber_pct": 10,
     "air_attacker_pct": 10
+   }
+  },
+  {
+   "id": "drn1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Разведывательные дроны",
+   "cost": 420,
+   "requires": [
+    "cm1"
+   ],
+   "effects": {
+    "supply_pct": 8,
+    "atk_pct": 2
+   }
+  },
+  {
+   "id": "drn2",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Ударные дроны",
+   "cost": 700,
+   "requires": [
+    "drn1"
+   ],
+   "effects": {
+    "atk_pct": 8,
+    "air_attacker_pct": 10
+   }
+  },
+  {
+   "id": "ew1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Радиоэлектронная борьба",
+   "cost": 650,
+   "requires": [
+    "cm2"
+   ],
+   "effects": {
+    "def_pct": 6,
+    "air_fighter_pct": 8,
+    "cyber_def_pct": 3
+   }
+  },
+  {
+   "id": "sat1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Орбитальная группировка",
+   "cost": 800,
+   "requires": [
+    "cm2",
+    "cp1"
+   ],
+   "effects": {
+    "supply_pct": 12,
+    "supply_decay_pct": 15,
+    "air_range": 1
+   }
+  },
+  {
+   "id": "cyb1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Киберподразделения",
+   "cost": 600,
+   "requires": [
+    "cp1"
+   ],
+   "effects": {
+    "cyber_pct": 4
+   }
+  },
+  {
+   "id": "cyb2",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Киберзащита государства",
+   "cost": 550,
+   "requires": [
+    "cyb1"
+   ],
+   "effects": {
+    "cyber_def_pct": 8,
+    "income_pct": 2
    }
   }
  ]

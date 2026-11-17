@@ -4,7 +4,62 @@ extends RefCounted
 ## Produces the same `world` dictionary shape as WorldGen, plus hierarchy (countries, regions, settlements).
 ## Territorial cells ("provinces" for the simulation) nest inside administrative regions but are an independent system.
 
-const DIR := "res://data/world/"
+## Several datasets can exist side by side (data/world = base, data/world_hd = detailed). One is "active" per process.
+static var dataset := "world"
+static var _store: Dictionary = {}
+
+
+static func _dir() -> String:
+	return "res://data/%s/" % dataset
+
+
+static func available_dataset(ds: String) -> bool:
+	return FileAccess.file_exists("res://data/%s/manifest.json" % ds)
+
+
+static func _snapshot() -> Dictionary:
+	return {
+		"cache": _cache, "lines": _lines, "facilities": _facilities, "relief": _relief_img, "ids": _ids_img,
+		"sett_loaded": _sett_loaded, "cell_index": _cell_index, "search": _search_index,
+		"S_NAME": S_NAME, "S_ASCII": S_ASCII, "S_ALT": S_ALT, "S_NAME_RU": S_NAME_RU, "S_DISTRICT": S_DISTRICT, "S_FCODE": S_FCODE,
+		"S_LAT": S_LAT, "S_LON": S_LON, "S_POP": S_POP, "S_CELL": S_CELL, "S_REGION": S_REGION, "S_CAP": S_CAP, "S_ROAD": S_ROAD, "S_RAIL": S_RAIL,
+	}
+
+
+static func _restore(st: Dictionary) -> void:
+	_cache = st.get("cache", {})
+	_lines = st.get("lines", {})
+	_facilities = st.get("facilities", {})
+	_relief_img = st.get("relief", null)
+	_ids_img = st.get("ids", null)
+	_sett_loaded = st.get("sett_loaded", false)
+	_cell_index = st.get("cell_index", {})
+	_search_index = st.get("search", PackedStringArray())
+	S_NAME = st.get("S_NAME", PackedStringArray())
+	S_ASCII = st.get("S_ASCII", PackedStringArray())
+	S_ALT = st.get("S_ALT", PackedStringArray())
+	S_NAME_RU = st.get("S_NAME_RU", PackedStringArray())
+	S_DISTRICT = st.get("S_DISTRICT", PackedStringArray())
+	S_FCODE = st.get("S_FCODE", PackedStringArray())
+	S_LAT = st.get("S_LAT", PackedFloat32Array())
+	S_LON = st.get("S_LON", PackedFloat32Array())
+	S_POP = st.get("S_POP", PackedInt32Array())
+	S_CELL = st.get("S_CELL", PackedInt32Array())
+	S_REGION = st.get("S_REGION", PackedInt32Array())
+	S_CAP = st.get("S_CAP", PackedByteArray())
+	S_ROAD = st.get("S_ROAD", PackedByteArray())
+	S_RAIL = st.get("S_RAIL", PackedByteArray())
+
+
+## Make `ds` the active dataset (loaded data of the previous one is kept in memory and restored on switching back).
+static func activate(ds: String) -> void:
+	if ds == dataset:
+		return
+	_lock.lock()
+	_store[dataset] = _snapshot()
+	_restore(_store.get(ds, {}))
+	dataset = ds
+	_lock.unlock()
 const TERRAIN_NAMES := ["sea", "plains", "forest", "hills", "mountain", "desert"]
 const POP_UNIT := 100000.0  # simulation population unit = 100k people
 
@@ -14,7 +69,7 @@ static var _facilities: Dictionary = {}
 
 
 static func _bytes(name: String) -> PackedByteArray:
-	var comp := FileAccess.get_file_as_bytes(DIR + name)
+	var comp := FileAccess.get_file_as_bytes(_dir() + name)
 	if comp.is_empty():
 		return PackedByteArray()
 	return comp.decompress_dynamic(-1, FileAccess.COMPRESSION_DEFLATE)
@@ -28,14 +83,14 @@ static func _json(name: String) -> Variant:
 
 
 static func manifest() -> Dictionary:
-	var f := FileAccess.open(DIR + "manifest.json", FileAccess.READ)
+	var f := FileAccess.open(_dir() + "manifest.json", FileAccess.READ)
 	if f == null:
 		return {}
 	return JSON.parse_string(f.get_as_text())
 
 
 static func available() -> bool:
-	return FileAccess.file_exists(DIR + "manifest.json")
+	return FileAccess.file_exists(_dir() + "manifest.json")
 
 
 ## Heavy, loaded once per process.
@@ -121,7 +176,7 @@ static func load_world() -> Dictionary:
 	var cdata: Dictionary = _json("countries.json.z")
 	var rdata: Dictionary = _json("regions.json.z")
 	_cache = {
-		"kind": "earth", "seed": 0, "w": w, "h": h, "res": meta["res"], "lat_top": meta["lat_top"],
+		"kind": "earth", "dataset": dataset, "seed": 0, "w": w, "h": h, "res": meta["res"], "lat_top": meta["lat_top"],
 		"cell_prov": cell_prov, "region_raster": region_raster, "elev": elev_raster, "prov_cells": prov_cells,
 		"provinces": provinces, "land_count": n_land,
 		"road_link": road_link, "rail_link": rail_link,

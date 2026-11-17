@@ -204,54 +204,70 @@ func _show_menu() -> void:
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.theme = _theme
 	ui.add_child(root)
-	var bg := ColorRect.new()
-	bg.color = Color("0b1119")
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.add_child(bg)
+	MenuKit.backdrop(root)
+	var margin := MarginContainer.new()
+	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	margin.add_theme_constant_override("margin_left", 84)
+	margin.add_theme_constant_override("margin_top", 48)
+	margin.add_theme_constant_override("margin_bottom", 56)
+	root.add_child(margin)
 	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.custom_minimum_size = Vector2(360, 0)
-	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	box.grow_vertical = Control.GROW_DIRECTION_BOTH
-	box.add_theme_constant_override("separation", 14)
-	root.add_child(box)
+	box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	box.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	box.custom_minimum_size = Vector2(420, 0)
+	box.add_theme_constant_override("separation", 10)
+	margin.add_child(box)
 	var title := Label.new()
 	title.text = "IRON DOMINION"
-	title.add_theme_font_size_override("font_size", 52)
-	title.add_theme_color_override("font_color", Color("e0c070"))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 64)
+	title.add_theme_color_override("font_color", MenuKit.GOLD)
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
+	title.add_theme_constant_override("outline_size", 6)
 	box.add_child(title)
 	var sub := Label.new()
-	sub.text = "Глобальная стратегия"
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.text = "ГЛОБАЛЬНАЯ СТРАТЕГИЯ · ВЕСЬ РЕАЛЬНЫЙ МИР"
+	sub.add_theme_font_size_override("font_size", 14)
+	sub.add_theme_color_override("font_color", Color("93a3b8"))
 	box.add_child(sub)
-	_seed_edit = LineEdit.new()
-	_seed_edit.text = str(randi() % 100000)
-	_seed_edit.placeholder_text = "Seed мира"
-	box.add_child(_seed_edit)
-	var start := Button.new()
-	start.text = "Новая игра (случайный мир)"
-	start.pressed.connect(_new_game)
-	box.add_child(start)
-	var scen := Button.new()
-	scen.text = "Сценарии"
+	box.add_child(MenuKit.gold_rule(140))
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 14)
+	box.add_child(gap)
+	var play := MenuKit.button("▶  ИГРАТЬ — Современный мир (HD)", "primary")
+	play.tooltip_text = "Реальная карта мира: 25 тыс. ячеек суши, 237 тыс. населённых пунктов, рельеф, сезоны и современная война"
+	play.pressed.connect(func():
+		for entry in ScenarioLoader.list_all():
+			if str(entry["data"].get("id", "")) == "modern_world_hd":
+				_start_scenario(entry["data"].duplicate(true))
+				return
+		_show_scenarios())
+	box.add_child(play)
+	var scen := MenuKit.button("Выбрать сценарий и размер карты")
 	scen.pressed.connect(_show_scenarios)
 	box.add_child(scen)
-	var edit := Button.new()
-	edit.text = "Редактор сценариев"
+	var rnd_row := HBoxContainer.new()
+	rnd_row.add_theme_constant_override("separation", 6)
+	box.add_child(rnd_row)
+	var start := MenuKit.button("Случайный мир", "normal", 232)
+	start.pressed.connect(_new_game)
+	rnd_row.add_child(start)
+	_seed_edit = LineEdit.new()
+	_seed_edit.text = str(randi() % 100000)
+	_seed_edit.placeholder_text = "Seed"
+	_seed_edit.custom_minimum_size = Vector2(102, 40)
+	rnd_row.add_child(_seed_edit)
+	var edit := MenuKit.button("Редактор сценариев")
 	edit.pressed.connect(func(): _open_editor(ScenarioLoader.blank(int(_seed_edit.text) if _seed_edit.text.is_valid_int() else randi() % 100000)))
 	box.add_child(edit)
-	var load_btn := Button.new()
-	load_btn.text = "Загрузить (F9)"
+	var load_btn := MenuKit.button("Загрузить игру  (F9)")
 	load_btn.pressed.connect(_load_game)
 	box.add_child(load_btn)
-	var quit := Button.new()
-	quit.text = "Выход"
+	var quit := MenuKit.button("Выход")
 	quit.pressed.connect(func(): get_tree().quit())
 	box.add_child(quit)
 	_menu_root = root
 	var credits := Label.new()
-	credits.text = "Данные карты: Natural Earth (общественное достояние) · GeoNames (CC BY 4.0) · Terrain Tiles (AWS Open Data; SRTM, GMTED, ETOPO) · Our World in Data (CC BY 4.0). Подробности: docs/DATA_SOURCES.md"
+	credits.text = "Карта: Natural Earth (общественное достояние) · GeoNames (CC BY 4.0) · Terrain Tiles (AWS Open Data; SRTM, GMTED, ETOPO) · Our World in Data (CC BY 4.0)  —  docs/DATA_SOURCES.md"
 	credits.add_theme_font_size_override("font_size", 12)
 	credits.add_theme_color_override("font_color", Color("6f7c8e"))
 	credits.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -298,73 +314,102 @@ func _show_scenarios(message: Variant = "") -> void:
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.theme = _theme
 	ui.add_child(root)
-	var bg := ColorRect.new()
-	bg.color = Color("0b1119")
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.add_child(bg)
-	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.custom_minimum_size = Vector2(620, 0)
-	box.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	box.grow_vertical = Control.GROW_DIRECTION_BOTH
-	box.add_theme_constant_override("separation", 10)
-	root.add_child(box)
+	MenuKit.backdrop(root)
+	var margin := MarginContainer.new()
+	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	for side in ["left", "right"]:
+		margin.add_theme_constant_override("margin_" + side, 84)
+	margin.add_theme_constant_override("margin_top", 40)
+	margin.add_theme_constant_override("margin_bottom", 40)
+	root.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 12)
+	margin.add_child(col)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 18)
+	col.add_child(head)
+	var back := MenuKit.button("←  Назад", "normal", 130)
+	back.pressed.connect(_show_menu)
+	head.add_child(back)
 	var title := Label.new()
 	title.text = "Сценарии"
-	title.add_theme_font_size_override("font_size", 32)
-	title.add_theme_color_override("font_color", Color("e0c070"))
-	box.add_child(title)
+	title.add_theme_font_size_override("font_size", 38)
+	title.add_theme_color_override("font_color", MenuKit.GOLD)
+	head.add_child(title)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(spacer)
+	var sl := Label.new()
+	sl.text = "Seed (пусто — из сценария):"
+	sl.add_theme_color_override("font_color", Color("93a3b8"))
+	head.add_child(sl)
+	var seed_override := LineEdit.new()
+	seed_override.custom_minimum_size = Vector2(110, 36)
+	head.add_child(seed_override)
+	col.add_child(MenuKit.gold_rule(140))
 	if str(message) != "":
 		var m := Label.new()
 		m.text = str(message)
 		m.add_theme_color_override("font_color", Color("d9a05a"))
 		m.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		box.add_child(m)
-	var seed_row := HBoxContainer.new()
-	box.add_child(seed_row)
-	var sl := Label.new()
-	sl.text = "Seed (пусто — из сценария):"
-	seed_row.add_child(sl)
-	var seed_override := LineEdit.new()
-	seed_override.custom_minimum_size = Vector2(120, 0)
-	seed_row.add_child(seed_override)
+		col.add_child(m)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	col.add_child(scroll)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 14)
+	scroll.add_child(grid)
 	for entry in ScenarioLoader.list_all():
 		var data: Dictionary = entry["data"]
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		box.add_child(row)
-		var b := Button.new()
-		b.text = "%s%s" % [data.get("name", "?"), "" if entry["builtin"] else "  (пользовательский)"]
-		b.tooltip_text = "%s\nСтарт: %s, seed %s, стран: %d" % [data.get("description", ""), data.get("start_date", ""), str(data.get("seed", "")), data.get("countries", []).size()]
-		b.custom_minimum_size = Vector2(300, 0)
+		var facts := MenuKit.scenario_facts(data)
+		var card := PanelContainer.new()
+		card.add_theme_stylebox_override("panel", MenuKit.card_style())
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(card)
+		var v := VBoxContainer.new()
+		v.add_theme_constant_override("separation", 8)
+		card.add_child(v)
+		var nm := Label.new()
+		nm.text = "%s%s" % [data.get("name", "?"), "" if entry["builtin"] else "  (пользовательский)"]
+		nm.add_theme_font_size_override("font_size", 21)
+		nm.add_theme_color_override("font_color", Color("f1e6c3"))
+		nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		v.add_child(nm)
+		var tags := HFlowContainer.new()
+		tags.add_theme_constant_override("h_separation", 12)
+		v.add_child(tags)
+		for tg in facts["tags"]:
+			tags.add_child(MenuKit.badge("◆ " + str(tg)))
+		tags.add_child(MenuKit.badge("старт: " + str(data.get("start_date", "")), Color("9aa7b8")))
+		if facts["line"] != "":
+			tags.add_child(MenuKit.badge(str(facts["line"]), Color("e0c070")))
+		var d := Label.new()
+		d.text = str(data.get("description", ""))
+		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		d.add_theme_font_size_override("font_size", 13)
+		d.add_theme_color_override("font_color", Color("aeb9c7"))
+		d.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		v.add_child(d)
+		var btns := HBoxContainer.new()
+		btns.add_theme_constant_override("separation", 8)
+		v.add_child(btns)
+		var b := MenuKit.button("▶  Играть", "primary", 150)
+		b.tooltip_text = "Стран: %d, seed %s" % [data.get("countries", []).size(), str(data.get("seed", ""))]
 		b.pressed.connect(func():
 			var scn: Dictionary = data.duplicate(true)
 			var has_overrides: bool = scn.has("owners") or scn.has("deposits") or scn.has("armies") or scn.has("capitals")
 			if seed_override.text.is_valid_int() and not has_overrides:
 				scn["seed"] = int(seed_override.text)
 			_start_scenario(scn))
-		row.add_child(b)
-		var d := Label.new()
-		d.text = str(data.get("description", ""))
-		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		d.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		d.custom_minimum_size = Vector2(260, 0)
-		row.add_child(d)
+		btns.add_child(b)
 		if str(data.get("world", "procedural")) != "earth":
-			var eb := Button.new()
-			eb.text = "Править"
+			var eb := MenuKit.button("Править", "normal", 110)
 			eb.pressed.connect(func(): _open_editor(data))
-			row.add_child(eb)
-		else:
-			var note := Label.new()
-			note.text = "реальная карта"
-			note.add_theme_font_size_override("font_size", 12)
-			note.add_theme_color_override("font_color", Color("8a96a6"))
-			row.add_child(note)
-	var back := Button.new()
-	back.text = "← Назад"
-	back.pressed.connect(_show_menu)
-	box.add_child(back)
+			btns.add_child(eb)
 
 
 func _open_editor(scn: Dictionary) -> void:
@@ -476,8 +521,7 @@ func _start_playing(cid: int) -> void:
 	map.player_country = cid
 	map.selected_province = sim.countries[cid]["capital"]
 	map.selected_army = -1
-	var cap: Vector2 = sim.provinces()[sim.countries[cid]["capital"]]["center"] * MapView.CELL
-	map.camera.position = cap
+	map.camera.position = map.cell_world(sim.countries[cid]["capital"])
 	map.camera.zoom = Vector2.ONE * (2.2 if sim.is_earth_world() else 2.0)
 	if map is EarthMapView:
 		map.repaint_all()
@@ -488,6 +532,8 @@ func _start_playing(cid: int) -> void:
 	_open_panel_name = ""
 	_build_hud()
 	_refresh_all()
+	_log.append_text("[color=#e0c070][b]%s[/b][/color] — %s\n" % [sim.countries[cid]["name"], sim.date_string()])
+	_log.append_text("[color=#93a3b8]Игра начинается на паузе.\nПробел — пауза · 1–4 — скорость · M — режим карты · колесо — масштаб, перетаскивание — сдвиг · ЛКМ — выбрать, ПКМ — приказ · / или Ctrl+F — поиск места · F5 — сохранить · Esc — меню.[/color]\n")
 
 
 func _set_speed(i: int) -> void:
@@ -1001,7 +1047,7 @@ func _toggle_tech() -> void:
 		_tech.queue_free()
 		_tech = null
 		return
-	var cats: Array = JSON.parse_string(Simulation.read_data("techs.json")).get("categories", [])
+	var cats: Array = JSON.parse_string(Simulation.read_data("techs.json")).get("categories", []).filter(func(ct): return sim.tech_order.any(func(tid): return sim.tech_defs[tid]["category"] == ct["id"]))
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
@@ -1916,7 +1962,7 @@ func _g_state() -> void:
 func _focus_cell(cell: int, zoom_level: float = 3.0) -> void:
 	if cell < 0:
 		return
-	map.camera.position = sim.provinces()[cell]["center"] * MapView.CELL
+	map.camera.position = map.cell_world(cell)
 	map.camera.zoom = Vector2.ONE * clampf(zoom_level, map.min_zoom, map.max_zoom)
 	map.queue_redraw()
 
