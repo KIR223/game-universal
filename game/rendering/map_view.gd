@@ -338,12 +338,53 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.position += (event as InputEventPanGesture).delta * 12.0 / camera.zoom.x
 		_clamp_camera()
 	elif event is InputEventMagnifyGesture:
-		_zoom_at((event as InputEventMagnifyGesture).factor)
+		_zoom_at((event as InputEventMagnifyGesture).factor, (event as InputEventMagnifyGesture).position)
 
 
-func _zoom_at(factor: float) -> void:
-	var z := clampf(camera.zoom.x * factor, min_zoom, max_zoom)
+## Smooth zoom towards the cursor (HoI4-style): wheel notches / pinch only set a target; _smooth_zoom() eases the camera to it
+## while keeping the world point under the cursor (or the pinch centre) fixed on screen.
+var _zoom_target := 1.0
+var _zooming := false
+var _zoom_anchor_world := Vector2.ZERO
+var _zoom_anchor_screen := Vector2.ZERO
+const ZOOM_SPEED := 16.0   # larger = snappier
+
+
+func _process(delta: float) -> void:
+	_smooth_zoom(delta)
+
+
+func _zoom_at(factor: float, anchor_screen: Variant = null) -> void:
+	var anchor: Vector2 = anchor_screen if anchor_screen != null else get_viewport().get_mouse_position()
+	if not _zooming:
+		_zoom_target = camera.zoom.x
+	_zoom_target = clampf(_zoom_target * factor, min_zoom, max_zoom)
+	# the world point under the anchor, from the zoom/centre the camera has RIGHT NOW
+	var half := get_viewport_rect().size * 0.5
+	_zoom_anchor_screen = anchor
+	_zoom_anchor_world = camera.position + (anchor - half) / camera.zoom.x
+	_zooming = true
+	camera.position_smoothing_enabled = false
+
+
+## One animation step; returns true while still zooming. Called every frame by the map views.
+func _smooth_zoom(delta: float) -> bool:
+	if not _zooming:
+		return false
+	var z := camera.zoom.x
+	if absf(_zoom_target - z) < 0.0005 * z:
+		z = _zoom_target
+		_zooming = false
+	else:
+		z += (_zoom_target - z) * (1.0 - exp(-ZOOM_SPEED * delta))
 	camera.zoom = Vector2.ONE * z
+	var half := get_viewport_rect().size * 0.5
+	camera.position = _zoom_anchor_world - (_zoom_anchor_screen - half) / z
+	if sim != null:
+		_clamp_camera()
+	if not _zooming:
+		camera.position_smoothing_enabled = true
+	return _zooming
 
 
 func _clamp_camera() -> void:
