@@ -87,6 +87,12 @@ var ai_war_chance := 1.0          # probability gate for AI war declarations (sc
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
 var rule_terrain := false         # terrain, roads and railways change movement and supply cost
 var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
+var rule_markets := false         # population dynamics and a world market with floating prices
+var pop_bp := {}                  # cid -> population index in basis points (10000 = start); only with rules.markets
+var market_pct := {}              # resource -> world price in percent of the base price (100 = base)
+var _market_flow := {}            # resource -> units bought (+) / sold (-) on the market since the last price update
+const MARKET_SPREAD := 10         # percent: players buy at +10% and sell at -10%
+const MARKET_RES := ["food", "coal", "iron", "oil", "steel"]
 var missile_stock := {}           # cid -> {"tactical": n, "strategic": n}; only with rules.modern
 var strikes: Array = []           # recent launches for the map and the log: {"day","owner","from","target","type","hit"}
 const MISSILE_CAP := 40
@@ -888,6 +894,14 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_terrain = bool(scn.get("rules", {}).get("terrain", false))
 	rule_weather = bool(scn.get("rules", {}).get("weather", false))
 	rule_modern = bool(scn.get("rules", {}).get("modern", false))
+	rule_markets = bool(scn.get("rules", {}).get("markets", false))
+	pop_bp = {}
+	market_pct = {}
+	_market_flow = {}
+	if rule_markets:
+		for r in MARKET_RES:
+			market_pct[r] = 100
+			_market_flow[r] = 0
 	if rule_modern:
 		_load_techs()
 		missile_stock = {}
@@ -2040,6 +2054,10 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			return _resolve_event(countries[cid], cmd.get("uid", -1), cmd.get("option", -1))
 		"build_wing":
 			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
+		"market_buy":
+			return _market_trade(cid, cmd.get("res", ""), int(cmd.get("amount", 1)), true)
+		"market_sell":
+			return _market_trade(cid, cmd.get("res", ""), int(cmd.get("amount", 1)), false)
 		"build_missile":
 			return _build_missile(cid, cmd.get("mtype", ""), int(cmd.get("count", 1)))
 		"launch_missile":
@@ -2263,6 +2281,9 @@ func tick_day() -> void:
 	_economy()
 	_trade()
 	_resources()
+	if rule_markets:
+		_population()
+		_market()
 	_politics()
 	_intel()
 	_research()
@@ -2609,12 +2630,12 @@ func _resources() -> void:
 		for rr in ["food", "coal", "iron", "oil"]:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
 		c["industry"] = ind_sum[cid]
-		c["cons"]["food"] = pop_sum[cid] / 90
+		c["cons"]["food"] = pop_sum[cid] * pop_index(cid) / 10000 / 90
 		var astr: int = astr_of.get(cid, 0)
 		var fstr: int = fstr_of.get(cid, 0)
 		var armor_hp: int = armor_of.get(cid, 0)
 		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000 + air_oil(cid)
-		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
+		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * pop_index(cid) / 10000 * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
 		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] * (100 + mod(cid, "steel_pct")) / 300)
 		c["prod"]["steel"] = steel
@@ -3258,6 +3279,94 @@ func _log(text: String) -> void:
 		log_lines.pop_front()
 
 
+# ---------------------------------------------------------------- population and world market (rules.markets)
+
+## Population index (basis points, 10000 = scenario start). Scales food demand and manpower growth.
+func pop_index(cid: int) -> int:
+	return int(pop_bp.get(cid, 10000)) if rule_markets else 10000
+
+
+## Daily population dynamics (integer maths): slow growth, famine and war devastation shrink a country.
+func _population() -> void:
+	var provs := provinces()
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		var bp: int = pop_bp.get(cid, 10000)
+		if day % 4 == 0:
+			bp += 1                                  # ~0.9 % per year
+		if c["short"].has("food"):
+			bp -= 4                                  # famine: -0.04 % per day
+		if day % 10 == 0 and not enemies_of(cid).is_empty():
+			var hurt := 0
+			for p in cells_of(cid):
+				if damage[p] > 40:
+					hurt += 1
+			bp -= mini(30, hurt / 4)                 # devastated cells lose people
+		pop_bp[cid] = clampi(bp, 5000, 15000)
+
+
+func market_price_x100(res: String) -> int:
+	return price_of(res) * int(market_pct.get(res, 100))
+
+
+## World prices follow global demand/supply every 5 days (smoothed, 50..300 % of base) and players' own trades push them.
+func _market() -> void:
+	if day % 5 != 0:
+		return
+	for r in MARKET_RES:
+		var prod := 1
+		var cons := 1
+		for c in countries:
+			if c["alive"]:
+				prod += c["prod"].get(r, 0)
+				cons += c["cons"].get(r, 0)
+		var target := clampi(cons * 100 / prod, 50, 300) + int(_market_flow.get(r, 0)) * 2
+		var cur: int = market_pct.get(r, 100)
+		market_pct[r] = clampi((cur * 9 + target) / 10, 50, 300)
+		_market_flow[r] = 0
+
+
+func _market_trade(cid: int, res: String, amount: int, buy: bool) -> Dictionary:
+	if not rule_markets:
+		return _fail("rule disabled")
+	if not MARKET_RES.has(res):
+		return _fail("invalid resource")
+	amount = clampi(amount, 1, 20)
+	var c: Dictionary = countries[cid]
+	var unit := market_price_x100(res)
+	if buy:
+		var cost := maxi(1, (unit * amount * (100 + MARKET_SPREAD) + 9999) / 10000)
+		if c["treasury"] < cost:
+			return _fail("not enough funds")
+		if c["stock"][res] + amount > STOCK_CAP:
+			return _fail("stock full")
+		c["treasury"] -= cost
+		c["stock"][res] += amount
+		_market_flow[res] = int(_market_flow.get(res, 0)) + amount
+	else:
+		if c["stock"][res] < amount:
+			return _fail("not enough stock")
+		var gain := unit * amount * (100 - MARKET_SPREAD) / 10000
+		c["treasury"] += gain
+		c["stock"][res] -= amount
+		_market_flow[res] = int(_market_flow.get(res, 0)) - amount
+	return {"ok": true}
+
+
+## AI keeps its stocks afloat: buys what it lacks, sells large surpluses.
+func _ai_market(cid: int) -> void:
+	if day % 5 != 0:
+		return
+	var c: Dictionary = countries[cid]
+	for r in MARKET_RES:
+		if c["short"].has(r) and c["treasury"] > 150:
+			_market_trade(cid, r, 5, true)
+		elif c["stock"][r] > STOCK_CAP * 8 / 10:
+			_market_trade(cid, r, 10, false)
+
+
 # ---------------------------------------------------------------- missiles and air defence (abstract, rules.modern)
 
 const MISSILE_START := {"tactical": 3, "strategic": 0}
@@ -3514,6 +3623,8 @@ func _ai() -> void:
 		_ai_air(cid)
 		if rule_modern:
 			_ai_missiles(cid)
+		if rule_markets:
+			_ai_market(cid)
 		if day % 10 == 0:
 			_ai_politics(cid)
 		if day % 15 == 0:
@@ -3623,7 +3734,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "rule_markets": rule_markets, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3660,6 +3771,10 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
 	sim.rule_modern = bool(d.get("rule_modern", false))
+	sim.rule_markets = bool(d.get("rule_markets", false))
+	sim.pop_bp = d.get("pop_bp", {})
+	sim.market_pct = d.get("market_pct", {})
+	sim._market_flow = d.get("market_flow", {})
 	sim.missile_stock = d.get("missile_stock", {})
 	sim.strikes = d.get("strikes", [])
 	sim._load_techs()
@@ -3694,6 +3809,8 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 ## State fingerprint for desync detection (multiplayer) and tests.
 func checksum() -> int:
 	var state := [day, owner, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
+	if rule_markets:
+		state.append([pop_bp, market_pct, _market_flow])
 	if rule_modern:
 		state.append([missile_stock, strikes])   # only with the rule: other scenarios keep their reference checksums
 	return var_to_str(state).hash()

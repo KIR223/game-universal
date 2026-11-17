@@ -15,6 +15,7 @@
  "rules": {
   "terrain": true,
   "weather": true,
-  "modern": true
+  "modern": true,
+  "markets": true
  }
 }

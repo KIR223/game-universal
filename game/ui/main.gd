@@ -61,7 +61,7 @@ const REASONS := {
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
-	"already embargoed": "эмбарго уже введено", "no missiles": "нет ракет в запасе", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", "no embargo": "эмбарго не было", "no port": "нет порта",
+	"already embargoed": "эмбарго уже введено", "no missiles": "нет ракет в запасе", "not enough stock": "не хватает запаса", "invalid resource": "неизвестный ресурс", "stock full": "склад ракет заполнен", "technology required": "нужна технология", "invalid missile": "неверный тип ракеты", "rule disabled": "правило не включено в сценарии", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
 const EFFECT_NAMES := {
@@ -1019,6 +1019,32 @@ func _eco_refresh() -> void:
 			if i == 0 and c["short"].has(id):
 				l.add_theme_color_override("font_color", Color("d96a5a"))
 			grid.add_child(l)
+	if sim.rule_markets:
+		var pl := Label.new()
+		pl.text = "Население: индекс %.1f%% (рост ~0,9%% в год, голод и разрушения уменьшают)" % (float(sim.pop_index(player)) / 100.0)
+		_eco_dyn.add_child(pl)
+		var mh := Label.new()
+		mh.text = "Мировой рынок (цена обновляется раз в 5 дней по мировому спросу; покупка +10%, продажа −10%)"
+		mh.add_theme_color_override("font_color", Color("e0c070"))
+		_eco_dyn.add_child(mh)
+		for mr in Simulation.MARKET_RES:
+			var res_id: String = mr
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 6)
+			_eco_dyn.add_child(row)
+			var nl := Label.new()
+			var pct: int = sim.market_pct.get(res_id, 100)
+			nl.text = "%s  %.2f $  (%d%% от базовой)" % [_res_name(res_id), float(sim.market_price_x100(res_id)) / 100.0, pct]
+			nl.custom_minimum_size = Vector2(340, 0)
+			nl.add_theme_color_override("font_color", Color("d96a5a") if pct > 130 else (Color("8ac58a") if pct < 80 else Color("dde3ea")))
+			row.add_child(nl)
+			for q in [[5, true, "Купить 5"], [5, false, "Продать 5"]]:
+				var qb := Button.new()
+				qb.text = q[2]
+				var amt: int = q[0]
+				var buy: bool = q[1]
+				qb.pressed.connect(func(): _eco_cmd({"type": "market_buy" if buy else "market_sell", "country": player, "res": res_id, "amount": amt}))
+				row.add_child(qb)
 	if c["blockade"] > 0:
 		var bl := Label.new()
 		bl.text = "Блокада портов: %d%% (доход снижен, морская торговля нарушена)" % c["blockade"]

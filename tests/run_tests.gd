@@ -1668,3 +1668,65 @@ func test_missiles_and_air_defense() -> void:
 	var r2 := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
 	check(r2.missile_count(a, "tactical") == 1 and r2.strikes.size() == tries, "missile state survives save/load")
 	check(r2.checksum() == sim.checksum(), "checksum survives save/load with missiles")
+
+
+func test_population_and_markets() -> void:
+	var plain := _earth()
+	check(plain.pop_index(0) == 10000 and not plain.rule_markets, "markets are off by default")
+	check(plain.apply_command({"type": "market_buy", "country": 0, "res": "food", "amount": 1})["reason"] == "rule disabled", "market commands need the rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"markets": true}
+	var sim := Simulation.new()
+	check(sim.setup_scenario(scn).is_empty(), "scenario with markets loads")
+	for r in Simulation.MARKET_RES:
+		check(sim.market_pct[r] == 100, "%s starts at the base price" % r)
+	var c: Dictionary = sim.countries[0]
+	c["treasury"] = 1000
+	c["stock"]["iron"] = 100
+	var t0: int = c["treasury"]
+	var b := sim.apply_command({"type": "market_buy", "country": 0, "res": "iron", "amount": 10})
+	check(b["ok"] and c["stock"]["iron"] == 110, "buying adds stock")
+	var spent: int = t0 - c["treasury"]
+	var t1: int = c["treasury"]
+	var s1 := sim.apply_command({"type": "market_sell", "country": 0, "res": "iron", "amount": 10})
+	var earned: int = c["treasury"] - t1
+	check(s1["ok"] and spent > earned, "the spread makes a round trip lose money (%d paid, %d earned)" % [spent, earned])
+	check(sim.apply_command({"type": "market_sell", "country": 0, "res": "iron", "amount": 20})["ok"] == true, "selling within stock works")
+	c["stock"]["iron"] = 5
+	check(sim.apply_command({"type": "market_sell", "country": 0, "res": "iron", "amount": 20})["reason"] == "not enough stock", "cannot sell more than owned")
+	check(sim.apply_command({"type": "market_buy", "country": 0, "res": "gold", "amount": 1})["reason"] == "invalid resource", "unknown resource refused")
+	# prices react to heavy buying
+	var p0: int = sim.market_pct["oil"]
+	for i in 6:
+		c["treasury"] = 5000
+		c["stock"]["oil"] = 0
+		sim.apply_command({"type": "market_buy", "country": 0, "res": "oil", "amount": 20})
+	while sim.day % 5 != 4:
+		sim.tick_day()
+	sim.tick_day()
+	check(sim.market_pct["oil"] >= p0, "heavy buying does not lower the price (%d -> %d)" % [p0, sim.market_pct["oil"]])
+	# population: famine shrinks, normal times grow slowly
+	var d: Dictionary = sim.countries[1]
+	sim.pop_bp[1] = 10000
+	var before: int = sim.pop_bp[1]
+	d["short"] = ["food"]
+	sim._population()
+	check(sim.pop_bp[1] < before, "famine shrinks the population")
+	d["short"] = []
+	sim.day = 4
+	sim.pop_bp[1] = 10000
+	sim._population()
+	check(sim.pop_bp[1] == 10001, "peace and food grow the population slowly")
+	check(sim.pop_index(1) == sim.pop_bp[1], "pop_index reads the stored value")
+	# determinism + save/load
+	var a := Simulation.new()
+	a.setup_scenario(scn)
+	var e := Simulation.new()
+	e.setup_scenario(scn)
+	for i in 40:
+		a.tick_day()
+		e.tick_day()
+	check(a.checksum() == e.checksum(), "simulation with markets is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_markets and r.market_pct == a.market_pct and r.pop_bp == a.pop_bp, "population and prices survive save/load")
+	check(r.checksum() == a.checksum(), "checksum survives save/load with markets")
