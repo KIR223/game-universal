@@ -12,10 +12,10 @@
  },
  "linked_world": {
   "dir": "world_hd",
-  "world_hash": "b272d58f4cdb0c46b4cd1e78f5991535246448d393dda1db61ffebc799a31c9a"
+  "world_hash": "660cabf8ad34dbab7d49688026ed6c74fc3f78288fdf3ecb49c9d63c004397b2"
  },
  "linked_worlds": {
-  "world_hd": "b272d58f4cdb0c46b4cd1e78f5991535246448d393dda1db61ffebc799a31c9a",
+  "world_hd": "660cabf8ad34dbab7d49688026ed6c74fc3f78288fdf3ecb49c9d63c004397b2",
   "world": "7b0225e198cffbe074180257248599271cc886e553b03f51b46acbae922ec060"
  },
  "sources": [

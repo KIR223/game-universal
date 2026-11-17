@@ -645,12 +645,14 @@ def main():
             p = line.rstrip("\n").split("\t")
             admin1_names[p[0]] = p[1]
     admin2_names = {}
+    admin2_gid = {}
     a2path = os.path.join(raw, "geonames", "admin2Codes.txt")
     if os.path.exists(a2path):
         with open(a2path, encoding="utf-8") as f:
             for line in f:
                 p = line.rstrip("\n").split("\t")
                 admin2_names[p[0]] = p[1]
+                admin2_gid[p[0]] = int(p[3]) if len(p) > 3 and p[3].isdigit() else 0
     ne_places = load_geojson(raw, "ne_10m_populated_places")
     ne_xy = np.array([f["geometry"]["coordinates"][:2] for f in ne_places])
     ne_taken = np.zeros(len(ne_places), dtype=bool)
@@ -714,6 +716,10 @@ def main():
         dist2 = (blk[:, None, 0] - ne_xy[None, :, 0]) ** 2 + (blk[:, None, 1] - ne_xy[None, :, 1]) ** 2
         i_ne[c0:c0 + 2000] = dist2.argmin(1)
         d_ne[c0:c0 + 2000] = np.sqrt(dist2.min(1))
+    def _district(s):
+        key = "%s.%s.%s" % (s[7], s[8], s[9])
+        ru = ru_alt.get(admin2_gid.get(key, 0))
+        return ru[1] if ru else admin2_names.get(key, "")
     for i, s in enumerate(sett):
         cid = int(cid_of[i])
         if cid < 0 or cid >= n_land:
@@ -721,7 +727,7 @@ def main():
         pop = s[10]
         rec = {"id": len(settlements), "gn": int(s[0]), "name": s[1], "ascii": s[2], "alt": [a for a in s[3].split(",") if a and a != s[1]][:4],
                "lat": round(s[4], 4), "lon": round(s[5], 4), "pop": pop, "fcode": s[6], "cc": s[7], "adm1": s[8], "adm2": s[9],
-               "district": admin2_names.get("%s.%s.%s" % (s[7], s[8], s[9]), ""),
+               "district": _district(s),
                "cell": cid, "region": int(reg_of_cell[cid]), "capital": 1 if s[6] == "PPLC" else 0}
         j = i_ne[i]
         if d_ne[i] < 0.25 and j < len(ne_places):

@@ -74,9 +74,9 @@
    "bytes": 115936
   },
   "settlements.json.z": {
-   "sha256": "181df299948f7252ce5edc4fb77713916743cf08275d34a0d5abc6d3eda3bfcf",
-   "bytes": 10096355
+   "sha256": "d6f1b32a095a7599065012d41c8eec76a1ec4140babc11d319b50fe423e7e8f4",
+   "bytes": 10173073
   }
  },
- "world_hash": "b272d58f4cdb0c46b4cd1e78f5991535246448d393dda1db61ffebc799a31c9a"
+ "world_hash": "660cabf8ad34dbab7d49688026ed6c74fc3f78288fdf3ecb49c9d63c004397b2"
 }
