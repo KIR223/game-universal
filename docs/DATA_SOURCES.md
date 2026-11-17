@@ -51,3 +51,17 @@ venv/bin/python tools/world/build_world.py --raw RAW_DIR --out data/world
 ```
 `RAW_DIR`: `ne/*.geojson`, `geonames/{cities5000.zip,admin1CodesASCII.txt,admin2Codes.txt,countryInfo.txt}`, `dem/4_X_Y.png` (256 тайлов),
 `owid-energy-data.csv`. Сборка детерминирована (одинаковые входы → одинаковый `world_hash`), занимает ≈ 70 с.
+
+
+## Визуальный слой `data/world_visual` (не влияет на симуляцию)
+- **Natural Earth II 50m** (растр, рельеф и вода, общественное достояние) → тайлы 8×4 по 900×720 px, 0.05°/px (широты 84…−60), формат WebP в файлах `.bin`.
+- **Natural Earth 10m land + minor islands − lakes** → точная маска суши в альфа-канале тайлов (суперсэмплинг 2×). Береговая линия в игре совпадает с источником, а не с растром ячеек.
+- Векторы: берега (допуск 0.008°), озёра, реки, границы стран и областей (Natural Earth 10m).
+- `ext_<мир>.bin`, `land_fraction_<мир>.bin` — продлённые на 2 px в прибрежную воду идентификаторы ячеек и доля суши для выбора ячейки мышью.
+- Пересборка: `python3 tools/world/build_visual.py --raw RAW_DIR --world data/world --out data/world_visual` (для другого набора ячеек: `--world data/world_hd --ext-only`). `manifest.json` содержит хэши файлов и привязку к `world_hash`.
+
+## HD-набор `data/world_hd`
+`build_world.py --res 0.1 --cell-km2 6500 --sea-km2 500000 --adaptive --cities cities500 --dem-dir dem5 --dem-zoom 5 --world-version 3`:
+25 259 ячеек суши (~25 935 всего), 237 255 населённых пунктов GeoNames `cities500`, DEM Terrain Tiles zoom 5 (≈ 5 км). Сценарий `modern_world_hd` (`world_dataset`: `world_hd`).
+Базовый набор `data/world` заморожен (хэш `7b0225e198cffbe0`) — на нём построены эталонные контрольные суммы второго разработчика.
+Ячейки получены взвешенной кластеризацией (плотнее там, где больше населения/сложнее рельеф); число ячеек — не «реальные районы».

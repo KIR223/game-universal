@@ -182,8 +182,11 @@ for fname in idx["scenarios"]:
     is_earth = scn.get("world") == "earth"
     if len(stags) != len(scn["countries"]) or (len(stags) < 2 and not is_earth):
         errors.append(f"scenario {sid}: need >=2 unique country tags")
-    if is_earth and not (root / "data/world/manifest.json").exists():
-        errors.append(f"scenario {sid}: needs data/world")
+    if is_earth and not (root / "data" / scn.get("world_dataset", "world") / "manifest.json").exists():
+        errors.append(f"scenario {sid}: needs data/{scn.get('world_dataset', 'world')}")
+    for rk in scn.get("rules", {}):
+        if rk not in ("terrain", "weather"):
+            errors.append(f"scenario {sid}: unknown rule {rk}")
     for c in scn["countries"]:
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
             errors.append(f"scenario {sid}: bad color for {c.get('tag')}")
@@ -201,39 +204,73 @@ for fname in idx["scenarios"]:
             errors.append(f"scenario {sid}: unknown event {e}")
 
 import hashlib, zlib
-wdir = root / "data" / "world"
-if (wdir / "manifest.json").exists():
+
+
+def check_world(wdir):
     man = json.loads((wdir / "manifest.json").read_text(encoding="utf-8"))
     h = hashlib.sha256()
     for fn in sorted(man["files"]):
         data = (wdir / fn).read_bytes()
         d = hashlib.sha256(data).hexdigest()
         if d != man["files"][fn]["sha256"]:
-            errors.append(f"world file {fn}: sha256 mismatch")
+            errors.append(f"{wdir.name}: file {fn}: sha256 mismatch")
         h.update(fn.encode() + d.encode())
     if h.hexdigest() != man["world_hash"]:
-        errors.append("world_hash does not match the files")
+        errors.append(f"{wdir.name}: world_hash does not match the files")
     cells = json.loads(zlib.decompress((wdir / "cells.json.z").read_bytes()))
     n_total = cells["n_land"] + cells["n_sea"]
     for col in ("cx", "cy", "area", "pixels", "terrain", "elev", "relief"):
         if len(cells[col]) != n_total:
-            errors.append(f"cells column {col} has wrong length")
+            errors.append(f"{wdir.name}: cells column {col} has wrong length")
     for col in ("region", "country", "pop_est", "industry", "infra", "dep_food", "dep_oil", "top_settlement"):
         if len(cells[col]) < cells["n_land"]:
-            errors.append(f"cells column {col} too short")
+            errors.append(f"{wdir.name}: cells column {col} too short")
     sett = json.loads(zlib.decompress((wdir / "settlements.json.z").read_bytes()))
     lens = {k: len(v) for k, v in sett.items()}
     if len(set(lens.values())) != 1:
-        errors.append(f"settlement columns differ in length: {lens}")
+        errors.append(f"{wdir.name}: settlement columns differ in length: {lens}")
     elif lens["pop"] != man["counts"]["settlements"]:
-        errors.append("settlement count differs from manifest")
+        errors.append(f"{wdir.name}: settlement count differs from manifest")
     if any(sett["cell"][i] >= cells["n_land"] or sett["cell"][i] < 0 for i in range(len(sett["cell"]))):
-        errors.append("settlement placed outside land cells")
+        errors.append(f"{wdir.name}: settlement placed outside land cells")
     if any(sett["pop"][i] > sett["pop"][i - 1] for i in range(1, len(sett["pop"]))):
-        errors.append("settlements are not sorted by population")
-    world_summary = f"{n_total} cells, {len(sett['pop'])} settlements"
-else:
-    world_summary = "no world dataset"
+        errors.append(f"{wdir.name}: settlements are not sorted by population")
+    return man, f"{wdir.name}: {n_total} cells ({cells['n_land']} land), {len(sett['pop'])} settlements"
+
+
+summaries = []
+worlds = {}
+for name in ("world", "world_hd"):
+    wdir = root / "data" / name
+    if (wdir / "manifest.json").exists():
+        worlds[name], summ = check_world(wdir)
+        summaries.append(summ)
+world_summary = "; ".join(summaries) if summaries else "no world dataset"
+
+# visual layer (data/world_visual): file hashes and links to the world datasets
+vdir = root / "data" / "world_visual"
+if (vdir / "manifest.json").exists():
+    vm = json.loads((vdir / "manifest.json").read_text(encoding="utf-8"))
+    vh = hashlib.sha256()
+    for fn in sorted(vm["files"]):
+        d = hashlib.sha256((vdir / fn).read_bytes()).hexdigest()
+        if d != vm["files"][fn]["sha256"]:
+            errors.append(f"world_visual: file {fn} sha256 mismatch")
+        vh.update(fn.encode() + d.encode())
+    if vh.hexdigest() != vm["visual_hash"]:
+        errors.append("world_visual: visual_hash does not match the files")
+    for name, wh in vm.get("linked_worlds", {}).items():
+        if name in worlds and worlds[name]["world_hash"] != wh:
+            errors.append(f"world_visual: ext data was built for another {name} (hash differs); rebuild with build_visual.py")
+        if name in worlds:
+            for fn in (f"ext_{name}.bin", f"land_fraction_{name}.bin"):
+                if fn not in vm["files"]:
+                    errors.append(f"world_visual: missing {fn}")
+    im = vm["imagery"]
+    ntiles = (im["w"] // im["tile_w"]) * (im["h"] // im["tile_h"])
+    if sum(1 for f in vm["files"] if f.startswith("tiles/")) != ntiles:
+        errors.append("world_visual: wrong number of imagery tiles")
+    world_summary += f"; visual layer {len(vm['files'])} files"
 
 if errors:
     print("\n".join(errors)); sys.exit(1)

@@ -84,6 +84,13 @@ var _coastal := PackedByteArray()
 var _agg: Dictionary = {}         # country id -> {"prod","pop","ind","income"} (exact; rebuilt when ownership/damage/deposits change)
 var _agg_key: Array = []
 var ai_war_chance := 1.0          # probability gate for AI war declarations (scenario-tunable)
+## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
+var rule_terrain := false         # terrain, roads and railways change movement and supply cost
+var rule_weather := false         # seasons, winter by latitude and local storms slow armies, supply and air operations
+var _cell_lat := PackedFloat32Array()
+var _start_doy := 1
+const TERRAIN_MOVE := {"plains": 100, "desert": 125, "forest": 150, "hills": 165, "mountain": 260, "sea": 100}  # percent of base days
+const TERRAIN_SUPPLY_EXTRA := {"plains": 0, "desert": 2, "forest": 2, "hills": 3, "mountain": 6, "sea": 0}
 var tech_defs: Dictionary = {}
 var tech_order: Array = []
 var alliances: Array = []  # each: {"a": int, "b": int}
@@ -421,7 +428,11 @@ func _set_mission(cid: int, w: Dictionary, mission: String, target: int) -> Dict
 
 
 func _can_fly(w: Dictionary) -> bool:
-	return not countries[w["owner"]]["short"].has("oil")
+	if countries[w["owner"]]["short"].has("oil"):
+		return false
+	if rule_weather and (storm_at(w["base"]) or winter_at(w["base"]) > 85):
+		return false
+	return true
 
 
 func air_oil(cid: int) -> int:
@@ -623,8 +634,10 @@ static func _tag_color(tag: String) -> String:
 
 ## Build the game on the real-world dataset: every sovereign state with territory becomes a country.
 func setup_earth(scn: Dictionary) -> Array:
-	if not EarthWorld.available():
-		return ["real-world dataset is missing (data/world)"]
+	var ds := str(scn.get("world_dataset", "world"))
+	if not EarthWorld.available_dataset(ds):
+		return ["real-world dataset is missing (data/%s)" % ds]
+	EarthWorld.activate(ds)
 	seed_value = int(scn.get("seed", 2026))
 	rng.seed = seed_value
 	_load_static()
@@ -720,7 +733,8 @@ func front_cells(a: int, b: int) -> Array[int]:
 	return out
 
 
-## Cells of `cid` that are not connected to its capital through cells held by itself or allies (pockets / encircled areas).
+## Cells of `cid` that are cut off from its capital by the enemy: not connected through own/allied cells AND touching a cell held by
+## a country it is at war with (islands and exclaves with no enemy next to them are not "encircled").
 func cut_off_cells(cid: int) -> Array[int]:
 	var provs := provinces()
 	var cap: int = countries[cid]["capital"]
@@ -734,10 +748,17 @@ func cut_off_cells(cid: int) -> Array[int]:
 				if not reached.has(q) and (owner[q] == cid or (owner[q] >= 0 and allied(cid, owner[q]))):
 					reached[q] = true
 					queue.append(q)
+	var enemies := enemies_of(cid)
 	var out: Array[int] = []
+	if enemies.is_empty():
+		return out
 	for p in cells_of(cid):
-		if not reached.has(p):
-			out.append(p)
+		if reached.has(p):
+			continue
+		for q in provs[p]["land_neighbors"]:
+			if enemies.has(owner[q]):
+				out.append(p)
+				break
 	return out
 
 
@@ -845,6 +866,9 @@ func setup_scenario(scn: Dictionary) -> Array:
 	disabled_events = scn.get("disabled_events", []).duplicate()
 	grace_days = int(scn.get("grace_days", GRACE_DAYS))
 	ai_war_chance = float(scn.get("ai_war_chance", 1.0))
+	rule_terrain = bool(scn.get("rules", {}).get("terrain", false))
+	rule_weather = bool(scn.get("rules", {}).get("weather", false))
+	_compute_start_doy()
 	scenario_id = str(scn.get("id", ""))
 	if is_earth:
 		var ep := setup_earth(scn)
@@ -2531,15 +2555,73 @@ func net_of(cid: int, res: String) -> int:
 	return c["prod"][res] - c["cons"][res]
 
 
+## Day of the year (1..366) of the scenario start; used by the seasonal model.
+func _compute_start_doy() -> void:
+	var cum := [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+	var parts := start_date.split("-")
+	if parts.size() == 3:
+		_start_doy = cum[clampi(int(parts[1]) - 1, 0, 11)] + int(parts[2])
+	else:
+		_start_doy = 1
+
+
+func _ensure_cell_lat() -> void:
+	if _cell_lat.size() == provinces().size():
+		return
+	_cell_lat = PackedFloat32Array()
+	_cell_lat.resize(provinces().size())
+	var res := float(world.get("res", 0.0))
+	var top := float(world.get("lat_top", 0.0))
+	for p in provinces():
+		_cell_lat[p["id"]] = top - (p["center"].y + 0.5) * res if res > 0.0 else 45.0
+
+
+## Winter severity 0..100 at a cell: peaks mid-January in the north (mid-July in the south) and grows with latitude (integer maths).
+func winter_at(cell: int) -> int:
+	_ensure_cell_lat()
+	var lat := int(_cell_lat[cell])
+	var doy := (_start_doy + day - 1) % 365
+	var dist := mini(absi(doy - 15), 365 - absi(doy - 15))   # 0..182 days from mid-January
+	var north := 100 - dist * 100 / 182
+	var w := north if lat >= 0 else 100 - north
+	var lat_f := clampi((absi(lat) - 25) * 100 / 40, 0, 100)
+	return w * lat_f / 100
+
+
+## Local storm (≈7% of cell-days), deterministic from the calendar and the cell.
+func storm_at(cell: int) -> bool:
+	return ((day / 3) * 7919 + (cell / 37) * 104729) % 100 < 7
+
+
+## Days an army needs to enter `to_cell` from `from_cell` (3 by default). Roads and railways speed it up, terrain and weather slow it.
+func move_days(from_cell: int, to_cell: int) -> int:
+	if not rule_terrain and not rule_weather:
+		return MOVE_DAYS
+	var pct := 100
+	if rule_terrain:
+		pct = TERRAIN_MOVE.get(provinces()[to_cell]["terrain"], 100)
+		var key := mini(from_cell, to_cell) * 100000 + maxi(from_cell, to_cell)
+		if world.get("rail_link", {}).has(key):
+			pct = pct * 50 / 100
+		elif world.get("road_link", {}).has(key):
+			pct = pct * 75 / 100
+	if rule_weather:
+		pct = pct * (100 + winter_at(to_cell) * 80 / 100) / 100
+		if storm_at(to_cell):
+			pct = pct * 130 / 100
+	return maxi(1, (MOVE_DAYS * pct + 50) / 100)
+
+
 func _move_armies() -> void:
 	for a in armies:
 		if a["path"].is_empty():
 			continue
 		a["move"] += 1
-		if a["move"] < MOVE_DAYS:
+		var next_cell: int = a["path"][0]
+		if a["move"] < move_days(a["prov"], next_cell):
 			continue
 		a["move"] = 0
-		var nxt: int = a["path"][0]
+		var nxt: int = next_cell
 		var o := owner[nxt]
 		var cid: int = a["owner"]
 		if o != cid and o >= 0 and not at_war(cid, o) and not allied(cid, o):
@@ -2929,6 +3011,10 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 				var o := owner[q]
 				var hostile := o >= 0 and o != cid and at_war(cid, o)
 				var cost: int = (10 - eff_infra(q)) if (o == cid or allied(cid, o)) else (25 - eff_infra(q))
+				if rule_terrain:
+					cost += TERRAIN_SUPPLY_EXTRA.get(provs[q]["terrain"], 0)
+				if rule_weather:
+					cost += winter_at(q) / 20
 				var nd := d + cost
 				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
 					dist[q] = nd
@@ -3266,7 +3352,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3274,9 +3360,11 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	var sim := Simulation.new()
 	sim.seed_value = d["seed"]
 	if str(d.get("world_kind", "procedural")) == "earth":
-		if not EarthWorld.available():
-			sim.load_error = "real-world dataset is missing"
+		var ds2 := str(d.get("world_dataset", "world"))
+		if not EarthWorld.available_dataset(ds2):
+			sim.load_error = "real-world dataset is missing (%s)" % ds2
 			return sim
+		EarthWorld.activate(ds2)
 		sim._own_earth_world()
 		if str(d.get("world_hash", "")) != str(sim.world.get("world_hash", "")):
 			sim.load_error = "save was made with a different world dataset (%s)" % str(d.get("world_hash", "")).substr(0, 8)
@@ -3307,6 +3395,9 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.grace_days = d["grace_days"]
 	sim.scenario_id = d["scenario_id"]
 	sim.ai_war_chance = float(d.get("ai_war_chance", 1.0))
+	sim.rule_terrain = bool(d.get("rule_terrain", false))
+	sim.rule_weather = bool(d.get("rule_weather", false))
+	sim._compute_start_doy()
 	sim.scenario_deposits = d["scenario_deposits"]
 	for k in sim.scenario_deposits:
 		sim.set_deposits(int(k), sim.scenario_deposits[k])
