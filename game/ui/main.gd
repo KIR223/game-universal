@@ -70,6 +70,7 @@ const REASONS := {
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
 	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
+	"already sanctioned": "санкции уже введены", "no sanctions": "санкций нет",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
 }
@@ -890,6 +891,17 @@ func _diplomacy_buttons(o: int) -> void:
 		_cmd_button("Предложить союз: %s" % oname, {"type": "propose_alliance", "country": player, "target": o})
 		if sim.can_declare_war(player, o):
 			_cmd_button("Объявить войну: %s" % oname, {"type": "declare_war", "country": player, "target": o})
+	if not sim.allied(player, o):
+		_sanction_button(o)
+
+
+## Financial sanctions: cost influence, take a share of the target's income (stacks per sanctioning country).
+func _sanction_button(o: int, parent: Container = null) -> void:
+	var oname: String = sim.countries[o]["name"]
+	if sim.sanctioned_by(player, o):
+		_cmd_button("Снять санкции: %s" % oname, {"type": "lift_sanctions", "country": player, "target": o}, parent)
+	else:
+		_cmd_button("Санкции: %s (−%d влияния)" % [oname, Simulation.SANCTION_COST_PP], {"type": "impose_sanctions", "country": player, "target": o}, parent)
 
 
 func _cmd_button(label: String, cmd: Dictionary, parent: Container = null) -> void:
@@ -2878,6 +2890,11 @@ func _on_province_right_clicked(pid: int, screen_pos: Vector2) -> void:
 			if not sim.allied(player, o):
 				_ctx.add_item("Предложить союз: %s" % oname, 11)
 			_ctx.add_item("Эмбарго: %s" % oname, 13)
+		if not sim.allied(player, o):
+			if sim.sanctioned_by(player, o):
+				_ctx.add_item("Снять санкции: %s" % oname, 16)
+			else:
+				_ctx.add_item("Санкции: %s (−%d влияния)" % [oname, Simulation.SANCTION_COST_PP], 15)
 	if sim.is_earth_world() and not EarthWorld.settlements_in_cell(pid).is_empty():
 		_ctx.add_separator()
 		_ctx.add_item("Главный населённый пункт ячейки", 20)
@@ -2899,6 +2916,8 @@ func _ctx_pressed(id: int) -> void:
 		12: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o})
 		14: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o, "terms": "annex"})
 		13: _pol_cmd_log({"type": "embargo", "country": player, "target": o})
+		15: _pol_cmd_log({"type": "impose_sanctions", "country": player, "target": o})
+		16: _pol_cmd_log({"type": "lift_sanctions", "country": player, "target": o})
 		20:
 			var ids := EarthWorld.settlements_in_cell(pid)
 			if not ids.is_empty():
