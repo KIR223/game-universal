@@ -1400,7 +1400,15 @@ func test_war_flow_via_commands() -> void:
 		if sim.legal[i] >= 0 and sim.owner[i] != sim.legal[i]:
 			controlled_by_other += 1
 	print("  war flow: ", controlled_by_other, " cells under foreign control, legal changed: ", legal_changed, ", wars: ", sim.wars.size())
-	check(legal_changed == 0, "legal[] untouched by occupation (%d changed)" % legal_changed)
+	# occupation alone never changes legal[]; recognised ownership may only change through a peace treaty or a
+	# capitulation, and then only to the side that holds the land (b), from the side that lost it (a)
+	var foreign_title := 0
+	for i in sim.owner.size():
+		if sim.legal[i] != legal0[i] and (sim.owner[i] != b or legal0[i] != a or sim.legal[i] != b):
+			foreign_title += 1
+	check(foreign_title == 0, "legal[] changes only where b took title to land it holds from a (%d wrong)" % foreign_title)
+	if not sim.wars.is_empty():
+		check(legal_changed == 0, "while the war is on legal[] is untouched by occupation (%d changed)" % legal_changed)
 	check(controlled_by_other < sim.cells_of(b).size() + sim.cells_of(a).size(), "war did not flip whole countries at once")
 	# deterministic: an identical command sequence gives an identical state
 	var twin := _war_run(a, b, target, 40)
