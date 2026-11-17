@@ -154,10 +154,12 @@ func _ready() -> void:
 	map_legacy = MapView.new()
 	map_legacy.province_clicked.connect(_on_province_clicked)
 	map_legacy.province_right_clicked.connect(_on_province_right_clicked)
+	map_legacy.box_selected.connect(_on_box_selected)
 	add_child(map_legacy)
 	map_earth = EarthMapView.new()
 	map_earth.province_clicked.connect(_on_province_clicked)
 	map_earth.province_right_clicked.connect(_on_province_right_clicked)
+	map_earth.box_selected.connect(_on_box_selected)
 	add_child(map_earth)
 	map_earth.set_active(false)
 	map = map_legacy
@@ -820,6 +822,33 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			_pending_air = ""
 			map.queue_redraw()
 			_refresh_info()
+
+
+## Own armies inside an outlined map rectangle (world coordinates); empty when none.
+func armies_in_rect(rect: Rect2) -> Array:
+	var out: Array = []
+	if sim == null or player < 0:
+		return out
+	for a in sim.armies_of(player):
+		if rect.has_point(map.cell_world(a["prov"])):
+			out.append(a["id"])
+	return out
+
+
+## Shift + drag: tick the armies inside the rectangle and open the army panel, where they can be made a group.
+func _on_box_selected(rect: Rect2) -> void:
+	var ids := armies_in_rect(rect)
+	if ids.is_empty():
+		return
+	_grp_sel.clear()
+	for id in ids:
+		_grp_sel[id] = true
+	if _toasts != null and is_instance_valid(_toasts):
+		_toasts.show_toast("Выделено армий: %d — создайте группу в панели «Армия»" % ids.size(), "info")
+	if _open_panel_name != "army":
+		_nav_pressed("army")
+	else:
+		_fill_generic("army")
 
 
 func _on_province_clicked(pid: int) -> void:
@@ -2466,7 +2495,8 @@ func _net_on_sim_replaced() -> void:
 
 # ------------------------------------------------------------ settings
 
-const HOTKEYS_TEXT := """Мышь: ЛКМ — выбор клетки / цель приказа, перетаскивание — камера, колесо — масштаб (к курсору), ПКМ — контекстное меню
+const HOTKEYS_TEXT := """Мышь: ЛКМ — выбор клетки / цель приказа, перетаскивание — камера, колесо — масштаб (к курсору), ПКМ — контекстное меню,
+Shift + перетаскивание — выделить свои армии рамкой (потом «Создать группу» в панели «Армия»)
 (на сенсорном экране: касание, перетаскивание, щипок, долгое нажатие вместо ПКМ)
 Пробел — пауза · 1–4 — скорость · M — режим карты · Ctrl+F или / — поиск
 F5 — быстрое сохранение · F9 — загрузить · F11 — полный экран · Esc — снять выбор

@@ -112,6 +112,14 @@ func run_checks() -> void:
 	army["prov"] = cell_a
 	mv.animate_armies(0.016)
 	check(mv._army_vis[army["id"]].distance_to(mv.cell_world(cell_a)) < 0.01, "reduced motion snaps armies to their cell")
+	# Shift + drag: armies inside the rectangle are ticked for a group
+	var a_rect := Rect2(main.map.cell_world(main.sim.armies_of(main.player)[0]["prov"]) - Vector2(5, 5), Vector2(10, 10))
+	var boxed: Array = main.armies_in_rect(a_rect)
+	check(boxed.has(main.sim.armies_of(main.player)[0]["id"]), "box selection finds the army inside the rectangle")
+	check(main.armies_in_rect(Rect2(-5000, -5000, 10, 10)).is_empty(), "an empty rectangle selects nothing")
+	main._on_box_selected(a_rect)
+	check(main._grp_sel.size() == boxed.size() and main._open_panel_name == "army", "box selection ticks the armies and opens the army panel")
+	main._nav_pressed("army")   # close it again for the layout checks
 	# every map mode computes a palette and never fails
 	var m: EarthMapView = main.map
 	for mode in EarthMapView.MODES:
