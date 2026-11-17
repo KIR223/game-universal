@@ -35,6 +35,13 @@ static func add_rows(parent: Control, on_change: Callable) -> void:
 		GameSettings.set_value("reduce_motion", on)
 		on_change.call())
 	parent.add_child(rm)
+	var tut := CheckBox.new()
+	tut.text = "Подсказки обучения в первой игре"
+	tut.button_pressed = bool(GameSettings.get_value("tutorial"))
+	tut.toggled.connect(func(on: bool):
+		GameSettings.set_value("tutorial", on)
+		on_change.call())
+	parent.add_child(tut)
 	var snd := Label.new()
 	snd.text = "Звук"
 	snd.add_theme_color_override("font_color", Design.C_TEXT_DIM)

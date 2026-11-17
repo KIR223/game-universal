@@ -4,7 +4,7 @@ extends RefCounted
 
 const PATH := "user://settings.cfg"
 const DEFAULTS := {
-	"reduce_motion": false, "vol_master": 0.8, "vol_ui": 0.7, "vol_music": 0.35,
+	"reduce_motion": false, "tutorial": true, "vol_master": 0.8, "vol_ui": 0.7, "vol_music": 0.35,
 }
 
 static var path := PATH   # tests point this at a scratch file

@@ -107,6 +107,11 @@ var _tech: PanelContainer
 var _snd_ui: AudioStreamPlayer
 var _weather_fx: WeatherFx
 var _toasts: ToastHost
+var _tut_done := {}                 # tutorial step id -> reached in this game session
+var _tut_banner: PanelContainer
+var _tut_label: Label
+var _tut_t := 0.0
+var _tut_selected := false
 var _weather_t := 0.0
 var _snd_music: AudioStreamPlayer
 var _settings_panel: SettingsPanel
@@ -734,6 +739,10 @@ func _process(delta: float) -> void:
 		_net_frame()
 	if sim == null or player < 0:
 		return
+	_tut_t += delta
+	if _tut_t >= 0.5:
+		_tut_t = 0.0
+		_tutorial_tick()
 	_weather_t += delta
 	if _weather_t >= 0.4 and _weather_fx != null and is_instance_valid(_weather_fx):
 		_weather_t = 0.0
@@ -855,6 +864,7 @@ func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
 		return
 	_play_ui("select")
+	_tut_selected = true
 	if _pending_group >= 0:
 		var rg := sim.apply_command({"type": "group_move", "country": player, "group": _pending_group, "target": pid})
 		if rg["ok"]:
@@ -2034,6 +2044,74 @@ func _chip(kind: String, text: String, color: Color) -> void:
 		l.add_theme_color_override("font_color", color)
 
 
+## Tutorial banner under the top bar: shows the current step, "Пропустить" turns the tutorial off for good.
+func _build_tutorial_banner(root: Control) -> void:
+	_tut_done.clear()
+	_tut_selected = false
+	_tut_banner = PanelContainer.new()
+	_tut_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_tut_banner.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_tut_banner.offset_top = 62
+	_tut_banner.custom_minimum_size = Vector2(minf(720.0, get_viewport().get_visible_rect().size.x * 0.7), 0)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Design.C_PANEL, 0.97)
+	sb.border_color = Design.C_GOLD_DIM
+	sb.set_border_width_all(1)
+	sb.border_width_left = 4
+	sb.set_corner_radius_all(Design.RADIUS)
+	sb.set_content_margin_all(Design.S3)
+	_tut_banner.add_theme_stylebox_override("panel", sb)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", Design.S3)
+	_tut_banner.add_child(hb)
+	_tut_label = Label.new()
+	_tut_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_tut_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(_tut_label)
+	var skip := Button.new()
+	skip.text = "Пропустить"
+	skip.pressed.connect(func():
+		GameSettings.set_value("tutorial", false)
+		_tut_banner.visible = false)
+	hb.add_child(skip)
+	root.add_child(_tut_banner)
+	_tut_banner.visible = bool(GameSettings.get_value("tutorial"))
+	_tutorial_tick()
+
+
+func _tutorial_ctx() -> Dictionary:
+	var moving := false
+	for a in sim.armies_of(player):
+		if not a["path"].is_empty():
+			moving = true
+	return {"selected": _tut_selected, "day": sim.day, "panel": _open_panel_name, "queue": sim.countries[player]["queue"].size(), "moving": moving}
+
+
+## Checks the current step against the game; finished steps stay finished (even if the player undoes them).
+func _tutorial_tick() -> void:
+	if _tut_banner == null or not is_instance_valid(_tut_banner) or sim == null or player < 0:
+		return
+	if not bool(GameSettings.get_value("tutorial")):
+		_tut_banner.visible = false
+		return
+	var ctx := _tutorial_ctx()
+	for st in Tutorial.STEPS:
+		if not _tut_done.get(st["id"], false) and Tutorial.done(st["id"], ctx):
+			_tut_done[st["id"]] = true
+	var i := Tutorial.first_open(_tut_done)
+	if i >= Tutorial.STEPS.size():
+		if _tut_banner.visible:
+			_tut_label.text = "Обучение пройдено. Подсказки можно вернуть в настройках."
+			_tut_banner.visible = true
+			get_tree().create_timer(4.0).timeout.connect(func():
+				GameSettings.set_value("tutorial", false)
+				if is_instance_valid(_tut_banner):
+					_tut_banner.visible = false)
+		return
+	_tut_label.text = Tutorial.STEPS[i]["text"]
+	_tut_banner.visible = true
+
+
 func _build_hud() -> void:
 	_clear_ui()
 	_nav.clear()
@@ -2255,6 +2333,7 @@ func _build_hud() -> void:
 	ui.add_child(_main_menu)
 	_toasts = ToastHost.new()
 	root.add_child(_toasts)
+	_build_tutorial_banner(root)
 	_weather_fx = WeatherFx.new()
 	root.add_child(_weather_fx)
 	root.move_child(_weather_fx, 0)   # behind every panel, above the map

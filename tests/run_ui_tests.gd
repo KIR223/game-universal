@@ -120,6 +120,22 @@ func run_checks() -> void:
 	main._on_box_selected(a_rect)
 	check(main._grp_sel.size() == boxed.size() and main._open_panel_name == "army", "box selection ticks the armies and opens the army panel")
 	main._nav_pressed("army")   # close it again for the layout checks
+	# tutorial banner follows the player's actions, in order, and the skip button switches it off
+	GameSettings.set_value("tutorial", true)
+	main._tut_done.clear()
+	main._tut_selected = false
+	main._tutorial_tick()
+	check(main._tut_banner.visible and main._tut_label.text.begins_with("1/6"), "the tutorial starts with step 1")
+	main._tut_selected = true
+	main._tutorial_tick()
+	check(main._tut_label.text.begins_with("2/6"), "selecting a territory advances the tutorial")
+	main.sim.day += 1
+	main._tutorial_tick()
+	check(main._tut_label.text.begins_with("3/6"), "starting time advances the tutorial")
+	main.sim.day -= 1   # leave the simulation as it was
+	GameSettings.set_value("tutorial", false)
+	main._tutorial_tick()
+	check(not main._tut_banner.visible, "turning the tutorial off hides the banner")
 	# every map mode computes a palette and never fails
 	var m: EarthMapView = main.map
 	for mode in EarthMapView.MODES:

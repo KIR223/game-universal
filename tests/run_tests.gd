@@ -2239,3 +2239,24 @@ func test_missile_sites() -> void:
 		sim.damage[site_cell] = 0
 	var r := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
 	check(r.sites.size() == sim.sites.size() and r.checksum() == sim.checksum(), "sites survive save/load")
+
+
+func test_tutorial_steps() -> void:
+	check(Tutorial.STEPS.size() == 6, "six tutorial steps")
+	var ids := {}
+	for st in Tutorial.STEPS:
+		check(not ids.has(st["id"]) and str(st["text"]).length() > 20, "step %s has a unique id and a text" % st["id"])
+		ids[st["id"]] = true
+	check(not Tutorial.done("select", {}) and Tutorial.done("select", {"selected": true}), "select step")
+	check(not Tutorial.done("time", {"day": 0}) and Tutorial.done("time", {"day": 3}), "time step")
+	check(Tutorial.done("economy", {"panel": "economy"}) and not Tutorial.done("economy", {"panel": "tech"}), "economy step")
+	check(Tutorial.done("tech", {"queue": 1}) and not Tutorial.done("tech", {"queue": 0}), "tech step")
+	check(Tutorial.done("army", {"moving": true}) and not Tutorial.done("army", {}), "army step")
+	check(Tutorial.done("diplomacy", {"panel": "diplomacy"}), "diplomacy step")
+	check(not Tutorial.done("nonsense", {"selected": true}), "unknown steps never finish")
+	check(Tutorial.first_open({}) == 0, "the first step is open at the start")
+	check(Tutorial.first_open({"select": true, "time": true}) == 2, "steps finish in order")
+	var all := {}
+	for st in Tutorial.STEPS:
+		all[st["id"]] = true
+	check(Tutorial.first_open(all) == Tutorial.STEPS.size(), "all steps done")
