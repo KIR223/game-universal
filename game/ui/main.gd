@@ -8,7 +8,7 @@ var sim: Simulation
 var map: MapView
 var map_legacy: MapView
 var map_earth: EarthMapView
-var ui: MarginContainer   # every screen is added here; its margins keep the UI inside the phone safe area
+var ui: Control   # every screen is added here; on phones its offsets keep the UI inside the safe area (a plain Control: children keep their own sizes)
 var player := -1
 var speed_idx := 1
 var accum := 0.0
@@ -97,11 +97,13 @@ var _t_amount := 3
 func _apply_safe_area() -> void:
 	if ui == null:
 		return
-	var inset := MobileLayout.safe_area_insets(DisplayServer.get_display_safe_area(), DisplayServer.window_get_size(), get_viewport().get_visible_rect().size)
-	ui.add_theme_constant_override("margin_left", int(inset.position.x))
-	ui.add_theme_constant_override("margin_top", int(inset.position.y))
-	ui.add_theme_constant_override("margin_right", int(inset.size.x))
-	ui.add_theme_constant_override("margin_bottom", int(inset.size.y))
+	var inset := Rect2()
+	if MobileLayout.is_phone():   # desktop windows have no cutouts: the OS "safe area" there is the usable screen, not the window
+		inset = MobileLayout.safe_area_insets(DisplayServer.get_display_safe_area(), DisplayServer.window_get_size(), get_viewport().get_visible_rect().size)
+	ui.offset_left = inset.position.x
+	ui.offset_top = inset.position.y
+	ui.offset_right = -inset.size.x
+	ui.offset_bottom = -inset.size.y
 
 
 func _ready() -> void:
@@ -119,7 +121,7 @@ func _ready() -> void:
 	map = map_legacy
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	ui = MarginContainer.new()
+	ui = Control.new()
 	ui.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(ui)

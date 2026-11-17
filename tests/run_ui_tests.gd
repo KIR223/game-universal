@@ -18,9 +18,42 @@ func _process(_delta: float) -> bool:
 	_frames += 1
 	if _frames == 3:
 		run_checks()
+	elif _frames == 4:
+		_main.map.hide()   # layout checks need no map drawing (the dummy headless renderer crashes on long map draws)
+	elif _frames >= 6 and _frames < 6 + _layout_panels.size() * 3:
+		_layout_step(_frames - 6)
+	elif _frames == 6 + _layout_panels.size() * 3:
+		_main.queue_free()
 		print("\n%d UI checks passed, %d failed" % [passed, failures])
 		quit(1 if failures > 0 else 0)
 	return false
+
+
+## Layout regression checks (what a screenshot comparison would catch): the HUD must stay aligned at the window edge and
+## every panel must keep its own size, stay inside the window and leave the top bar and the navigation rail visible.
+var _layout_panels := ["economy", "tech", "politics", "intel"]
+var _panel_vars := {"economy": "_eco", "tech": "_tech", "politics": "_pol", "intel": "_intel"}
+
+
+func _layout_step(i: int) -> void:
+	var main: Node = _main
+	var vp: Vector2 = root.get_visible_rect().size
+	var idx := i / 3
+	var phase := i % 3
+	var name: String = _layout_panels[idx]
+	if phase == 0:
+		main._nav_pressed(name)
+	elif phase == 2:
+		var top: Control = main._top
+		check(top.get_global_rect().position.y <= 12.0, "top bar sits at the window edge (y=%.0f)" % top.get_global_rect().position.y)
+		var panel: Control = main.get(_panel_vars[name])
+		check(panel != null and panel.is_inside_tree(), "%s panel is open" % name)
+		if panel != null:
+			var r := panel.get_global_rect()
+			check(r.size.x <= vp.x * 0.8, "%s panel keeps a sane width (%.0f of %.0f px)" % [name, r.size.x, vp.x])
+			check(r.position.x >= 60.0 and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y + 1.0, "%s panel stays inside the window and clear of the nav rail" % name)
+			check(r.position.y >= top.get_global_rect().end.y - 4.0, "%s panel does not cover the top bar" % name)
+		main._nav_pressed(name)
 
 
 func check(cond: bool, msg: String) -> void:
@@ -114,4 +147,3 @@ func run_checks() -> void:
 	main.map.refresh(dirty2)
 	check(m._ctl[f["cell"]] == f["b"], "renderer tracks the new controller of the captured cell")
 	main._refresh_all()
-	main.queue_free()

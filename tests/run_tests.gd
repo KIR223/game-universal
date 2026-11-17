@@ -1730,3 +1730,13 @@ func test_population_and_markets() -> void:
 	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
 	check(r.rule_markets and r.market_pct == a.market_pct and r.pop_bp == a.pop_bp, "population and prices survive save/load")
 	check(r.checksum() == a.checksum(), "checksum survives save/load with markets")
+
+
+func test_design_tokens() -> void:
+	for sp in [Design.S1, Design.S2, Design.S3, Design.S4, Design.S5, Design.S6]:
+		check(sp % 4 == 0, "spacing %d is on the 4 px grid" % sp)
+	for pair in [[Design.C_TEXT, Design.C_PANEL, 4.5], [Design.C_TEXT, Design.C_BG, 4.5], [Design.C_TEXT_DIM, Design.C_PANEL, 4.5], [Design.C_GOLD, Design.C_PANEL, 4.5],
+			[Design.C_OK, Design.C_PANEL, 4.5], [Design.C_WARN, Design.C_PANEL, 4.5], [Design.C_BAD, Design.C_PANEL, 4.5], [Design.C_INFO, Design.C_PANEL, 4.5]]:
+		var cr := Design.contrast(pair[0], pair[1])
+		check(cr >= pair[2], "contrast %.1f:1 >= %.1f for %s on %s" % [cr, pair[2], str(pair[0]), str(pair[1])])
+	check(Design.BTN_H_TOUCH * MobileLayout.PHONE_UI_SCALE >= 44.0, "touch buttons are at least 44 pt")
