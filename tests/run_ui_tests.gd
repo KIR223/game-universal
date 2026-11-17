@@ -93,7 +93,7 @@ func run_checks() -> void:
 	var fr: int = main.sim.countries.find_custom(func(c): return c["name"] == "Франция")
 	check(fr >= 0, "France exists")
 	main._start_playing(fr)
-	check(main._chips.size() == 8 and main._nav.size() == 9 and main._speed_btns.size() == 5, "HUD: resource chips, nav rail, speed controls")
+	check(main._chips.size() == (5 if MobileLayout.is_phone() else 8) and main._nav.size() == 9 and main._speed_btns.size() == 5, "HUD: resource chips, nav rail, speed controls")
 	# armies glide to their new cell (with motion on) instead of jumping; reduced motion snaps at once
 	var mv: EarthMapView = main.map
 	var army: Dictionary = main.sim.armies[0]

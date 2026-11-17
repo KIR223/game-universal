@@ -5,6 +5,7 @@
 #   scons platform=ios arch=arm64 ios_simulator=yes target=template_debug vulkan=no
 # usage: platform/ios/build_simulator.sh /path/to/libgodot.ios.template_debug.arm64.simulator.a [simulator-udid]
 set -euo pipefail
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"   # xcode-select may point at the Command Line Tools after a restart
 ARM64_LIB="${1:?path to libgodot.ios.template_debug.arm64.simulator.a}"
 UDID="${2:-booted}"
 cd "$(dirname "$0")/../.."

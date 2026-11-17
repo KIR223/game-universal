@@ -179,6 +179,11 @@ func _ready() -> void:
 	_apply_safe_area()
 	_setup_audio()
 	apply_settings()
+	print("BOOT main scene ready after %d ms" % Time.get_ticks_msec())
+	if OS.get_cmdline_args().has("--qa-run") or OS.get_cmdline_user_args().has("--qa-run"):
+		var qa := QaRunner.new()
+		add_child(qa)
+		qa.run.call_deferred(self)
 	if MobileLayout.is_phone():
 		OS.low_processor_usage_mode = true      # redraw only when something changed: battery and heat
 		Engine.max_fps = IDLE_FPS                # 60 only while the player touches the screen (see _input), 30 otherwise
@@ -471,6 +476,7 @@ func _bind_map(s: Simulation) -> void:
 
 
 func _start_scenario(scn: Dictionary) -> void:
+	var t_scn := Time.get_ticks_msec()
 	var fresh := Simulation.new()
 	var problems := fresh.setup_scenario(scn)
 	if not problems.is_empty() and fresh.world.is_empty():
@@ -480,6 +486,7 @@ func _start_scenario(scn: Dictionary) -> void:
 	_bind_map(sim)
 	map.player_country = -1
 	_show_country_select()
+	print("BOOT scenario %s ready in %d ms" % [str(scn.get("id", "?")), Time.get_ticks_msec() - t_scn])
 
 
 func _show_scenarios(message: Variant = "") -> void:
@@ -2153,19 +2160,23 @@ func _build_hud() -> void:
 		hb.add_child(b)
 		_speed_btns.append(b)
 	hb.add_child(VSeparator.new())
+	# phones show the essentials only (treasury, influence, stability, manpower, wars); resource stocks live in the Economy panel
+	var phone_chips := ["coin", "influence", "stability", "manpower", "flag"]
 	for chip in [["coin", "Казна: запас (доход минус расходы в день)"], ["influence", "Политическое влияние (+1 в день)"], ["stability", "Стабильность"],
 			["manpower", "Людские ресурсы"], ["steel", "Сталь: запас (баланс в день)"], ["oil", "Нефть: запас (баланс в день)"], ["food", "Продовольствие: запас (баланс в день)"], ["flag", "Войны, в которых вы участвуете"]]:
+		if MobileLayout.is_phone() and not phone_chips.has(chip[0]):
+			continue
 		hb.add_child(_make_chip(chip[0], chip[1]))
-	if sim.rule_modern:
+	if sim.rule_modern and not MobileLayout.is_phone():
 		hb.add_child(_make_chip("missile", "Ракеты в запасе: тактические / дальние, ПВО страны"))
-	if sim.rule_markets:
+	if sim.rule_markets and not MobileLayout.is_phone():
 		hb.add_child(_make_chip("market", "Население страны (индекс); цены — в панели «Экономика»"))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(spacer)
 	_search = LineEdit.new()
 	_search.placeholder_text = "Поиск: город, регион, страна"
-	_search.custom_minimum_size = Vector2(200, 0)
+	_search.custom_minimum_size = Vector2(130 if MobileLayout.is_phone() else 200, 0)
 	_search.clear_button_enabled = true
 	_search.text_changed.connect(_on_search_changed)
 	_search.tooltip_text = "Ctrl+F или /"

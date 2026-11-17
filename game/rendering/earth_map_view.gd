@@ -961,7 +961,10 @@ func _draw_settlements(z: float) -> void:
 			draw_multiline(dots[cls], Color(1, 1, 1, 0.95), 2.0 * radii[cls])
 	for pos in caps:
 		var d := r * 1.7
-		draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
+		if d < 0.5:   # at extreme zoom the diamond collapses and the triangulator rejects it
+			draw_circle(pos, maxf(d, 0.05), Color("f0c75e"))
+		else:
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
 	var labels := 0
 	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
 	for job in jobs:
@@ -987,7 +990,10 @@ func _draw_facilities(z: float) -> void:
 	for a in fac.get("airports", []):
 		var pos2 := world_pos_of(float(a["lon"]), float(a["lat"]))
 		if cull.has_point(pos2):
-			draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
+			if r < 0.5:
+				draw_circle(pos2, maxf(r, 0.05), Color("e8e8ee"))
+			else:
+				draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
 
 
 ## Region (admin-1) centroids in simulation-raster pixels, weighted by cell area; built once per dataset.
