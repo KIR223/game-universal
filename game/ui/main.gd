@@ -61,7 +61,7 @@ const REASONS := {
 	"not enough funds": "не хватает денег", "not enough steel": "не хватает стали",
 	"seller has no surplus": "у продавца нет излишков", "no trade route": "нет торгового пути",
 	"cannot afford": "не хватает денег для сделки", "too many deals": "слишком много сделок",
-	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "no common border": "нет границы",
+	"human target": "партнёр — игрок", "invalid province": "неверная провинция", "already maximal": "уже максимальный уровень", "invalid operation": "неверная операция", "no free agents": "нет свободных агентов", "network too weak": "сеть слишком слаба", "already running": "уже выполняется", "invalid law": "неверный закон", "already in force": "уже действует", "not enough influence": "не хватает политического влияния", "on cooldown": "ещё нельзя повторить", "requirements not met": "условия не выполнены", "invalid decision": "неверное решение", "no such event": "событие не найдено", "invalid option": "неверный вариант", "airbase full": "аэродром переполнен", "invalid base": "неверный аэродром", "out of range": "вне радиуса действия", "wrong aircraft for mission": "эта авиация не подходит для задачи", "land target required": "нужна сухопутная цель", "target not at war": "нет войны с владельцем", "invalid wing": "неверная авиагруппа", "queue full": "очередь заполнена", "missing prerequisite": "нужна предыдущая технология", "already researched or queued": "уже изучено или в очереди", "no manpower": "не хватает людей", "army full": "армия заполнена", "capital lost": "столица потеряна", "not in same province": "армии в разных провинциях", "invalid army": "неверная армия", "refused": "отказано", "refused terms": "противник не согласен отдать территории", "nothing to annex": "нечего аннексировать", "invalid terms": "неверные условия мира", "no common border": "нет границы",
 	"no transport": "нет транспорта", "no route": "нет маршрута", "ally": "это союзник",
 	"already embargoed": "эмбарго уже введено", "no embargo": "эмбарго не было", "no port": "нет порта",
 	"invalid target": "неверная цель", "not at war": "нет войны", "already at war": "уже война",
@@ -817,12 +817,20 @@ func _refresh_info() -> void:
 		_diplomacy_buttons(o)
 
 
+## Peace that also makes the occupation permanent: legal title to the cells we hold from the enemy.
+func _annex_button(o: int, parent: Container = null) -> void:
+	var held := sim.cells_held_from(player, o).size()
+	if held > 0:
+		_cmd_button("Мир с аннексией занятого (%d яч.)" % held, {"type": "propose_peace", "country": player, "target": o, "terms": "annex"}, parent)
+
+
 func _diplomacy_buttons(o: int) -> void:
 	var oname: String = sim.countries[o]["name"]
 	if sim.allied(player, o):
 		_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o})
 	elif sim.at_war(player, o):
 		_cmd_button("Предложить мир: %s" % oname, {"type": "propose_peace", "country": player, "target": o})
+		_annex_button(o)
 	else:
 		_cmd_button("Предложить союз: %s" % oname, {"type": "propose_alliance", "country": player, "target": o})
 		if sim.can_declare_war(player, o):
@@ -2079,6 +2087,7 @@ func _g_dip() -> void:
 			_cmd_button("Расторгнуть союз", {"type": "break_alliance", "country": player, "target": o}, acts)
 		elif sim.at_war(player, o):
 			_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": o}, acts)
+			_annex_button(o, acts)
 		else:
 			_cmd_button("Союз", {"type": "propose_alliance", "country": player, "target": o}, acts)
 			if sim.can_declare_war(player, o):
@@ -2239,6 +2248,7 @@ func _fill_wars() -> void:
 		row.add_child(l)
 		var acts := HFlowContainer.new()
 		_cmd_button("Предложить мир", {"type": "propose_peace", "country": player, "target": enemy}, acts)
+		_annex_button(enemy, acts)
 		row.add_child(acts)
 		v.add_child(row)
 	v.add_child(HSeparator.new())
@@ -2468,6 +2478,9 @@ func _on_province_right_clicked(pid: int, screen_pos: Vector2) -> void:
 		var oname: String = sim.countries[o]["name"]
 		if sim.at_war(player, o):
 			_ctx.add_item("Предложить мир: %s" % oname, 12)
+			var held := sim.cells_held_from(player, o).size()
+			if held > 0:
+				_ctx.add_item("Мир с аннексией занятого (%d яч.): %s" % [held, oname], 13)
 		else:
 			if sim.can_declare_war(player, o) and not sim.allied(player, o):
 				_ctx.add_item("Объявить войну: %s" % oname, 10)
@@ -2493,6 +2506,7 @@ func _ctx_pressed(id: int) -> void:
 		10: _pol_cmd_log({"type": "declare_war", "country": player, "target": o})
 		11: _pol_cmd_log({"type": "propose_alliance", "country": player, "target": o})
 		12: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o})
+		13: _pol_cmd_log({"type": "propose_peace", "country": player, "target": o, "terms": "annex"})
 		13: _pol_cmd_log({"type": "embargo", "country": player, "target": o})
 		20:
 			var ids := EarthWorld.settlements_in_cell(pid)
