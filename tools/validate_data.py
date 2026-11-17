@@ -240,7 +240,7 @@ def check_world(wdir):
 
 summaries = []
 worlds = {}
-for name in ("world", "world_hd"):
+for name in ("world", "world_hd", "world_xl"):
     wdir = root / "data" / name
     if (wdir / "manifest.json").exists():
         worlds[name], summ = check_world(wdir)

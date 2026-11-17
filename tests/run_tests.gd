@@ -1477,3 +1477,20 @@ func test_visual_layer_data() -> void:
 			if d < best:
 				best = d
 	check(best < 0.6, "fine coastline passes near the toe of Italy (%.2f deg)" % best)
+
+
+func test_xl_world_dataset() -> void:
+	check(EarthWorld.available_dataset("world_xl"), "XL dataset is present")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world_xl.json")
+	var a := Simulation.new()
+	var probs := a.setup_scenario(scn)
+	check(probs.is_empty(), "XL scenario loads %s" % str(probs))
+	check(int(a.world["land_count"]) >= 50000, "XL map has 50k+ land cells (%d)" % int(a.world["land_count"]))
+	check(a.world["provinces"].size() < 65535, "cell ids fit the 16-bit extended raster")
+	var b := Simulation.new()
+	b.setup_scenario(scn)
+	for i in 5:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "XL simulation is deterministic")
+	EarthWorld.activate("world")

@@ -858,6 +858,10 @@ func _pop_threshold(z: float) -> int:
 		return 40000
 	if z < 6.0:
 		return 12000
+	if z < 9.0:
+		return 3000
+	if z < 14.0:
+		return 800
 	return 0
 
 

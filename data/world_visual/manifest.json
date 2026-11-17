@@ -11,18 +11,19 @@
   "lat_bottom": -60.0
  },
  "linked_world": {
-  "dir": "world_hd",
-  "world_hash": "660cabf8ad34dbab7d49688026ed6c74fc3f78288fdf3ecb49c9d63c004397b2"
+  "dir": "world_xl",
+  "world_hash": "813423dc5489b399877bb83a998b9a59ac4cc026f684f47dd9ea0d9510f40d8d"
  },
  "linked_worlds": {
   "world_hd": "660cabf8ad34dbab7d49688026ed6c74fc3f78288fdf3ecb49c9d63c004397b2",
-  "world": "7b0225e198cffbe074180257248599271cc886e553b03f51b46acbae922ec060"
+  "world": "7b0225e198cffbe074180257248599271cc886e553b03f51b46acbae922ec060",
+  "world_xl": "813423dc5489b399877bb83a998b9a59ac4cc026f684f47dd9ea0d9510f40d8d"
  },
  "sources": [
   "Natural Earth II 50m shaded relief + water (public domain)",
   "Natural Earth 10m land, lakes, rivers, admin (public domain)"
  ],
- "visual_hash": "006110fb79ad9c6f8bb2abf7478e41c1ed01182becf62007740a657e08f695e1",
+ "visual_hash": "3ad257b417fcaac684d053f466ce426aff1c65b72e1c9bcf7136479f22686edd",
  "files": {
   "ext_world.bin": {
    "sha256": "d149f1c4831920be735de836341c36886a028d833c72ed3ea19d93cede33de71",
@@ -32,11 +33,19 @@
    "sha256": "75e59c041d471965be5718822c67f2fe5e93fc3c2e6bde1ac911b7ffd33a758b",
    "bytes": 470701
   },
+  "ext_world_xl.bin": {
+   "sha256": "5e52b69a0a8cea6e81f47725b9cdd6c36238c99416713c90d6cd0245ba3883a2",
+   "bytes": 643809
+  },
   "land_fraction_world.bin": {
    "sha256": "79114de0c2e1755f31e186b6390bc7d2badff45be992ad187a97e068ecefc202",
    "bytes": 75577
   },
   "land_fraction_world_hd.bin": {
+   "sha256": "a0ff87e6e19075a444f1c5fada79c1e3fc31eb98ad7eb1c3dca95e1c13c74194",
+   "bytes": 148638
+  },
+  "land_fraction_world_xl.bin": {
    "sha256": "a0ff87e6e19075a444f1c5fada79c1e3fc31eb98ad7eb1c3dca95e1c13c74194",
    "bytes": 148638
   },
