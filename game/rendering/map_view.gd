@@ -35,6 +35,7 @@ var _labels: Array = []
 var _drag_start := Vector2.ZERO
 var _rc_start := Vector2.ZERO
 var _dragging := false
+var _touch := TouchGestures.new()
 var _drag_moved := false
 
 
@@ -312,6 +313,17 @@ func province_at(world_pos: Vector2) -> int:
 func _unhandled_input(event: InputEvent) -> void:
 	if sim == null:
 		return
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		var g := _touch.feed(event, Time.get_ticks_msec() / 1000.0)
+		if not g.is_empty():
+			_dragging = false
+			_zoom_at(g["zoom"])
+			camera.position -= (g["pan"] as Vector2) / camera.zoom.x
+			_clamp_camera()
+		return
+	if _touch.multi and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		_dragging = false   # emulated mouse events of a multi-finger gesture
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -331,7 +343,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_drag_moved = false
 				_drag_start = mb.position
 			else:
-				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT:
+				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT and not _touch.long_fired:
 					var pid := province_at(get_global_mouse_position())
 					if pid >= 0:
 						province_clicked.emit(pid)

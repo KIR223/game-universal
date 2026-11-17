@@ -8,7 +8,7 @@ var sim: Simulation
 var map: MapView
 var map_legacy: MapView
 var map_earth: EarthMapView
-var ui: CanvasLayer
+var ui: MarginContainer   # every screen is added here; its margins keep the UI inside the phone safe area
 var player := -1
 var speed_idx := 1
 var accum := 0.0
@@ -93,6 +93,17 @@ var _t_partner := 0
 var _t_amount := 3
 
 
+## Keeps the interface out of the notch, rounded corners and home indicator (iOS/Android display cutouts).
+func _apply_safe_area() -> void:
+	if ui == null:
+		return
+	var inset := MobileLayout.safe_area_insets(DisplayServer.get_display_safe_area(), DisplayServer.window_get_size(), get_viewport().get_visible_rect().size)
+	ui.add_theme_constant_override("margin_left", int(inset.position.x))
+	ui.add_theme_constant_override("margin_top", int(inset.position.y))
+	ui.add_theme_constant_override("margin_right", int(inset.size.x))
+	ui.add_theme_constant_override("margin_bottom", int(inset.size.y))
+
+
 func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color("0b1119"))
 	_theme = _make_theme()
@@ -106,8 +117,16 @@ func _ready() -> void:
 	add_child(map_earth)
 	map_earth.set_active(false)
 	map = map_legacy
-	ui = CanvasLayer.new()
-	add_child(ui)
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	ui = MarginContainer.new()
+	ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(ui)
+	if MobileLayout.is_phone():
+		get_window().content_scale_factor = MobileLayout.PHONE_UI_SCALE
+	get_window().size_changed.connect(_apply_safe_area)
+	_apply_safe_area()
 	_show_menu()
 
 
@@ -1660,6 +1679,18 @@ func _build_hud() -> void:
 	_right.offset_top = 56
 	_right.offset_bottom = -204
 	root.add_child(_right)
+	if MobileLayout.is_phone():
+		# phones: the journal panel starts closed and opens with a button, so the map keeps the screen
+		_right.visible = false
+		var jb := Button.new()
+		jb.text = "Журнал"
+		jb.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		jb.offset_left = -108
+		jb.offset_right = -8
+		jb.offset_top = 56
+		jb.offset_bottom = 92
+		jb.pressed.connect(func(): _right.visible = not _right.visible)
+		root.add_child(jb)
 	var rv := VBoxContainer.new()
 	rv.add_theme_constant_override("separation", 6)
 	_right.add_child(rv)
@@ -1688,7 +1719,7 @@ func _build_hud() -> void:
 	_bottom = PanelContainer.new()
 	_bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_bottom.offset_left = 68
-	_bottom.offset_right = -360
+	_bottom.offset_right = -8 if MobileLayout.is_phone() else -360
 	_bottom.offset_top = -196
 	_bottom.offset_bottom = -8
 	root.add_child(_bottom)

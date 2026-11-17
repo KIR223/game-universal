@@ -639,6 +639,11 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	if _touch.long_press_due(Time.get_ticks_msec() / 1000.0) and sim != null:
+		var rid := province_at(get_global_mouse_position())
+		if rid >= 0:
+			_dragging = false
+			province_right_clicked.emit(rid, _touch.press_position())
 	if not is_earth or sim == null:
 		return
 	var cam := camera.get_screen_center_position()

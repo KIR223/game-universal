@@ -1557,3 +1557,60 @@ func test_incremental_aggregate_matches_rebuild() -> void:
 				if inc[o]["prod"].get(r, 0) != fresh[o]["prod"][r]:
 					same = false
 	check(same, "incremental per-country aggregate equals a full rebuild")
+
+
+func _touch_ev(idx: int, pos: Vector2, pressed: bool) -> InputEventScreenTouch:
+	var e := InputEventScreenTouch.new()
+	e.index = idx
+	e.position = pos
+	e.pressed = pressed
+	return e
+
+
+func _drag_ev(idx: int, pos: Vector2) -> InputEventScreenDrag:
+	var e := InputEventScreenDrag.new()
+	e.index = idx
+	e.position = pos
+	return e
+
+
+func test_touch_gestures() -> void:
+	# pinch: fingers move apart -> zoom in; both move right -> pan
+	var g := TouchGestures.new()
+	g.feed(_touch_ev(0, Vector2(100, 100), true), 0.0)
+	g.feed(_touch_ev(1, Vector2(200, 100), true), 0.01)
+	check(g.multi, "two fingers start a multi-touch gesture")
+	var r := g.feed(_drag_ev(1, Vector2(300, 100)), 0.02)
+	check(is_equal_approx(r["zoom"], 2.0), "pinch apart doubles the zoom (%s)" % str(r.get("zoom")))
+	check((r["pan"] as Vector2).is_equal_approx(Vector2(50, 0)), "midpoint movement pans the map")
+	r = g.feed(_drag_ev(0, Vector2(150, 100)), 0.03)
+	check(is_equal_approx(r["zoom"], 150.0 / 200.0 * 1.0) or r["zoom"] < 1.0, "pinch together zooms out")
+	g.feed(_touch_ev(1, Vector2(300, 100), false), 0.04)
+	check(g.multi, "gesture stays multi-touch until every finger is lifted")
+	g.feed(_touch_ev(0, Vector2(150, 100), false), 0.05)
+	check(not g.multi and g.points.is_empty(), "all fingers lifted ends the gesture")
+	# long press: rests 0.5 s -> fires once; moving cancels it
+	var h := TouchGestures.new()
+	h.feed(_touch_ev(0, Vector2(50, 50), true), 1.0)
+	check(not h.long_press_due(1.3), "no long press before 0.5 s")
+	check(h.long_press_due(1.6), "long press fires after 0.5 s")
+	check(not h.long_press_due(2.0) and h.long_fired, "long press fires only once per touch")
+	h.feed(_touch_ev(0, Vector2(50, 50), false), 2.1)
+	var m := TouchGestures.new()
+	m.feed(_touch_ev(0, Vector2(50, 50), true), 1.0)
+	m.feed(_drag_ev(0, Vector2(90, 50)), 1.1)
+	check(not m.long_press_due(2.0), "moving the finger cancels the long press")
+	# a second finger cancels a pending long press
+	var n := TouchGestures.new()
+	n.feed(_touch_ev(0, Vector2(50, 50), true), 1.0)
+	n.feed(_touch_ev(1, Vector2(80, 50), true), 1.1)
+	check(not n.long_press_due(2.0), "a second finger cancels the long press")
+
+
+func test_safe_area_insets() -> void:
+	# iPhone-like: 1179x2556 px, notch 59 px top, home indicator 34 px bottom; UI viewport 393x852 units
+	var ins := MobileLayout.safe_area_insets(Rect2i(0, 59, 1179, 2556 - 59 - 34), Vector2i(1179, 2556), Vector2(393, 852))
+	check(is_equal_approx(ins.position.y, 59.0 / 3.0), "top inset follows the notch (%.1f)" % ins.position.y)
+	check(is_equal_approx(ins.size.y, 34.0 / 3.0), "bottom inset follows the home indicator (%.1f)" % ins.size.y)
+	check(ins.position.x == 0.0 and ins.size.x == 0.0, "no side insets in portrait")
+	check(MobileLayout.safe_area_insets(Rect2i(), Vector2i(0, 0), Vector2(100, 100)) == Rect2(), "empty safe area gives no insets")
