@@ -5,10 +5,10 @@ before it is committed. CI (`tools/check_licenses.py`) fails if `game/assets/` c
 
 | Asset | Source | License | Used in |
 |-------|--------|---------|---------|
-| *(none yet)* | | | |
+| `game/assets/fonts/PTSans-Regular.ttf`, `PTSans-Bold.ttf` (PT Sans Web) | https://github.com/google/fonts/tree/main/ofl/ptsans (ParaType) | SIL Open Font License 1.1 — text in `game/assets/fonts/OFL-PTSans.txt` (`OFL-PTSans.txt`) | all UI text and map labels (`game/ui/ui_font.gd`) |
 
-Currently the game uses **no external assets**: terrain, UI and map graphics are generated procedurally in code;
-text is rendered with Godot's built-in default font (Open Sans / Noto, MIT/OFL, bundled with the engine).
+Terrain, UI and map graphics are generated procedurally in code. Text is rendered with **PT Sans** (OFL 1.1, bundled in `game/assets/fonts/`);
+glyphs it lacks fall back to Godot's built-in default font (Open Sans / Noto, MIT/OFL, bundled with the engine).
 
 
 ## Геоданные (data/world)

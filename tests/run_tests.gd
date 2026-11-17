@@ -1363,6 +1363,293 @@ func test_earth_determinism_and_performance() -> void:
 	print("  earth: setup %d ms, %.0f ms/day, %d countries, %d wars" % [setup_ms, per_day, a.countries.size(), a.wars.size()])
 
 
+## End-to-end war on the real map driven ONLY through public commands (as a player or a network client would):
+## declare_war -> move_army -> days pass. Control (owner[]) changes cell by cell while legal ownership (legal[]) does not;
+## the whole run is deterministic and survives a save/load in the middle of the war.
+func _war_run(a: int, b: int, target: int, days: int) -> Simulation:
+	var sim := _earth()
+	check(sim.apply_command({"type": "declare_war", "country": a, "target": b})["ok"], "declare_war accepted")
+	var moved := 0
+	for army in sim.armies_of(a):
+		if sim.apply_command({"type": "move_army", "country": a, "army": army["id"], "target": target})["ok"]:
+			moved += 1
+	check(moved > 0, "at least one army accepted a move order (%d)" % moved)
+	for i in days:
+		sim.tick_day()
+	return sim
+
+
+func test_war_flow_via_commands() -> void:
+	var probe := _earth()
+	var f := _find_border(probe)
+	check(not f.is_empty(), "border pair for the war flow test")
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var target := -1
+	for q in probe.provinces()[f["cell"]]["land_neighbors"]:
+		if probe.owner[q] == b:
+			target = q
+			break
+	check(target >= 0, "a cell of the enemy next to the border")
+	var legal0 := probe.legal.duplicate()
+	var sim := _war_run(a, b, target, 40)
+	var controlled_by_other := 0
+	var legal_changed := 0
+	for i in sim.owner.size():
+		if sim.legal[i] != legal0[i]:
+			legal_changed += 1
+		if sim.legal[i] >= 0 and sim.owner[i] != sim.legal[i]:
+			controlled_by_other += 1
+	print("  war flow: ", controlled_by_other, " cells under foreign control, legal changed: ", legal_changed, ", wars: ", sim.wars.size())
+	# occupation alone never changes legal[]; recognised ownership may only change through a peace treaty or a
+	# capitulation: between the two belligerents, and only on land the new legal owner actually holds
+	var foreign_title := 0
+	for i in sim.owner.size():
+		if sim.legal[i] != legal0[i]:
+			var between := (sim.legal[i] == a and legal0[i] == b) or (sim.legal[i] == b and legal0[i] == a)
+			if not between or sim.owner[i] != sim.legal[i]:
+				foreign_title += 1
+	check(foreign_title == 0, "legal[] changes only between the belligerents and only on land the new owner holds (%d wrong)" % foreign_title)
+	if not sim.wars.is_empty():
+		check(legal_changed == 0, "while the war is on legal[] is untouched by occupation (%d changed)" % legal_changed)
+	check(controlled_by_other < sim.cells_of(b).size() + sim.cells_of(a).size(), "war did not flip whole countries at once")
+	# deterministic: an identical command sequence gives an identical state
+	var twin := _war_run(a, b, target, 40)
+	check(twin.checksum() == sim.checksum(), "identical commands -> identical checksum")
+	check(twin.owner == sim.owner and twin.legal == sim.legal, "identical owner[] and legal[]")
+	# save/load in the middle of the war keeps owner[] and legal[] separate and exact
+	check(SaveSystem.save(sim, "wartest"), "save mid-war")
+	var loaded := SaveSystem.load_slot("wartest")
+	check(loaded != null and loaded.checksum() == sim.checksum(), "load mid-war: same checksum")
+	check(loaded != null and loaded.owner == sim.owner and loaded.legal == sim.legal, "load mid-war: owner[] and legal[] restored")
+	if loaded != null:
+		for i in 20:
+			sim.tick_day()
+			loaded.tick_day()
+		check(loaded.checksum() == sim.checksum(), "loaded game continues identically for 20 more days")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/wartest.sav"))
+
+
+## Cross-platform determinism: golden checksums recorded on Windows. CI runs this on Linux, macOS and Windows, so any
+## divergence in floats, hashing or RNG between platforms (a Windows <-> macOS multiplayer desync) fails here first.
+## If simulation rules change on purpose, regenerate: run the test, copy the printed values.
+const GOLDEN_IDLE_30 := 3494266976
+const GOLDEN_WAR_40 := 2834175281
+
+
+func test_cross_platform_golden_checksums() -> void:
+	var idle := _earth()
+	for i in 30:
+		idle.tick_day()
+	var probe := _earth()
+	var f := _find_border(probe)
+	var target := -1
+	for q in probe.provinces()[f["cell"]]["land_neighbors"]:
+		if probe.owner[q] == f["b"]:
+			target = q
+			break
+	var war := _war_run(f["a"], f["b"], target, 40)
+	print("  golden idle30=", idle.checksum(), " war40=", war.checksum())
+	check(idle.checksum() == GOLDEN_IDLE_30, "idle world after 30 days matches the golden checksum on every platform")
+	check(war.checksum() == GOLDEN_WAR_40, "war after 40 days matches the golden checksum on every platform")
+## Peace treaty with the "annex" term is the only war outcome that changes legal[]: control already held becomes
+## recognised, land the loser held of ours is handed back, and an AI only agrees when clearly outmatched.
+func test_peace_treaty_annexes_occupied_land() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var cell: int = f["cell"]
+	check(not sim.apply_command({"type": "propose_peace", "country": a, "target": b, "terms": "bogus"})["ok"], "unknown peace terms are rejected")
+	sim.wars.append({"a": b, "b": a, "start": -100})   # an old war: b attacks a
+	check(sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"}).get("reason", "") == "nothing to annex", "nothing held -> nothing to annex")
+	# b occupies one cell of a
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+	sim._add_army(b, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[cell] == b and sim.legal[cell] == a, "cell occupied: controlled by b, still legally a's")
+	check(sim.cells_held_from(b, a) == [cell], "cells_held_from lists exactly the occupied cell")
+	# a hold one of b's cells too (it must be handed back)
+	var other := -1
+	for q in sim.cells_of(b):
+		if sim.legal[q] == b and not sim.provinces()[q]["land_neighbors"].has(cell) and q != sim.countries[b]["capital"]:
+			other = q
+			break
+	sim.set_owner(other, a)
+	check(sim.legal[other] == b and sim.owner[other] == a, "a holds one of b's cells")
+	# AI a refuses to cede land to an enemy that is not clearly stronger (it would still agree to a plain peace)
+	sim.armies = sim.armies.filter(func(x): return x["owner"] != a)
+	if sim.army_strength(b) >= sim.army_strength(a) * 1.5:
+		sim._add_army(a, sim.countries[a]["capital"], [sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor"), sim._make_div("armor")])
+	var weak := sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"})
+	check(not weak["ok"] and weak.get("reason", "") == "refused terms", "AI refuses to cede land to an enemy that is not clearly stronger (%s)" % str(weak))
+	check(sim.at_war(a, b) and sim.legal[cell] == a, "a refused treaty changes nothing")
+	# b becomes clearly stronger: the same treaty is accepted
+	sim.armies = sim.armies.filter(func(x): return x["owner"] != a)
+	var expected := sim.cells_held_from(b, a).size()
+	var legal_before := sim.legal.duplicate()
+	var res := sim.apply_command({"type": "propose_peace", "country": b, "target": a, "terms": "annex"})
+	check(res["ok"], "a clearly weaker AI accepts the annexation treaty (%s)" % str(res))
+	check(not sim.at_war(a, b), "the war is over")
+	check(sim.legal[cell] == b and sim.owner[cell] == b, "occupied cell is legally b's now; control is unchanged")
+	check(sim.owner[other] == b, "land a held of b's is handed back (control)")
+	var changed := 0
+	for i in sim.legal.size():
+		if sim.legal[i] != legal_before[i]:
+			changed += 1
+	check(changed == expected, "exactly the annexed cells changed legal title (%d of %d)" % [changed, expected])
+	check(sim.owner[sim.countries[a]["capital"]] == a, "the loser's capital is still on its own land")
+	# survives a save/load
+	check(SaveSystem.save(sim, "peacetest"), "save after treaty")
+	var loaded := SaveSystem.load_slot("peacetest")
+	check(loaded != null and loaded.legal == sim.legal and loaded.checksum() == sim.checksum(), "legal[] after the treaty survives save/load")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/peacetest.sav"))
+
+
+## Surrender is a treaty: when a capital falls the winner gets legal title to everything it holds from the loser.
+func test_capitulation_annexes_held_land() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	var cap: int = sim.countries[a]["capital"]
+	sim.wars.append({"a": b, "b": a, "start": 0})
+	var held: int = f["cell"]
+	for cell in [held, cap]:
+		sim.armies = sim.armies.filter(func(x): return x["prov"] != cell)
+		sim._add_army(b, cell, [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(not sim.at_war(a, b), "the war ended by capitulation")
+	check(sim.owner[cap] == b and sim.legal[cap] == b, "the fallen capital is now legally the winner's")
+	check(sim.owner[held] == b and sim.legal[held] == b, "every cell the winner holds is recognised after the surrender")
+	check(sim.owner[sim.countries[a]["capital"]] == a or not sim.countries[a]["alive"], "the loser's new capital is on its own land")
+	check(sim.cells_held_from(b, a).is_empty(), "no unrecognised occupation is left between the two")
+
+
+## A tired AI that is clearly outmatched concedes what the stronger side holds; a roughly equal one only makes peace.
+func test_tired_ai_concedes_to_a_clearly_stronger_enemy() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	sim.wars.append({"a": b, "b": a, "start": -200})
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != f["cell"] and x["owner"] != a)
+	sim._add_army(b, f["cell"], [sim._make_div("infantry"), sim._make_div("infantry")])
+	sim._occupation()
+	check(sim.owner[f["cell"]] == b and sim.legal[f["cell"]] == a, "b occupies a cell of a")
+	sim._ai()
+	check(not sim.at_war(a, b), "the exhausted AI ended the war")
+	check(sim.legal[f["cell"]] == b, "the clearly stronger enemy got legal title to the cell it holds")
+
+
+## Armies cut off deep in enemy land walk home instead of starving; supplied or home armies are left alone.
+func test_ai_pulls_starving_armies_back() -> void:
+	var sim := _earth()
+	var f := _find_border(sim)
+	var a: int = f["a"]
+	var b: int = f["b"]
+	sim.wars.append({"a": a, "b": b, "start": 0})
+	var deep := -1
+	for q in sim.provinces()[f["cell"]]["land_neighbors"]:
+		if sim.owner[q] == b:
+			deep = q
+			break
+	check(deep >= 0, "an enemy cell next to the border")
+	sim.armies = sim.armies.filter(func(x): return x["prov"] != deep)
+	var army := sim._add_army(a, deep, [sim._make_div("infantry")])
+	army["supply"] = 10
+	check(sim._ai_retreat_starving(a) >= 1, "a starving army in enemy land is ordered back")
+	check(not army["path"].is_empty() and sim.owner[army["path"][army["path"].size() - 1]] == a, "its route ends on its own land")
+	army["path"] = []
+	army["supply"] = 90
+	check(sim._ai_retreat_starving(a) == 0 and army["path"].is_empty(), "a well supplied army stays")
+	army["supply"] = 10
+	army["prov"] = f["cell"]   # our own cell
+	check(sim._ai_retreat_starving(a) == 0, "a starving army on its own land is not moved")
+
+
+## The state hash must see recognised ownership: two games that differ only in legal[] are out of sync.
+func test_checksum_covers_legal_ownership() -> void:
+	var a := _earth()
+	var b := _earth()
+	check(a.checksum() == b.checksum(), "identical games share a checksum")
+	var cell := 0
+	for i in b.owner.size():
+		if b.owner[i] >= 0:
+			cell = i
+			break
+	var other: int = (b.owner[cell] + 1) % b.countries.size()
+	b.legal[cell] = other
+	check(a.checksum() != b.checksum(), "a different legal[] changes the checksum")
+
+
+## Sanctions: financial pressure that costs the imposer influence and takes a share of the target's income,
+## stacks per sanctioning country (capped), can be lifted, survives saves, and changes nothing when unused.
+func test_sanctions() -> void:
+	var sim := _earth()
+	var base_sum := sim.checksum()
+	var target: int = sim.countries.find_custom(func(c): return c["name"] == "Франция")
+	var imposers: Array[int] = []
+	for c in sim.countries:
+		if c["id"] != target and c["alive"] and not sim.allied(c["id"], target) and imposers.size() < 6 and not sim.cells_of(c["id"]).is_empty():
+			imposers.append(c["id"])
+	for id in imposers:
+		sim.countries[id]["pp"] = 200
+	# validation
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": imposers[0]})["ok"], "no sanctions against oneself")
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": 9999})["ok"], "no sanctions against a country that does not exist")
+	sim.countries[imposers[0]]["pp"] = Simulation.SANCTION_COST_PP - 1
+	check(sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target}).get("reason", "") == "not enough influence", "sanctions cost political influence")
+	sim.countries[imposers[0]]["pp"] = 200
+	check(sim.checksum() != base_sum, "(sanity) the treasury edits above changed the state")
+	# effect on income
+	sim._economy()
+	var income0: int = sim.countries[target]["income"]
+	check(income0 > 0, "the target has income (%d)" % income0)
+	var pp_before: int = sim.countries[imposers[0]]["pp"]
+	check(sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target})["ok"], "sanctions are imposed")
+	check(sim.countries[imposers[0]]["pp"] == pp_before - Simulation.SANCTION_COST_PP, "the imposer paid %d influence" % Simulation.SANCTION_COST_PP)
+	check(not sim.apply_command({"type": "impose_sanctions", "country": imposers[0], "target": target})["ok"], "the same sanctions cannot be imposed twice")
+	check(sim.sanction_level(target) == 1 and sim.sanction_pct(target) == Simulation.SANCTION_INCOME_PCT, "one sanctioning country = %d%%" % Simulation.SANCTION_INCOME_PCT)
+	sim._economy()
+	var income1: int = sim.countries[target]["income"]
+	check(absi(income1 - income0 * 88 / 100) <= 1, "income fell by 12%% (%d -> %d)" % [income0, income1])
+	# stacking and the cap
+	for i in range(1, imposers.size()):
+		sim.apply_command({"type": "impose_sanctions", "country": imposers[i], "target": target})
+	check(sim.sanction_level(target) == imposers.size() and sim.sanction_pct(target) == Simulation.SANCTION_MAX_PCT, "sanctions stack and are capped at %d%% (%d countries)" % [Simulation.SANCTION_MAX_PCT, imposers.size()])
+	sim._economy()
+	check(absi(sim.countries[target]["income"] - income0 * 52 / 100) <= 1, "income at the cap is 52%% of normal (%d)" % sim.countries[target]["income"])
+	# lifting
+	check(not sim.apply_command({"type": "lift_sanctions", "country": target, "target": imposers[0]})["ok"], "a country cannot lift sanctions it never imposed")
+	var level_before: int = sim.sanction_level(target)
+	check(sim.apply_command({"type": "lift_sanctions", "country": imposers[1], "target": target})["ok"], "an imposer lifts its own sanctions")
+	check(sim.sanction_level(target) == level_before - 1 and sim.sanctioned_by(imposers[0], target) and not sim.sanctioned_by(imposers[1], target), "...and only its own: the others stay (level %d -> %d)" % [level_before, sim.sanction_level(target)])
+	for id in imposers:
+		sim.apply_command({"type": "lift_sanctions", "country": id, "target": target})
+	check(sim.sanctions.is_empty() and sim.sanction_pct(target) == 0, "all sanctions lifted")
+	sim._economy()
+	check(sim.countries[target]["income"] == income0, "income is back to normal (%d)" % sim.countries[target]["income"])
+	# save / load keeps them; a game that never used them is unchanged
+	sim.apply_command({"type": "impose_sanctions", "country": imposers[1], "target": target})
+	var with_sanctions := sim.checksum()
+	check(SaveSystem.save(sim, "sanctest"), "save with sanctions")
+	var loaded := SaveSystem.load_slot("sanctest")
+	check(loaded != null and loaded.sanctions == sim.sanctions and loaded.checksum() == with_sanctions, "sanctions survive save/load")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://saves/sanctest.sav"))
+	sim.apply_command({"type": "lift_sanctions", "country": imposers[1], "target": target})
+	var fresh := _earth()
+	var fresh_sum := fresh.checksum()
+	check(fresh.sanctions.is_empty() and fresh_sum == base_sum, "a fresh game has no sanctions and its checksum is unchanged")
+	# a destroyed country takes its sanctions with it
+	fresh.countries[imposers[2]]["pp"] = 100
+	fresh.apply_command({"type": "impose_sanctions", "country": imposers[2], "target": target})
+	for p in fresh.cells_of(imposers[2]).duplicate():
+		fresh.set_owner(p, target)
+	fresh._eliminate()
+	check(not fresh.countries[imposers[2]]["alive"] and fresh.sanctions.is_empty(), "sanctions of a destroyed country disappear")
+
+
 func test_terrain_weather_rules() -> void:
 	var base := _earth()
 	check(not base.rule_terrain and not base.rule_weather, "rules are off by default")

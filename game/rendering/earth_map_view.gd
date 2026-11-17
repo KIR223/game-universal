@@ -30,6 +30,7 @@ var _tile_lru: Array = []
 var _want_tiles: Array = []
 var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
 var quality := "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
+var detail := GraphicsQuality.Level.HIGH   # same setting as `quality`, as a GraphicsQuality level (labels, city density, roads)
 var _tile_grid := Vector2i(8, 4)
 var _world_w := 7200.0
 var _world_h := 4000.0
@@ -349,6 +350,14 @@ func province_at(world_pos: Vector2) -> int:
 	return base
 
 
+## Graphics quality (Settings / menu): sets the imagery tile level AND the drawing budget (labels, cities, roads).
+func set_quality(level: int) -> void:
+	detail = clampi(level, GraphicsQuality.Level.LOW, GraphicsQuality.Level.HIGH)
+	quality = ["low", "medium", "high"][detail]
+	_want_tiles.clear()
+	queue_redraw()
+
+
 func set_mode(m: String) -> void:
 	if m == mode or not is_earth:
 		return
@@ -639,6 +648,7 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	_smooth_zoom(delta)
 	if not is_earth or sim == null:
 		return
 	var cam := camera.get_screen_center_position()
@@ -856,7 +866,7 @@ func _draw_base() -> void:
 			_draw_layer("border0", keys, Color(1, 1, 1, 0.45 if mode != "legal" else 0.8), 1.0)
 		if z >= 1.1 and (mode == "admin" or z >= 2.0):
 			_draw_layer("border1", keys, Color(1, 1, 1, 0.26), 0.8)
-		if z >= 1.6 or mode == "logistics" or mode == "infra":
+		if z >= GraphicsQuality.params(detail)["roads_zoom"] or mode == "logistics" or mode == "infra":
 			if z >= 0.8:
 				_draw_layer("roads", keys, Color(0.95, 0.85, 0.55, 0.55 if mode != "logistics" else 0.9), 0.8)
 				_draw_layer("rails", keys, Color(0.08, 0.08, 0.1, 0.6), 0.9)
@@ -891,8 +901,9 @@ func _pop_threshold(z: float) -> int:
 func _draw_settlements(z: float) -> void:
 	if not _data_ready:
 		return
-	var thr := _pop_threshold(z)
-	var font := ThemeDB.fallback_font
+	var qp := GraphicsQuality.params(detail)
+	var thr := int(_pop_threshold(z) * qp["pop_scale"])
+	var font := UiFont.regular()
 	var r := 2.4 / z
 	var halo := 0.9 / z
 	var dots := PackedVector2Array()
@@ -932,7 +943,7 @@ func _draw_settlements(z: float) -> void:
 	var labels := 0
 	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
 	for job in jobs:
-		if labels >= 220:
+		if labels >= qp["labels"]:
 			break
 		var pos2: Vector2 = job[0]
 		var gk := Vector2i(int(pos2.x * z / 90.0), int(pos2.y * z / 16.0))
@@ -1016,19 +1027,34 @@ func _draw_labels() -> void:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
-	_draw_region_labels(z, ThemeDB.fallback_font)
-	if z > 5.0:
-		return
-	var font := ThemeDB.fallback_font
-	# biggest countries first; a label is skipped when it would overlap one already placed (screen-space rectangles)
+	_draw_region_labels(z, UiFont.regular())
+	var font := UiFont.bold()
+	for l in label_layout():
+		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
+
+
+## Country labels that fit the current zoom: biggest countries first, a label is skipped when it would overlap one already
+## placed (screen-space rectangles). A country whose centre of mass is not on its own land (overseas territories: France ends
+## up in the Atlantic) is labelled at its capital. Each entry: cid, name, pos (world), px (font size), width, box (screen px).
+func label_layout() -> Array:
+	var out: Array = []
+	var z := camera.zoom.x
+	if z > 5.0 or sim == null:
+		return out
+	var font := UiFont.bold()
 	var order: Array = _agg.keys()
-	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x)
+	order.sort_custom(func(x, y): return _agg[x].x > _agg[y].x or (_agg[x].x == _agg[y].x and x < y))
 	var placed: Array[Rect2] = []
 	for cid in order:
 		var a: Vector3 = _agg[cid]
 		if a.x < 1.0:
 			continue
 		var pos := px_to_world(Vector2(a.y / a.x, a.z / a.x))
+		var under := province_at(pos)
+		if under < 0 or sim.owner[under] != cid:
+			var cap: int = sim.countries[cid]["capital"]
+			if cap >= 0 and sim.owner[cap] == cid:
+				pos = px_to_world(sim.provinces()[cap]["center"])
 		if not cull.has_point(pos):
 			continue
 		var fs_px := clampf(9.0 + sqrt(a.x) * 0.9, 9.0, 26.0)
@@ -1039,8 +1065,7 @@ func _draw_labels() -> void:
 			continue
 		var px := int(fs_px)
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
-		var sp := pos * z
-		var rect := Rect2(sp + Vector2(-tw * 0.5 - 4.0, -px * 0.7), Vector2(tw + 8.0, px * 1.25))
+		var rect := Rect2(pos * z + Vector2(-tw * 0.5 - 4.0, -px * 0.7), Vector2(tw + 8.0, px * 1.25))
 		var clash := false
 		for r in placed:
 			if r.intersects(rect):
@@ -1049,7 +1074,8 @@ func _draw_labels() -> void:
 		if clash:
 			continue
 		placed.append(rect)
-		_text(font, pos, nm, px, Color(1, 1, 1, 0.92), -tw * 0.5)
+		out.append({"cid": cid, "name": nm, "pos": pos, "px": px, "width": tw, "box": rect})
+	return out
 
 
 ## Text in true screen-pixel size: glyphs are rasterised at `px` and the camera zoom is cancelled, so labels stay sharp at any zoom.

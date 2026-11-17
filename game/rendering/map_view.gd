@@ -36,6 +36,7 @@ var _drag_start := Vector2.ZERO
 var _rc_start := Vector2.ZERO
 var _dragging := false
 var _drag_moved := false
+var _press_ms := 0
 
 
 func _ready() -> void:
@@ -193,7 +194,7 @@ func _draw_base() -> void:
 func _draw_units() -> void:
 	var provs := sim.provinces()
 	var us := ui_scale
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	var fsz := maxi(int(round(8.0)), 1)
 	# armies (drawn in a local frame anchored at the cell centre so sizes stay constant on screen)
 	var slot := {}
@@ -287,7 +288,7 @@ func _draw_units() -> void:
 
 
 func _draw_labels() -> void:
-	var font := ThemeDB.fallback_font
+	var font := UiFont.regular()
 	for l in _labels:
 		var fs: int = l["size"]
 		var text: String = l["name"]
@@ -330,11 +331,15 @@ func _unhandled_input(event: InputEvent) -> void:
 				_dragging = true
 				_drag_moved = false
 				_drag_start = mb.position
+				_press_ms = Time.get_ticks_msec()
 			else:
 				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT:
 					var pid := province_at(get_global_mouse_position())
 					if pid >= 0:
-						province_clicked.emit(pid)
+						if TouchSupport.is_long_press(Time.get_ticks_msec() - _press_ms, _drag_moved, OS.has_feature("mobile")):
+							province_right_clicked.emit(pid, get_viewport().get_mouse_position())
+						else:
+							province_clicked.emit(pid)
 				_dragging = false
 	elif event is InputEventMouseMotion and _dragging:
 		var mm := event as InputEventMouseMotion
@@ -349,12 +354,53 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.position += (event as InputEventPanGesture).delta * 12.0 / camera.zoom.x
 		_clamp_camera()
 	elif event is InputEventMagnifyGesture:
-		_zoom_at((event as InputEventMagnifyGesture).factor)
+		_zoom_at((event as InputEventMagnifyGesture).factor, (event as InputEventMagnifyGesture).position)
 
 
-func _zoom_at(factor: float) -> void:
-	var z := clampf(camera.zoom.x * factor, min_zoom, max_zoom)
+## Smooth zoom towards the cursor (HoI4-style): wheel notches / pinch only set a target; _smooth_zoom() eases the camera to it
+## while keeping the world point under the cursor (or the pinch centre) fixed on screen.
+var _zoom_target := 1.0
+var _zooming := false
+var _zoom_anchor_world := Vector2.ZERO
+var _zoom_anchor_screen := Vector2.ZERO
+const ZOOM_SPEED := 16.0   # larger = snappier
+
+
+func _process(delta: float) -> void:
+	_smooth_zoom(delta)
+
+
+func _zoom_at(factor: float, anchor_screen: Variant = null) -> void:
+	var anchor: Vector2 = anchor_screen if anchor_screen != null else get_viewport().get_mouse_position()
+	if not _zooming:
+		_zoom_target = camera.zoom.x
+	_zoom_target = clampf(_zoom_target * factor, min_zoom, max_zoom)
+	# the world point under the anchor, from the zoom/centre the camera has RIGHT NOW
+	var half := get_viewport_rect().size * 0.5
+	_zoom_anchor_screen = anchor
+	_zoom_anchor_world = camera.position + (anchor - half) / camera.zoom.x
+	_zooming = true
+	camera.position_smoothing_enabled = false
+
+
+## One animation step; returns true while still zooming. Called every frame by the map views.
+func _smooth_zoom(delta: float) -> bool:
+	if not _zooming:
+		return false
+	var z := camera.zoom.x
+	if absf(_zoom_target - z) < 0.0005 * z:
+		z = _zoom_target
+		_zooming = false
+	else:
+		z += (_zoom_target - z) * (1.0 - exp(-ZOOM_SPEED * delta))
 	camera.zoom = Vector2.ONE * z
+	var half := get_viewport_rect().size * 0.5
+	camera.position = _zoom_anchor_world - (_zoom_anchor_screen - half) / z
+	if sim != null:
+		_clamp_camera()
+	if not _zooming:
+		camera.position_smoothing_enabled = true
+	return _zooming
 
 
 func _clamp_camera() -> void:
