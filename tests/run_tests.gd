@@ -1776,3 +1776,16 @@ func test_settings_and_sound() -> void:
 	var first := amb.data.decode_s16(0)
 	var last := amb.data.decode_s16((amb.loop_end - 1) * 2)
 	check(absi(first - last) < 4000, "ambient loop seam is smooth (%d vs %d)" % [first, last])
+
+
+func test_weather_fx_intensity() -> void:
+	var off := WeatherFx.state_for(90, true, 3.0, false, false)
+	check(off["snow"] == 0.0 and off["rain"] == 0.0, "no weather effects on the Low profile")
+	check(WeatherFx.state_for(90, true, 3.0, true, true)["snow"] == 0.0, "no weather effects with reduced motion")
+	check(WeatherFx.state_for(90, true, 0.5, true, false)["snow"] == 0.0, "no weather effects when zoomed far out")
+	check(WeatherFx.state_for(100, false, 2.0, true, false)["snow"] == 1.0, "deep winter snows at full intensity")
+	check(WeatherFx.state_for(10, false, 2.0, true, false)["snow"] == 0.0, "summer has no snow")
+	var storm := WeatherFx.state_for(10, true, 2.0, true, false)
+	check(storm["rain"] > 0.5 and storm["snow"] == 0.0, "a summer storm brings rain")
+	var wstorm := WeatherFx.state_for(80, true, 2.0, true, false)
+	check(wstorm["rain"] == 0.0 and wstorm["snow"] >= 0.9, "a winter storm brings snow, not rain")

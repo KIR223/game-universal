@@ -77,6 +77,8 @@ const EFFECT_NAMES := {
 }
 var _tech: PanelContainer
 var _snd_ui: AudioStreamPlayer
+var _weather_fx: WeatherFx
+var _weather_t := 0.0
 var _snd_music: AudioStreamPlayer
 var _settings_panel: SettingsPanel
 var _music_thread: Thread
@@ -655,6 +657,10 @@ func _set_speed(i: int) -> void:
 func _process(delta: float) -> void:
 	if sim == null or player < 0:
 		return
+	_weather_t += delta
+	if _weather_t >= 0.4 and _weather_fx != null and is_instance_valid(_weather_fx):
+		_weather_t = 0.0
+		_weather_fx.refresh(map, sim)
 	var rate: float = SPEEDS[speed_idx]
 	if rate <= 0.0 or (_event_panel != null and is_instance_valid(_event_panel)):
 		return
@@ -1016,16 +1022,12 @@ func _toggle_eco() -> void:
 	_eco.theme = _theme
 	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_eco.position = Vector2(68, 56)
-	_eco.custom_minimum_size = Vector2(520, 0)
+	_eco.custom_minimum_size = Vector2(_panel_w(), 0)
 	ui.add_child(_eco)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	_eco.add_child(v)
-	var h := Label.new()
-	h.text = "Экономика и торговля"
-	h.add_theme_font_size_override("font_size", 20)
-	h.add_theme_color_override("font_color", Color("e0c070"))
-	v.add_child(h)
+	v.add_child(_panel_header("Экономика и торговля", func(): _nav_pressed("economy")))
 	_eco_dyn = VBoxContainer.new()
 	v.add_child(_eco_dyn)
 	v.add_child(HSeparator.new())
@@ -1216,23 +1218,12 @@ func _toggle_tech() -> void:
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_tech.position = Vector2(68, 56)
-	_tech.custom_minimum_size = Vector2(900, 560)
+	_tech.custom_minimum_size = Vector2(_panel_w(), 560)
 	ui.add_child(_tech)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	_tech.add_child(v)
-	var head := HBoxContainer.new()
-	v.add_child(head)
-	var h := Label.new()
-	h.text = "Исследования"
-	h.add_theme_font_size_override("font_size", 20)
-	h.add_theme_color_override("font_color", Color("e0c070"))
-	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(h)
-	var close := Button.new()
-	close.text = "Закрыть"
-	close.pressed.connect(_toggle_tech)
-	head.add_child(close)
+	v.add_child(_panel_header("Исследования", _toggle_tech))
 	_tech_queue_box = VBoxContainer.new()
 	v.add_child(_tech_queue_box)
 	v.add_child(HSeparator.new())
@@ -1426,23 +1417,12 @@ func _toggle_pol() -> void:
 	_pol.theme = _theme
 	_pol.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_pol.position = Vector2(68, 56)
-	_pol.custom_minimum_size = Vector2(760, 560)
+	_pol.custom_minimum_size = Vector2(_panel_w(), 560)
 	ui.add_child(_pol)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	_pol.add_child(v)
-	var head := HBoxContainer.new()
-	v.add_child(head)
-	var h := Label.new()
-	h.text = "Политика"
-	h.add_theme_font_size_override("font_size", 20)
-	h.add_theme_color_override("font_color", Color("e0c070"))
-	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(h)
-	var close := Button.new()
-	close.text = "Закрыть"
-	close.pressed.connect(_toggle_pol)
-	head.add_child(close)
+	v.add_child(_panel_header("Политика", _toggle_pol))
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1576,23 +1556,12 @@ func _toggle_intel() -> void:
 	_intel.theme = _theme
 	_intel.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_intel.position = Vector2(68, 56)
-	_intel.custom_minimum_size = Vector2(720, 520)
+	_intel.custom_minimum_size = Vector2(_panel_w(), 560)
 	ui.add_child(_intel)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	_intel.add_child(v)
-	var head := HBoxContainer.new()
-	v.add_child(head)
-	var h := Label.new()
-	h.text = "Разведка"
-	h.add_theme_font_size_override("font_size", 20)
-	h.add_theme_color_override("font_color", Color("e0c070"))
-	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(h)
-	var close := Button.new()
-	close.text = "Закрыть"
-	close.pressed.connect(_toggle_intel)
-	head.add_child(close)
+	v.add_child(_panel_header("Разведка", _toggle_intel))
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1692,6 +1661,28 @@ func _intel_refresh() -> void:
 		chance_txt = "   Шанс успеха: %d%%" % sim.op_chance(player, target, type)
 	desc.text = "%s\nДлительность: %d дн.  Нужна сеть ≥ %d%%.%s" % [d["desc"], d["duration"], d["min_network"], chance_txt]
 	_intel_body.add_child(desc)
+
+
+## Width shared by all modal panels: the design width, never more than 80 % of the window.
+func _panel_w() -> float:
+	return minf(float(Design.PANEL_W), get_viewport().get_visible_rect().size.x * 0.8 - 68.0)
+
+
+## One header for every modal panel: gold title on the left, icon close button on the right.
+func _panel_header(title: String, on_close: Callable) -> HBoxContainer:
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", Design.S2)
+	var h := Label.new()
+	h.text = title
+	h.add_theme_font_size_override("font_size", Design.FS_H2)
+	h.add_theme_color_override("font_color", Design.C_GOLD)
+	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(h)
+	var x := IconButton.new("close", "Закрыть (Esc)", Vector2(Design.BTN_H, Design.BTN_H))
+	x.pad = 8.0
+	x.pressed.connect(on_close)
+	head.add_child(x)
+	return head
 
 
 func _h1(text: String) -> Label:
@@ -1939,6 +1930,9 @@ func _build_hud() -> void:
 	_main_menu.add_item("В главное меню", 4)
 	_main_menu.id_pressed.connect(_menu_pressed)
 	ui.add_child(_main_menu)
+	_weather_fx = WeatherFx.new()
+	root.add_child(_weather_fx)
+	root.move_child(_weather_fx, 0)   # behind every panel, above the map
 	_right_set_tab("events")
 	_set_speed(speed_idx)
 
@@ -2019,24 +2013,16 @@ func _open_generic(name: String) -> void:
 	_generic = PanelContainer.new()
 	_generic.theme = _theme
 	_generic.position = Vector2(68, 56)
-	_generic.custom_minimum_size = Vector2(520, 640)
+	_generic.custom_minimum_size = Vector2(_panel_w(), 600)
 	ui.add_child(_generic)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 8)
 	_generic.add_child(v)
-	var head := HBoxContainer.new()
-	v.add_child(head)
 	var title := ""
 	for it in NAV_ITEMS:
 		if it[0] == name:
 			title = it[1]
-	var h := _h1(title)
-	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(h)
-	var x := IconButton.new("close", "Закрыть", Vector2(30, 30))
-	x.pad = 6.0
-	x.pressed.connect(func(): _nav_pressed(name))
-	head.add_child(x)
+	v.add_child(_panel_header(title, func(): _nav_pressed(name)))
 	if name == "diplomacy" or name == "stats":
 		var f := LineEdit.new()
 		f.placeholder_text = "Фильтр по названию…"

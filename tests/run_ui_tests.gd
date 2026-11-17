@@ -10,6 +10,9 @@ var _frames := 0
 
 
 func _initialize() -> void:
+	GameSettings.path = "user://test_ui_settings.cfg"   # scratch settings: reduced motion makes panels appear at once, so layout can be measured
+	GameSettings.reset_for_tests()
+	GameSettings.set_value("reduce_motion", true)
 	_main = load("res://game/ui/main.tscn").instantiate()
 	root.add_child(_main)
 
@@ -24,6 +27,7 @@ func _process(_delta: float) -> bool:
 		_layout_step(_frames - 6)
 	elif _frames == 6 + _layout_panels.size() * 3:
 		_main.queue_free()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(GameSettings.path))
 		print("\n%d UI checks passed, %d failed" % [passed, failures])
 		quit(1 if failures > 0 else 0)
 	return false
@@ -31,8 +35,8 @@ func _process(_delta: float) -> bool:
 
 ## Layout regression checks (what a screenshot comparison would catch): the HUD must stay aligned at the window edge and
 ## every panel must keep its own size, stay inside the window and leave the top bar and the navigation rail visible.
-var _layout_panels := ["economy", "tech", "politics", "intel"]
-var _panel_vars := {"economy": "_eco", "tech": "_tech", "politics": "_pol", "intel": "_intel"}
+var _layout_panels := ["economy", "tech", "politics", "intel", "diplomacy", "army", "stats"]
+var _panel_vars := {"economy": "_eco", "tech": "_tech", "politics": "_pol", "intel": "_intel", "diplomacy": "_generic", "army": "_generic", "stats": "_generic"}
 
 
 func _layout_step(i: int) -> void:
@@ -51,7 +55,7 @@ func _layout_step(i: int) -> void:
 		if panel != null:
 			var r := panel.get_global_rect()
 			check(r.size.x <= vp.x * 0.8, "%s panel keeps a sane width (%.0f of %.0f px)" % [name, r.size.x, vp.x])
-			check(r.position.x >= 60.0 and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y + 1.0, "%s panel stays inside the window and clear of the nav rail" % name)
+			check(r.position.x >= 60.0 and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y + 1.0, "%s panel stays inside the window and clear of the nav rail (%s of %s)" % [name, str(r), str(vp)])
 			check(r.position.y >= top.get_global_rect().end.y - 4.0, "%s panel does not cover the top bar" % name)
 		main._nav_pressed(name)
 
