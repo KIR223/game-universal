@@ -757,6 +757,10 @@ func setup_earth(scn: Dictionary) -> Array:
 		_init_politics(cid)
 		var inc: float = income_factor.get(pc.get("income", ""), 1.0)
 		var n_div := clampi(1 + int(sqrt(float(pc["pop"]) / 1000000.0) / 1.4 * inc), 1, 36)
+		if rule_fiscal_balance:
+			# start with armies the economy can pay for: GDP income per day / upkeep of one division (500 hp at the reduced rate)
+			var per_div := 500.0 / (200.0 * 100.0 / UPKEEP_PCT)
+			n_div = mini(n_div, maxi(1, int(float(gdp_of[cid]) / GDP_INCOME_DIV / per_div * 0.8) + 1))
 		var by_pop: Array = own.duplicate()
 		by_pop.sort_custom(func(a, b): return provs[a]["pop_real"] > provs[b]["pop_real"] or (provs[a]["pop_real"] == provs[b]["pop_real"] and a < b))
 		var stacks := mini(maxi(1, (n_div + 2) / 3), mini(by_pop.size(), 6))
