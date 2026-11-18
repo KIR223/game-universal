@@ -393,3 +393,33 @@ func run_checks() -> void:
 	main.map.refresh(dirty2)
 	check(m._ctl[f["cell"]] == f["b"], "renderer tracks the new controller of the captured cell")
 	main._refresh_all()
+	# the "Управление" panel exists only with the gov2 rule and drives real commands
+	check(not main._nav.has("gov"), "no management panel without the gov2 rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"gov2": true}
+	main._start_scenario(scn)
+	var fr2: int = main.sim.countries.find_custom(func(c): return c["name"] == "Франция")
+	main._start_playing(fr2)
+	check(main._nav.has("gov") and main._nav.size() == 10, "gov2 adds the management item to the navigation")
+	main._nav_pressed("gov")
+	check(main._open_panel_name == "gov" and main._generic != null, "management panel opens")
+	var gbtns := 0
+	var glabels := 0
+	var gstack: Array = [main._gbody]
+	while not gstack.is_empty():
+		var gn: Node = gstack.pop_back()
+		for ch in gn.get_children():
+			gstack.append(ch)
+			if ch is Button:
+				gbtns += 1
+				check(ch.custom_minimum_size.y >= 40.0, "management buttons are finger-sized")
+			elif ch is Label:
+				glabels += 1
+	check(gbtns >= 20 and glabels >= 25, "management panel lists controls and figures (%d buttons, %d glabels)" % [gbtns, glabels])
+	var tax0: int = main.sim.x["fin"][fr2]["tax"]
+	main._gov_cmd({"type": "set_tax", "country": fr2, "rate": tax0 + 5})
+	check(main.sim.x["fin"][fr2]["tax"] == tax0 + 5, "a panel control changes the tax rate")
+	main._gov_cmd({"type": "borrow", "country": fr2, "amount": 999999})
+	check(main._generic != null and is_instance_valid(main._generic), "a refused command keeps the panel open")
+	main._nav_pressed("gov")
+	check(main._open_panel_name == "", "management panel closes")

@@ -6,7 +6,7 @@ extends RefCounted
 const NAMES := [
 	"state", "economy", "build", "diplomacy", "army", "tech", "politics", "intel", "stats", "bell", "search", "layers", "menu",
 	"coin", "influence", "stability", "manpower", "steel", "oil", "food", "pause", "play", "fast", "faster", "fastest", "close", "plus", "flag", "gear",
-	"air", "fleet", "missile", "drone", "market", "weather", "satellite",
+	"air", "fleet", "missile", "drone", "market", "weather", "satellite", "gov",
 ]
 
 
@@ -52,6 +52,11 @@ static func draw(ci: CanvasItem, kind: String, r: Rect2, col: Color, w: float = 
 			ci.draw_rect(Rect2(P.call(-8, 1), Vector2(4, 7) * u), col)
 			ci.draw_rect(Rect2(P.call(-2, -3), Vector2(4, 11) * u), col)
 			ci.draw_rect(Rect2(P.call(4, -8), Vector2(4, 16) * u), col)
+		"gov":  # columned building
+			ci.draw_polyline(PackedVector2Array([P.call(-8, -3), P.call(0, -8), P.call(8, -3), P.call(-8, -3)]), col, w)
+			for gx in [-5.0, 0.0, 5.0]:
+				ci.draw_line(P.call(gx, -1), P.call(gx, 6), col, w)
+			ci.draw_line(P.call(-8, 8), P.call(8, 8), col, w)
 		"bell":
 			ci.draw_polyline(PackedVector2Array([P.call(-7, 5), P.call(-5, 3), P.call(-5, -3), P.call(0, -8), P.call(5, -3), P.call(5, 3), P.call(7, 5), P.call(-7, 5)]), col, w)
 			ci.draw_arc(P.call(0, 5), 2.0 * u, 0, PI, 8, col, w)

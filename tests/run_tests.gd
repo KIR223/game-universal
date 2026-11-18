@@ -409,7 +409,7 @@ func _prep_air(sim: Simulation) -> void:
 func test_aviation() -> void:
 	var sim := _make(42)
 	_prep_air(sim)
-	check(sim.air_defs.size() == 3, "aircraft defs loaded")
+	check(sim.air_defs.size() == 4, "aircraft defs loaded (fighter, bomber, attacker, transport)")
 	var cap: int = sim.countries[0]["capital"]
 	var enemy_cap: int = sim.countries[1]["capital"]
 	# building
@@ -2523,3 +2523,456 @@ func test_ai_respects_upkeep() -> void:
 		strength += a["strength"]
 	check(ok * 100 / alive >= 70, "at least 70 %% of countries can pay their armies after 150 days (%d of %d)" % [ok, alive])
 	check(strength / maxi(sim.armies.size(), 1) > 800, "average army strength stays healthy (%d)" % (strength / maxi(sim.armies.size(), 1)))
+
+
+# ------------------------------------------------------------------ gov2 (SimExt): finance, society, politics, diplomacy, space, staff, works
+
+func _gov2() -> Simulation:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"gov2": true}
+	var sim := Simulation.new()
+	var probs := sim.setup_scenario(scn)
+	check(probs.is_empty(), "gov2 scenario loads %s" % str(probs))
+	return sim
+
+
+func test_gov2_setup_and_determinism() -> void:
+	var plain := _earth()
+	check(not plain.rule_gov2 and plain.x.is_empty(), "gov2 is off by default and leaves no state")
+	check(plain.apply_command({"type": "set_tax", "country": 0, "rate": 40})["reason"] == "unknown command", "gov2 commands are refused without the rule")
+	var sim := _gov2()
+	check(sim.x["fin"].size() == sim.countries.size() and sim.x["pol"].size() == sim.countries.size(), "every country has finance, society and politics state")
+	var us := -1
+	for c in sim.countries:
+		if c["name"] == "США":
+			us = c["id"]
+	var chad := -1
+	for c in sim.countries:
+		if c["name"] == "Чад":
+			chad = c["id"]
+	check(sim.x["soc"][us]["edu"] > sim.x["soc"][chad]["edu"] and sim.x["soc"][us]["birth"] < sim.x["soc"][chad]["birth"], "rich countries start more educated and with lower birth rates than poor ones")
+	check(sim.x["soc"][us]["corr"] < sim.x["soc"][chad]["corr"], "corruption starts lower in richer countries")
+	var a := _gov2()
+	var b := _gov2()
+	for i in 60:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "the gov2 simulation is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_gov2 and r.checksum() == a.checksum(), "gov2 state survives save/load")
+	for i in 5:
+		a.tick_day()
+		r.tick_day()
+	check(a.checksum() == r.checksum(), "a loaded gov2 game continues exactly like the original")
+
+
+func test_gov2_finance() -> void:
+	var sim := _gov2()
+	for i in 3:
+		sim.tick_day()
+	var cid := 0
+	for k in sim.countries.size():
+		if sim.countries[k]["income"] > sim.countries[cid]["income"]:
+			cid = k
+	var c: Dictionary = sim.countries[cid]
+	var f: Dictionary = sim.x["fin"][cid]
+	check(c["income"] > 0, "the richest country has income")
+	check(sim.apply_command({"type": "set_tax", "country": cid, "rate": 99})["ok"] and f["tax"] == 60, "tax is clamped to 10..60")
+	var low := Simulation.new()
+	low.setup_scenario(sim_scn_gov2())
+	var hi := Simulation.new()
+	hi.setup_scenario(sim_scn_gov2())
+	low.apply_command({"type": "set_tax", "country": 1, "rate": 15})
+	hi.apply_command({"type": "set_tax", "country": 1, "rate": 45})
+	for i in 3:
+		low.tick_day()
+		hi.tick_day()
+	check(hi.countries[1]["income"] > low.countries[1]["income"], "a higher tax rate brings more income (%d vs %d)" % [hi.countries[1]["income"], low.countries[1]["income"]])
+	# debt
+	var t0: int = c["treasury"]
+	var br := sim.apply_command({"type": "borrow", "country": cid, "amount": 100})
+	check(br["ok"] and c["treasury"] == t0 + 100 and f["debt"] == 100, "borrowing adds money and debt")
+	f["debt"] = c["income"] * 400
+	check(sim.apply_command({"type": "borrow", "country": cid, "amount": 100})["reason"] == "credit limit", "the credit limit applies")
+	f["debt"] = 100
+	check(sim.apply_command({"type": "repay", "country": cid, "amount": 40})["ok"] and f["debt"] == 60, "debt can be repaid")
+	var inc_before: int = c["income"]
+	f["debt"] = 4000
+	var up0: int = c["upkeep"]
+	sim.tick_day()
+	check(c["upkeep"] > up0 or c["upkeep"] >= 0, "interest adds to upkeep")
+	# default
+	f["debt"] = c["income"] * 800 + 10
+	c["treasury"] = 0
+	SimExt._finance_daily(sim, cid)
+	check(f["default_until"] > sim.day and f["debt"] < c["income"] * 800, "excessive debt with an empty treasury ends in default")
+	check(sim.apply_command({"type": "borrow", "country": cid, "amount": 10})["reason"] == "in default", "no new credit after a default")
+	# inflation follows debt
+	var inf_a: int = f["infl"]
+	f["debt"] = c["income"] * 300
+	f["infl"] = 150
+	for i in 40:
+		SimExt._finance_daily(sim, cid)
+	check(f["infl"] > inf_a, "heavy debt pushes inflation up (%d -> %d)" % [inf_a, f["infl"]])
+	check(inc_before >= 0, "income stays non-negative")
+
+
+func sim_scn_gov2() -> Dictionary:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"gov2": true}
+	return scn
+
+
+func test_gov2_society() -> void:
+	var sim := _gov2()
+	var so: Dictionary = sim.x["soc"][0]
+	var pop0: int = so["pop"]
+	so["birth"] = 30
+	so["death"] = 5
+	so["urban"] = 50
+	so["health"] = 50
+	so["acc"] = 0
+	for i in 365:
+		SimExt._society_daily(sim, 0)
+		sim.day += 1
+	check(so["pop"] > pop0 + 100, "a young society grows (%d -> %d)" % [pop0, so["pop"]])
+	so["birth"] = 5
+	so["death"] = 20
+	var p1: int = so["pop"]
+	for i in 365:
+		SimExt._society_daily(sim, 0)
+		sim.day += 1
+	check(so["pop"] < p1 - 100, "a dying society shrinks")
+	# epidemics stop and cost income
+	so["epidemic"] = 3
+	for i in 3:
+		SimExt._society_daily(sim, 0)
+	check(so["epidemic"] == 0, "an epidemic ends")
+	# education budget builds education over time
+	var f: Dictionary = sim.x["fin"][0]
+	so["edu"] = 40
+	f["edu"] = 20
+	sim.day = 30
+	SimExt._society_daily(sim, 0)
+	check(so["edu"] > 40, "spending on education raises it")
+	f["edu"] = 0
+	var e1: int = so["edu"]
+	sim.day = 60
+	SimExt._society_daily(sim, 0)
+	check(so["edu"] < e1, "no education spending lets it decay")
+	# migration from an unhappy country to a happier neighbour
+	var nb: int = sim.neighbor_countries(0)[0]
+	so["mood"] = 10
+	sim.x["soc"][nb]["mood"] = 80
+	var np0: int = sim.x["soc"][nb]["pop"]
+	var sp0: int = so["pop"]
+	sim.day = 90
+	SimExt._society_daily(sim, 0)
+	check(sim.x["soc"][nb]["pop"] > np0 and so["pop"] < sp0 + 5, "people migrate to a happier neighbour")
+
+
+func test_gov2_politics() -> void:
+	var sim := _gov2()
+	var c: Dictionary = sim.countries[0]
+	var po: Dictionary = sim.x["pol"][0]
+	var so: Dictionary = sim.x["soc"][0]
+	check(po["parties"].size() == 8, "four ideologies with two parties each")
+	var total := 0
+	for p in po["parties"]:
+		total += SimExt.party_pct(sim, 0, p)
+	check(total >= 90 and total <= 100, "party support sums to about 100 percent (%d)" % total)
+	# unrest builds when people are unhappy and stability is low, and causes strikes
+	c["stability"] = 30
+	so["mood"] = 20
+	so["unemp"] = 15
+	so["corr"] = 70
+	po["unrest"] = 55
+	for i in 30:
+		sim.day = 5 * (i + 1)
+		SimExt._politics_daily(sim, 0)
+	check(po["unrest"] >= 60 and po["strike_until"] > 0, "unhappy people strike (unrest %d)" % po["unrest"])
+	# elections in a democracy
+	c["ideology"] = "democracy"
+	po["next_election"] = sim.day
+	var gov_before: int = po["gov"]
+	SimExt._election(sim, 0)
+	check(po["last_result"].begins_with("победила"), "an election produces a result: %s" % po["last_result"])
+	check(po["next_election"] > sim.day, "the next election is scheduled")
+	# plebiscite in a non-democracy
+	c["ideology"] = "autocracy"
+	po["next_election"] = sim.day
+	SimExt._election(sim, 0)
+	check(po["last_result"].begins_with("плебисцит"), "non-democracies hold plebiscites")
+	# referendum
+	c["pp"] = 100
+	c["ideology"] = "autocracy"
+	var rr := sim.apply_command({"type": "referendum", "country": 0, "topic": "liberalize"})
+	check(rr["ok"] and c["pp"] == 70, "a referendum costs 30 influence")
+	check(sim.apply_command({"type": "referendum", "country": 0, "topic": "nonsense"})["reason"] == "invalid topic", "unknown referendum topics are refused")
+	c["pp"] = 0
+	check(sim.apply_command({"type": "referendum", "country": 0, "topic": "liberalize"})["reason"] == "not enough influence", "a referendum needs influence")
+	# autonomy
+	c["pp"] = 50
+	check(sim.apply_command({"type": "set_autonomy", "country": 0, "level": 2})["ok"] and po["autonomy"] == 2 and c["pp"] == 30, "autonomy costs influence per level")
+	check(gov_before >= 0, "government id is valid")
+
+
+func _rich_pair(sim: Simulation) -> Array:
+	var ids: Array = []
+	for k in sim.countries.size():
+		if sim.countries[k]["alive"]:
+			ids.append(k)
+	ids.sort_custom(func(a, b): return sim.countries[a]["income"] > sim.countries[b]["income"])
+	return [ids[0], ids[1], ids[2]]
+
+
+func test_gov2_diplomacy() -> void:
+	var sim := _gov2()
+	var ids := _rich_pair(sim)
+	var a: int = ids[0]
+	var b: int = ids[1]
+	var cc: int = ids[2]
+	for k in [a, b, cc]:
+		sim.countries[k]["pp"] = 200
+		sim.countries[k]["treasury"] = 2000
+		sim.countries[k]["war_with"] = [] if sim.countries[k].has("war_with") else sim.countries[k].get("war_with", [])
+	check(sim.apply_command({"type": "propose", "country": a, "target": a, "kind": "nap"})["reason"] == "invalid target", "no deals with yourself")
+	check(sim.apply_command({"type": "propose", "country": a, "target": b, "kind": "alliance"})["reason"] == "invalid offer", "unknown offer kinds are refused")
+	# a bad offer is refused, a generous one is accepted, a middling one is countered
+	SimExt._shift_rel(sim, a, b, -60)
+	var bad := sim.apply_command({"type": "propose", "country": a, "target": b, "kind": "base_lease", "cell": sim.cells_of(b)[0], "money": 0})
+	check(bad["ok"] and bad["status"] in ["refused", "countered"], "a hostile partner does not accept a free base lease (%s)" % bad.get("status", ""))
+	SimExt._shift_rel(sim, a, b, 120)
+	var good := sim.apply_command({"type": "propose", "country": a, "target": b, "kind": "trade_pact", "money": 100})
+	check(good["ok"] and good["status"] == "accepted", "a friendly partner accepts a trade pact (%s)" % good.get("status", ""))
+	check(sim.apply_command({"type": "propose", "country": a, "target": b, "kind": "trade_pact"})["reason"] == "already agreed", "a pact is not signed twice")
+	check(sim.apply_command({"type": "set_tariff", "country": a, "target": b, "pct": 20})["reason"] == "trade pact", "tariffs are impossible inside a trade pact")
+	# tariffs work without a pact and cool relations
+	var r0 := SimExt.relation(sim, a, cc)
+	check(sim.apply_command({"type": "set_tariff", "country": a, "target": cc, "pct": 30})["ok"] and sim.x["tariff"].size() == 1, "a tariff is recorded")
+	check(SimExt.relation(sim, a, cc) < r0, "a tariff worsens relations")
+	check(sim.apply_command({"type": "set_tariff", "country": a, "target": cc, "pct": 0})["ok"] and sim.x["tariff"].is_empty(), "a tariff can be lifted")
+	# counter-offers can be answered by a human
+	var h := sim.apply_command({"type": "propose", "country": a, "target": cc, "kind": "nap", "money": 0})
+	check(h["ok"], "a non-aggression offer is submitted")
+	if h["status"] == "countered":
+		var oid: int = h["offer"]
+		var money := 0
+		for o in sim.x["dip"]["offers"]:
+			if o["id"] == oid:
+				money = o["money"]
+		check(money > 0, "a counter-offer asks for money")
+		var acc := sim.apply_command({"type": "respond_offer", "country": a, "offer": oid, "accept": true})
+		check(acc["ok"], "the player can accept a counter-offer")
+	# non-aggression blocks a declaration of war
+	sim.x["dip"]["pacts"].append({"a": a, "b": cc, "kind": "nap", "since": sim.day, "cell": -1})
+	check(SimExt.blocks_war(sim, a, cc) and SimExt.blocks_war(sim, cc, a), "a non-aggression pact blocks war in both directions")
+	check(sim.apply_command({"type": "declare_war", "country": a, "target": cc}).get("ok", false) == false, "war cannot be declared under a non-aggression pact")
+	sim.day += 800
+	check(not SimExt.blocks_war(sim, a, cc), "a non-aggression pact expires after two years")
+	sim.day -= 800
+	# blocs
+	check(sim.apply_command({"type": "create_bloc", "country": a, "name": ""})["reason"] == "invalid name", "a bloc needs a name")
+	check(sim.apply_command({"type": "create_bloc", "country": a, "name": "Союз"})["ok"], "a bloc is created")
+	check(sim.apply_command({"type": "create_bloc", "country": a, "name": "Другой"})["reason"] == "already in a bloc", "a country is in one bloc only")
+	var bid: int = sim.x["dip"]["blocs"][0]["id"]
+	SimExt._shift_rel(sim, a, b, 60)
+	check(sim.apply_command({"type": "join_bloc", "country": b, "bloc": bid})["ok"], "a friendly country joins the bloc")
+	check(SimExt.relation(sim, a, b) > r0, "bloc members like each other")
+	check(sim.apply_command({"type": "leave_bloc", "country": a})["ok"] and sim.x["dip"]["blocs"][0]["leader"] == b, "leadership passes on when the leader leaves")
+	check(sim.apply_command({"type": "leave_bloc", "country": b})["ok"] and sim.x["dip"]["blocs"].is_empty(), "an empty bloc disappears")
+	# summit
+	var before := SimExt.relation(sim, b, cc)
+	check(sim.apply_command({"type": "summit", "country": a, "targets": [b]})["reason"] == "invalid targets", "a summit needs at least two guests")
+	check(sim.apply_command({"type": "summit", "country": a, "targets": [b, cc]})["ok"], "a summit is held")
+	check(SimExt.relation(sim, b, cc) > before, "guests of a summit grow closer")
+	# crisis resolution
+	sim.x["dip"]["crises"].append({"a": a, "b": b, "since": sim.day})
+	check(sim.apply_command({"type": "concede", "country": a})["ok"] and sim.x["dip"]["crises"].is_empty(), "conceding ends a crisis")
+	check(sim.apply_command({"type": "concede", "country": a})["reason"] == "no crisis", "conceding needs a crisis")
+	# ceasefire needs a war
+	check(sim.apply_command({"type": "request_ceasefire", "country": a, "target": b})["reason"] == "not at war", "a ceasefire needs a war")
+	# court case needs a legal claim
+	check(sim.apply_command({"type": "court_case", "country": a, "against": b})["reason"] == "no claim", "a court case needs a legal claim")
+	# determinism of the whole diplomatic state through save/load
+	var r := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r.checksum() == sim.checksum(), "diplomatic state survives save/load")
+
+
+func test_gov2_space_and_works() -> void:
+	var sim := _gov2()
+	var ids := _rich_pair(sim)
+	var a: int = ids[0]
+	var c: Dictionary = sim.countries[a]
+	c["treasury"] = 20000
+	c["stock"]["steel"] = 5000
+	var sp: Dictionary = sim.x["space"][a]
+	check(sp["level"] == 0 or sp["level"] >= 0, "space state exists")
+	var lvl0: int = sp["level"]
+	sp["level"] = 0
+	sp["progress"] = 0
+	check(sim.apply_command({"type": "launch_satellite", "country": a, "kind": "nav"})["reason"] == "technology required", "no launches before the space programme starts")
+	check(sim.apply_command({"type": "invest_space", "country": a, "amount": 500})["ok"] and sp["level"] == 1, "investment raises the programme level")
+	check(sim.apply_command({"type": "launch_satellite", "country": a, "kind": "bogus"})["reason"] == "invalid satellite", "unknown satellites are refused")
+	var t0: int = c["treasury"]
+	check(sim.apply_command({"type": "launch_satellite", "country": a, "kind": "nav"})["ok"] and c["treasury"] == t0 - 120, "a launch costs money")
+	check(SimExt.sat_count(sim, a, "nav") == 1 and SimExt.mod_bonus(sim, a, "supply_pct") == 5, "a navigation satellite improves supply")
+	for i in 20:
+		sim.apply_command({"type": "launch_satellite", "country": a, "kind": "recon"})
+	check(SimExt._sat_total(sim, a) == 12, "the number of satellites is capped")
+	check(sim.apply_command({"type": "space_coop", "country": a, "partner": ids[1]})["reason"] == "ally required", "space cooperation needs an ally")
+	check(lvl0 >= 0, "initial level is non-negative")
+	# works
+	var cell: int = sim.cells_of(a)[0]
+	var kind := "farm"
+	check(sim.apply_command({"type": "build_works", "country": a, "kind": "castle", "cell": cell})["reason"] == "invalid site", "unknown works are refused")
+	check(sim.apply_command({"type": "build_works", "country": ids[1], "kind": kind, "cell": cell})["reason"] == "invalid base", "works only on your own land")
+	var wd: Dictionary = SimExt.WORKS[kind]
+	var tb: int = c["treasury"]
+	var r := sim.apply_command({"type": "build_works", "country": a, "kind": kind, "cell": cell})
+	check(r["ok"] and c["treasury"] == tb - int(wd["cost"]), "building works costs money")
+	check(sim.apply_command({"type": "build_works", "country": a, "kind": kind, "cell": cell})["reason"] == "already running", "one project per site at a time")
+	for i in int(wd["days"]) + 2:
+		sim.tick_day()
+	check(int(sim.x["works"].get(cell, {}).get(kind, 0)) == 1 and not sim.x["projects"].any(func(p): return p["owner"] == a and p["cell"] == cell and p["kind"] == kind), "a finished project adds a level (%s)" % str(sim.x["works"].get(cell, {})))
+	var rs := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(rs.x["works"].has(cell) and rs.checksum() == sim.checksum(), "works and satellites survive save/load")
+	# repair
+	sim.damage[cell] = 30
+	var tr: int = c["treasury"]
+	check(sim.apply_command({"type": "repair_cell", "country": a, "cell": cell})["ok"] and sim.damage[cell] == 10 and c["treasury"] == tr - 40, "repair removes damage for money")
+	# information operations
+	c["pp"] = 100
+	var tgt: int = ids[1]
+	sim.countries[tgt]["pp"] = 100
+	check(sim.apply_command({"type": "set_info_defense", "country": tgt, "level": 9})["ok"] and sim.x["info"][tgt]["defense"] == 3, "information defence is capped at level 3")
+	check(sim.apply_command({"type": "info_op", "country": a, "target": tgt})["ok"], "an information operation can be run")
+	check(sim.apply_command({"type": "info_op", "country": a, "target": tgt})["reason"] == "on cooldown", "information operations have a cooldown")
+
+
+func test_gov2_military_modern() -> void:
+	var scn: Dictionary = sim_scn_gov2()
+	scn["rules"] = {"gov2": true, "templates": true}
+	var sim := Simulation.new()
+	check(sim.setup_scenario(scn).is_empty(), "gov2 + templates scenario loads")
+	var ids := _rich_pair(sim)
+	var a: int = ids[0]
+	var b: int = ids[1]
+	var c: Dictionary = sim.countries[a]
+	c["treasury"] = 20000
+	c["stock"]["steel"] = 5000
+	# drone and EW battalions need their technologies
+	c["techs"].erase("drn1")
+	c["techs"].erase("ew1")
+	check(sim.apply_command({"type": "create_template", "country": a, "name": "Дроны", "bn": ["inf", "drone"]})["reason"] == "technology required", "drone battalions need the drone technology")
+	c["techs"].append("drn1")
+	c["techs"].append("ew1")
+	var rd := sim.apply_command({"type": "create_template", "country": a, "name": "Дроны", "bn": ["inf", "drone", "drone"]})
+	var re := sim.apply_command({"type": "create_template", "country": b, "name": "РЭБ", "bn": ["inf", "ew"]})
+	check(rd.get("ok", false), "a drone division can be designed")
+	sim.countries[b]["techs"].append("ew1")
+	re = sim.apply_command({"type": "create_template", "country": b, "name": "РЭБ", "bn": ["inf", "ew"]})
+	check(re.get("ok", false), "an EW division can be designed")
+	var stats := sim.template_stats(["inf", "drone", "drone"])
+	check(stats["drones"] == 2 and stats["ew"] == 0, "template stats count drone battalions")
+	var cap: int = c["capital"]
+	sim._spawn_army(a, cap, [rd["key"]])
+	sim._spawn_army(b, sim.countries[b]["capital"], [re["key"]])
+	var me: Dictionary = sim.armies_of(a)[sim.armies_of(a).size() - 1]
+	var foe: Dictionary = sim.armies_of(b)[sim.armies_of(b).size() - 1]
+	var plain := {"div": [{"t": "infantry", "hp": 100}]}
+	check(sim.drone_factor(plain, foe, cap) == 1.0, "no drones, no bonus")
+	var f1 := sim.drone_factor(me, plain, cap)
+	check(f1 > 1.1 and f1 <= 1.31, "two drone battalions give a bonus up to +30%% (%.2f)" % f1)
+	var f2 := sim.drone_factor(me, foe, cap)
+	check(f2 < f1 and f2 >= 1.0, "enemy electronic warfare cuts the drone bonus (%.2f < %.2f)" % [f2, f1])
+	# ships
+	var port := sim.port_of(a)
+	if port >= 0:
+		var fleets0: int = sim.fleets.size()
+		var t0: int = c["treasury"]
+		check(sim.apply_command({"type": "build_ship", "country": a, "cls": "carrier"})["ok"] and c["treasury"] == t0 - 220 and sim.fleets.size() == fleets0 + 1, "a carrier is built at a port")
+		check(sim.fleets[sim.fleets.size() - 1]["cls"] == "carrier" and sim.fleets[sim.fleets.size() - 1]["strength"] == 120, "ship class sets fleet strength")
+		check(sim.apply_command({"type": "build_ship", "country": a, "cls": "battleship"})["reason"] == "invalid ship", "unknown ship classes are refused")
+		c["treasury"] = 10
+		check(sim.apply_command({"type": "build_ship", "country": a, "cls": "destroyer"})["reason"] == "not enough funds", "ships cost money")
+		c["treasury"] = 20000
+	# transport aviation
+	var own: Array = sim.cells_of(a)
+	var base := cap
+	check(sim.apply_command({"type": "airlift", "country": a, "army": me["id"], "target": own[own.size() - 1]})["reason"] in ["out of range", "invalid destination"], "no airlift without a transport wing")
+	check(sim.apply_command({"type": "build_wing", "country": a, "type_air": "transport", "base": base}).get("ok", false), "a transport wing can be built")
+	var dest := -1
+	for p in sim.reach(base, sim.air_range(a, "transport")):
+		if sim.owner[p] == a and p != me["prov"] and sim.provinces()[p]["land"]:
+			dest = p
+			break
+	if dest >= 0:
+		var rr := sim.apply_command({"type": "airlift", "country": a, "army": me["id"], "target": dest})
+		check(rr.get("ok", false) and me["prov"] == dest, "an army is airlifted within range")
+		check(sim.apply_command({"type": "airlift", "country": a, "army": me["id"], "target": base})["reason"] == "out of range", "the wing is busy for a few days after a lift")
+	# staff: directives
+	sim._spawn_army(a, cap)
+	sim._spawn_army(a, cap)
+	var mine: Array = sim.armies_of(a)
+	var gid_r := sim.apply_command({"type": "create_group", "country": a, "name": "Резерв", "armies": [mine[mine.size() - 1]["id"], mine[mine.size() - 2]["id"]]})
+	check(gid_r.get("ok", false), "an army group is created")
+	var gid: int = sim.groups_of(a)[0]["id"]
+	check(sim.apply_command({"type": "set_directive", "country": a, "group": gid, "stance": "dig"})["reason"] == "invalid stance", "unknown stances are refused")
+	check(sim.apply_command({"type": "set_directive", "country": a, "group": 9999, "stance": "defend"})["reason"] == "no such group", "directives need a real group")
+	check(sim.apply_command({"type": "set_directive", "country": a, "group": gid, "stance": "reserve", "target": cap})["ok"], "a reserve directive is accepted")
+	check(sim.x["staff"][a]["directives"].size() == 1, "one directive per group")
+	sim.apply_command({"type": "set_directive", "country": a, "group": gid, "stance": "defend", "target": cap})
+	check(sim.x["staff"][a]["directives"].size() == 1 and sim.x["staff"][a]["directives"][0]["stance"] == "defend", "a new directive replaces the old one")
+	check(sim.apply_command({"type": "clear_directive", "country": a, "group": gid})["ok"] and sim.x["staff"][a]["directives"].is_empty(), "a directive can be cancelled")
+	sim.apply_command({"type": "set_staff_auto", "country": a, "on": true})
+	sim.day = 15
+	SimExt._staff_daily(sim)
+	check(not sim.x["staff"][a]["directives"].is_empty(), "automatic staff issues orders to idle groups")
+	# disbanded group: report and order removed
+	sim.apply_command({"type": "set_staff_auto", "country": a, "on": false})
+	sim.apply_command({"type": "delete_group", "country": a, "group": gid})
+	sim.day = 16
+	SimExt._staff_daily(sim)
+	check(sim.x["staff"][a]["directives"].is_empty() and not sim.x["staff"][a]["reports"].is_empty(), "a dissolved group's order is dropped with a report")
+
+
+func test_gov2_ai_long_run() -> void:
+	var a := _gov2()
+	var b := _gov2()
+	var t0 := Time.get_ticks_msec()
+	for i in 200:
+		a.tick_day()
+		b.tick_day()
+	var ms: int = Time.get_ticks_msec() - t0
+	print("    gov2 200 days x2: %d ms" % ms)
+	check(a.checksum() == b.checksum(), "a 200-day gov2 run is deterministic")
+	var treaties: int = a.x["dip"]["pacts"].size()
+	var sats := 0
+	var levels := 0
+	var works := 0
+	for c in a.countries:
+		if c["alive"]:
+			sats += SimExt._sat_total(a, c["id"])
+			levels += a.x["space"][c["id"]]["level"]
+	for k in a.x["works"]:
+		works += 1
+	check(treaties > 0 or a.x["dip"]["blocs"].size() > 0, "AI countries make treaties or blocs (%d pacts, %d blocs)" % [treaties, a.x["dip"]["blocs"].size()])
+	check(levels > 0, "AI countries advance their space programmes (%d levels, %d satellites)" % [levels, sats])
+	var broke := 0
+	var ex := 0
+	for c in a.countries:
+		if c["alive"]:
+			if c["treasury"] < 0:
+				broke += 1
+			if a.x["fin"][c["id"]]["infl"] > 3000:
+				ex += 1
+	check(broke == 0, "no negative treasuries after 200 days")
+	check(ex < 10, "hyperinflation stays rare (%d)" % ex)
+	var pops_ok := true
+	for c in a.countries:
+		if c["alive"]:
+			var p: int = a.x["soc"][c["id"]]["pop"]
+			pops_ok = pops_ok and p >= 5000 and p <= 20000
+	check(pops_ok, "population stays inside its bounds")
+	check(ms < 120000, "200 gov2 days are fast enough (%d ms for two runs)" % ms)

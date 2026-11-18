@@ -63,6 +63,7 @@ var PANEL_Y: int = 56
 var NAV_H: int = 58   # grows with the touch size on phones (set in _build_hud)
 var RAIL_W: int = 8 if MobileLayout.is_phone() else 68   # left space taken by the navigation rail
 var BOTTOM_PAD: int = (58 + 8) if MobileLayout.is_phone() else 8
+const GOV_NAV := ["gov", "Управление"]
 const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
 const RIGHT_TABS := [["events", "События"], ["wars", "Войны"], ["fronts", "Фронты"], ["tasks", "Задачи"]]
 var _nav: Dictionary = {}
@@ -1488,8 +1489,81 @@ func _eco_refresh() -> void:
 		_eco_dyn.add_child(el)
 
 
+const REASONS_GOV := {
+	"credit limit": "лимит кредита исчерпан", "in default": "страна в дефолте — кредитов нет", "nothing to repay": "нечего погашать",
+	"invalid target": "неверная цель", "trade pact": "внутри торгового пакта тарифы невозможны", "invalid topic": "неверная тема",
+	"already democracy": "уже демократия", "not a democracy": "нужна демократия", "invalid offer": "неверное предложение",
+	"already agreed": "уже согласовано", "at war": "идёт война", "already in a bloc": "вы уже в блоке", "invalid name": "неверное название",
+	"no such bloc": "нет такого блока", "not at war": "нет войны", "no claim": "нет юридических оснований", "already filed": "иск уже подан",
+	"invalid targets": "нужно от 2 до 6 участников", "no crisis": "нет кризиса", "technology required": "нужна технология",
+	"invalid satellite": "неверный спутник", "too many sites": "слишком много спутников", "ally required": "нужен союзник",
+	"no such group": "нет такой группы", "invalid stance": "неверный приказ", "invalid destination": "неверная цель назначения",
+	"invalid site": "неверный объект", "no port": "нет порта", "nothing to repair": "нечего восстанавливать", "invalid ship": "неверный тип корабля",
+	"unknown command": "правило «управление государством» выключено",
+}
+
+
 func _reason(key: String) -> String:
-	return REASONS.get(key, key)
+	return REASONS.get(key, REASONS_GOV.get(key, key))
+
+
+func _nav_items() -> Array:
+	var items: Array = NAV_ITEMS.duplicate()
+	if sim != null and sim.rule_gov2:
+		items.append(GOV_NAV)
+	return items
+
+
+## "Управление": the gov2 panel. All content comes from SimExt.panel() rows; this only draws them and sends commands.
+func _g_gov() -> void:
+	var sc: ScrollContainer = _gbody.get_parent() as ScrollContainer
+	var keep := sc.scroll_vertical if sc != null else 0
+	for r in SimExt.panel(sim, player):
+		match str(r["t"]):
+			"h":
+				_gbody.add_child(HSeparator.new())
+				_gbody.add_child(_h2(str(r["text"])))
+			"kv":
+				var l := Label.new()
+				l.text = "%s: %s" % [r["k"], r["v"]]
+				l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				_gbody.add_child(l)
+			"step":
+				var row := HBoxContainer.new()
+				var l2 := Label.new()
+				l2.text = "%s: %s" % [r["text"], r["value"]]
+				l2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				l2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				row.add_child(l2)
+				for key in ["minus", "plus"]:
+					var sb := Button.new()
+					sb.text = "−" if key == "minus" else "+"
+					sb.custom_minimum_size = Vector2(maxf(44.0, touch_px()), maxf(40.0, touch_px()))
+					sb.pressed.connect(_gov_cmd.bind(r[key]))
+					row.add_child(sb)
+				_gbody.add_child(row)
+			"btn":
+				var b := Button.new()
+				b.text = str(r["text"])
+				b.custom_minimum_size = Vector2(0, maxf(40.0, touch_px()))
+				b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				b.pressed.connect(_gov_cmd.bind(r["cmd"]))
+				_gbody.add_child(b)
+	if sc != null:
+		sc.set_deferred("scroll_vertical", keep)
+
+
+func _gov_cmd(cmd: Dictionary) -> void:
+	var res := sim.apply_command(cmd)
+	if res.get("ok", false):
+		if res.has("passed"):
+			_toasts.show_toast("Референдум: %s" % ("принят" if res["passed"] else "отклонён"), "info")
+		_play_ui("click")
+	else:
+		_toasts.show_toast("Отклонено: %s" % _reason(str(res.get("reason", ""))), "info")
+	_fill_generic("gov")
+	_refresh_top()
 
 
 func _army_tools(a: Dictionary, here: Array) -> void:
@@ -2228,7 +2302,7 @@ func _build_hud() -> void:
 		nv = VBoxContainer.new()
 		nv.add_theme_constant_override("separation", 2)
 	nav.add_child(nv)
-	for it in NAV_ITEMS:
+	for it in _nav_items():
 		var b2 := IconButton.new(it[0], it[1], Vector2(maxf(44.0, touch_px()), maxf(44.0, touch_px())))
 		b2.pressed.connect(_nav_pressed.bind(it[0]))
 		nv.add_child(b2)
@@ -2830,7 +2904,7 @@ func _open_generic(name: String) -> void:
 	v.add_theme_constant_override("separation", 8)
 	_generic.add_child(v)
 	var title := ""
-	for it in NAV_ITEMS:
+	for it in _nav_items():
 		if it[0] == name:
 			title = it[1]
 	v.add_child(_panel_header(title, func(): _nav_pressed(name)))
@@ -2866,6 +2940,7 @@ func _fill_generic(name: String) -> void:
 		"diplomacy": _g_dip()
 		"army": _g_army()
 		"stats": _g_stats()
+		"gov": _g_gov()
 
 
 func _where(cell: int) -> String:
