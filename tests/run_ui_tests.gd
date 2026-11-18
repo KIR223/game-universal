@@ -10,6 +10,12 @@ var _frames := 0
 
 
 func _initialize() -> void:
+	if OS.get_cmdline_user_args().has("--phone"):
+		MobileLayout.force = true            # phone layout: bottom navigation, compact card, 1170x540 window
+		# only the layout code paths change (bottom navigation bar, compact card, phone panel sizes); the headless window size is fixed
+	GameSettings.path = "user://test_ui_settings.cfg"   # scratch settings: reduced motion makes panels appear at once, so layout can be measured
+	GameSettings.reset_for_tests()
+	GameSettings.set_value("reduce_motion", true)
 	_main = load("res://game/ui/main.tscn").instantiate()
 	root.add_child(_main)
 
@@ -18,9 +24,45 @@ func _process(_delta: float) -> bool:
 	_frames += 1
 	if _frames == 3:
 		run_checks()
+	elif _frames == 4:
+		_main.map.hide()   # layout checks need no map drawing (the dummy headless renderer crashes on long map draws)
+	elif _frames >= 6 and _frames < 6 + _layout_panels.size() * 3:
+		_layout_step(_frames - 6)
+	elif _frames == 6 + _layout_panels.size() * 3:
+		_main.queue_free()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(GameSettings.path))
 		print("\n%d UI checks passed, %d failed" % [passed, failures])
 		quit(1 if failures > 0 else 0)
 	return false
+
+
+## Layout regression checks (what a screenshot comparison would catch): the HUD must stay aligned at the window edge and
+## every panel must keep its own size, stay inside the window and leave the top bar and the navigation rail visible.
+var _layout_panels := ["economy", "tech", "politics", "intel", "diplomacy", "army", "stats"]
+var _panel_vars := {"economy": "_eco", "tech": "_tech", "politics": "_pol", "intel": "_intel", "diplomacy": "_generic", "army": "_generic", "stats": "_generic"}
+
+
+func _layout_step(i: int) -> void:
+	var main: Node = _main
+	var vp: Vector2 = root.get_visible_rect().size
+	var idx := i / 3
+	var phase := i % 3
+	var name: String = _layout_panels[idx]
+	if phase == 0:
+		if i == 0 and OS.get_cmdline_user_args().has("--phone"):
+			check(MobileLayout.is_phone() and main.BOTTOM_PAD > 8 and main.RAIL_W == 8, "phone profile is active")
+		main._nav_pressed(name)
+	elif phase == 2:
+		var top: Control = main._top
+		check(top.get_global_rect().position.y <= 12.0, "top bar sits at the window edge (y=%.0f)" % top.get_global_rect().position.y)
+		var panel: Control = main.get(_panel_vars[name])
+		check(panel != null and panel.is_inside_tree(), "%s panel is open" % name)
+		if panel != null:
+			var r := panel.get_global_rect()
+			check(r.size.x <= vp.x * 0.8 + 1.0, "%s panel keeps a sane width (%.0f of %.0f px)" % [name, r.size.x, vp.x])
+			check(r.position.x >= (0.0 if MobileLayout.is_phone() else 60.0) and r.end.x <= vp.x + 1.0 and r.end.y <= vp.y - float(main.BOTTOM_PAD - 8) + 1.0, "%s panel stays inside the window and clear of the nav rail (%s of %s)" % [name, str(r), str(vp)])
+			check(r.position.y >= top.get_global_rect().end.y - 4.0, "%s panel does not cover the top bar" % name)
+		main._nav_pressed(name)
 
 
 func check(cond: bool, msg: String) -> void:
@@ -51,7 +93,49 @@ func run_checks() -> void:
 	var fr: int = main.sim.countries.find_custom(func(c): return c["name"] == "Франция")
 	check(fr >= 0, "France exists")
 	main._start_playing(fr)
-	check(main._chips.size() == 8 and main._nav.size() == 9 and main._speed_btns.size() == 5, "HUD: resource chips, nav rail, speed controls")
+	check(main._chips.size() == (5 if MobileLayout.is_phone() else 8) and main._nav.size() == 9 and main._speed_btns.size() == 5, "HUD: resource chips, nav rail, speed controls")
+	# armies glide to their new cell (with motion on) instead of jumping; reduced motion snaps at once
+	var mv: EarthMapView = main.map
+	var army: Dictionary = main.sim.armies[0]
+	var cell_a: int = army["prov"]
+	mv.animate_armies(0.016)
+	var glide_to: int = main.sim.provinces()[cell_a]["land_neighbors"][0]
+	army["prov"] = glide_to
+	GameSettings.set_value("reduce_motion", false)
+	var moving := mv.animate_armies(0.016)
+	var mid: Vector2 = mv._army_vis[army["id"]]
+	check(moving and mid.distance_to(mv.cell_world(glide_to)) > 0.5, "an army eases towards its new cell")
+	for i in 120:
+		mv.animate_armies(0.05)
+	check(not mv.animate_armies(0.05) and mv._army_vis[army["id"]].distance_to(mv.cell_world(glide_to)) < 0.5, "the glide ends exactly on the cell")
+	GameSettings.set_value("reduce_motion", true)
+	army["prov"] = cell_a
+	mv.animate_armies(0.016)
+	check(mv._army_vis[army["id"]].distance_to(mv.cell_world(cell_a)) < 0.01, "reduced motion snaps armies to their cell")
+	# Shift + drag: armies inside the rectangle are ticked for a group
+	var a_rect := Rect2(main.map.cell_world(main.sim.armies_of(main.player)[0]["prov"]) - Vector2(5, 5), Vector2(10, 10))
+	var boxed: Array = main.armies_in_rect(a_rect)
+	check(boxed.has(main.sim.armies_of(main.player)[0]["id"]), "box selection finds the army inside the rectangle")
+	check(main.armies_in_rect(Rect2(-5000, -5000, 10, 10)).is_empty(), "an empty rectangle selects nothing")
+	main._on_box_selected(a_rect)
+	check(main._grp_sel.size() == boxed.size() and main._open_panel_name == "army", "box selection ticks the armies and opens the army panel")
+	main._nav_pressed("army")   # close it again for the layout checks
+	# tutorial banner follows the player's actions, in order, and the skip button switches it off
+	GameSettings.set_value("tutorial", true)
+	main._tut_done.clear()
+	main._tut_selected = false
+	main._tutorial_tick()
+	check(main._tut_banner.visible and main._tut_label.text.begins_with("1/6"), "the tutorial starts with step 1")
+	main._tut_selected = true
+	main._tutorial_tick()
+	check(main._tut_label.text.begins_with("2/6"), "selecting a territory advances the tutorial")
+	main.sim.day += 1
+	main._tutorial_tick()
+	check(main._tut_label.text.begins_with("3/6"), "starting time advances the tutorial")
+	main.sim.day -= 1   # leave the simulation as it was
+	GameSettings.set_value("tutorial", false)
+	main._tutorial_tick()
+	check(not main._tut_banner.visible, "turning the tutorial off hides the banner")
 	# every map mode computes a palette and never fails
 	var m: EarthMapView = main.map
 	for mode in EarthMapView.MODES:
@@ -309,4 +393,33 @@ func run_checks() -> void:
 	main.map.refresh(dirty2)
 	check(m._ctl[f["cell"]] == f["b"], "renderer tracks the new controller of the captured cell")
 	main._refresh_all()
-	main.queue_free()
+	# the "Управление" panel exists only with the gov2 rule and drives real commands
+	check(not main._nav.has("gov"), "no management panel without the gov2 rule")
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"gov2": true}
+	main._start_scenario(scn)
+	var fr2: int = main.sim.countries.find_custom(func(c): return c["name"] == "Франция")
+	main._start_playing(fr2)
+	check(main._nav.has("gov") and main._nav.size() == 10, "gov2 adds the management item to the navigation")
+	main._nav_pressed("gov")
+	check(main._open_panel_name == "gov" and main._generic != null, "management panel opens")
+	var gbtns := 0
+	var glabels := 0
+	var gstack: Array = [main._gbody]
+	while not gstack.is_empty():
+		var gn: Node = gstack.pop_back()
+		for ch in gn.get_children():
+			gstack.append(ch)
+			if ch is Button:
+				gbtns += 1
+				check(ch.custom_minimum_size.y >= 40.0, "management buttons are finger-sized")
+			elif ch is Label:
+				glabels += 1
+	check(gbtns >= 20 and glabels >= 25, "management panel lists controls and figures (%d buttons, %d glabels)" % [gbtns, glabels])
+	var tax0: int = main.sim.x["fin"][fr2]["tax"]
+	main._gov_cmd({"type": "set_tax", "country": fr2, "rate": tax0 + 5})
+	check(main.sim.x["fin"][fr2]["tax"] == tax0 + 5, "a panel control changes the tax rate")
+	main._gov_cmd({"type": "borrow", "country": fr2, "amount": 999999})
+	check(main._generic != null and is_instance_valid(main._generic), "a refused command keeps the panel open")
+	main._nav_pressed("gov")
+	check(main._open_panel_name == "", "management panel closes")

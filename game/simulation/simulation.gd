@@ -50,6 +50,9 @@ var next_fleet_id := 1
 var trades: Array = []  # {"id","seller","buyer","res","amount","price","fails"}
 var next_trade_id := 1
 var embargoes: Array = []  # {"a": embargoer, "b": target}
+var groups: Array = []   # army groups: {"id","owner","name","armies": [army ids]} - one order moves every member
+var next_group_id := 1
+const MAX_GROUPS := 10
 var sanctions: Array = []  # {"a": imposer, "b": target, "since": day}: financial pressure, see sanction_pct()
 var res_defs: Array = []
 var unit_defs: Dictionary = {}
@@ -93,6 +96,58 @@ var ai_war_chance := 1.0          # probability gate for AI war declarations (sc
 ## Opt-in rule sets (scenario "rules": {...}); off by default so existing scenarios and their reference checksums are unchanged.
 var rule_terrain := false         # terrain, roads and railways change movement and supply cost
 var rule_modern := false          # abstract drones, electronic warfare, satellites and cyber (techs with "rule": "modern")
+var rule_templates := false       # division templates: the player designs divisions from battalions
+var templates := {}               # cid -> Array of {"id": n, "name": String, "bn": Array of battalion ids}
+var next_tpl_id := 1
+const MAX_TEMPLATES := 8
+const MAX_BATTALIONS := 9
+## Battalion types (game balance only). Division hp is the sum; attack/defence are hp-weighted averages.
+const BATTALIONS := {
+	"inf": {"name": "Пехота", "cost": 8, "steel": 5, "manpower": 3, "hp": 125, "atk": 1.0, "def": 1.0, "oil": false, "terrain_of": "infantry"},
+	"art": {"name": "Артиллерия", "cost": 12, "steel": 8, "manpower": 2, "hp": 90, "atk": 1.6, "def": 0.7, "oil": false, "terrain_of": "artillery"},
+	"tank": {"name": "Танки", "cost": 15, "steel": 10, "manpower": 2, "hp": 150, "atk": 2.0, "def": 1.1, "oil": true, "terrain_of": "armor"},
+	"recon": {"name": "Разведка", "cost": 6, "steel": 3, "manpower": 1, "hp": 60, "atk": 0.6, "def": 0.8, "oil": false, "terrain_of": "infantry"},
+	"eng": {"name": "Инженеры", "cost": 9, "steel": 6, "manpower": 2, "hp": 90, "atk": 0.8, "def": 1.2, "oil": false, "terrain_of": "infantry"},
+	"drone": {"name": "Беспилотники", "cost": 14, "steel": 6, "manpower": 1, "hp": 50, "atk": 1.4, "def": 0.5, "oil": false, "terrain_of": "infantry", "tech": "drn1"},
+	"ew": {"name": "РЭБ", "cost": 16, "steel": 8, "manpower": 2, "hp": 60, "atk": 0.4, "def": 1.0, "oil": false, "terrain_of": "infantry", "tech": "ew1"},
+	"fpv": {"name": "FPV-расчёты", "cost": 10, "steel": 3, "manpower": 1, "hp": 35, "atk": 1.8, "def": 0.3, "oil": false, "terrain_of": "infantry", "tech": "fpv1"},
+	"ugv": {"name": "Наземные роботы", "cost": 18, "steel": 10, "manpower": 0, "hp": 90, "atk": 1.1, "def": 0.9, "oil": false, "terrain_of": "armor", "tech": "rob1"},
+}
+var rule_food_balance := false    # food production scaled so that food is a real constraint (without it every country is in huge surplus)
+const FOOD_BALANCE_PERMILLE := 40 # of the raw deposit sum on the base 14.3k-cell map; other maps are scaled by their land cell count
+const BASE_LAND_CELLS := 14299
+var rule_fiscal_balance := false  # income also follows real GDP and army upkeep is lower, so most countries can afford their armies
+var gdp_of := {}                  # cid -> GDP in million USD (real-world scenarios); saved, not part of the state hash
+const GDP_INCOME_DIV := 150000    # income per day = GDP (M$) / this
+const UPKEEP_PCT := 50            # army upkeep as a percent of the classic value with the fiscal rule
+var rule_gov2 := false            # deep government systems (SimExt): finance, society, parties and elections, diplomacy, space, staff, works
+var x := {}                       # all SimExt state (saved; part of the state hash with the rule)
+var pop_of := {}                  # cid -> real population (real-world scenarios), used to start the society model
+var _works_supply := PackedInt32Array()   # per-cell supply cost reduction from railways/depots/leased bases (cache, rebuilt daily)
+var rule_organization := false    # armies have organisation (0..100): fighting and marching wear it down, rest in supply restores it
+const ORG_MOVE := 1
+const ORG_REST := 3
+const ORG_ATTACK_LOSS := 4
+const ORG_DEFEND_LOSS := 3
+var rule_markets := false         # population dynamics and a world market with floating prices
+var pop_bp := {}                  # cid -> population index in basis points (10000 = start); only with rules.markets
+var market_pct := {}              # resource -> world price in percent of the base price (100 = base)
+var _market_flow := {}            # resource -> units bought (+) / sold (-) on the market since the last price update
+const MARKET_SPREAD := 10         # percent: players buy at +10% and sell at -10%
+const MARKET_RES := ["food", "coal", "iron", "oil", "steel"]
+var sites: Array = []             # military sites on cells: {"owner","cell","kind": "ad" (air-defence battery) | "launch"}; only with rules.modern
+const SITE_DEFS := {
+	"ad": {"name": "Батарея ПВО", "cost": 60, "steel": 15, "tech": "ad1", "ad_bonus": 15, "radius": 2},
+	"launch": {"name": "Пусковая площадка", "cost": 80, "steel": 20, "tech": "mis1", "range_bonus": 2},
+}
+var missile_stock := {}           # cid -> {"tactical": n, "strategic": n}; only with rules.modern
+var strikes: Array = []           # recent launches for the map and the log: {"day","owner","from","target","type","hit"}
+const MISSILE_CAP := 40
+## Abstract missile types (game balance only): range in cells (hops), damage to the cell (0..100), share of enemy army strength lost.
+const MISSILE_DEFS := {
+	"tactical": {"name": "Тактические ракеты", "cost": 40, "steel": 8, "range": 5, "dmg": 25, "army_pct": 8, "tech": "mis1"},
+	"strategic": {"name": "Ракеты дальнего действия", "cost": 120, "steel": 25, "range": 12, "dmg": 55, "army_pct": 18, "tech": "mis2"},
+}
 var rule_weather := false         # seasons, winter by latitude and local storms slow armies, supply and air operations
 var _cell_lat := PackedFloat32Array()
 var _start_doy := 1
@@ -263,6 +318,8 @@ func _load_techs() -> void:
 
 
 func mod(cid: int, key: String) -> int:
+	if rule_gov2:
+		return countries[cid]["mods"].get(key, 0) + SimExt.mod_bonus(self, cid, key)
 	return countries[cid]["mods"].get(key, 0)
 
 
@@ -360,6 +417,15 @@ func wings_of(cid: int) -> Array:
 	return wings.filter(func(w): return w["owner"] == cid)
 
 
+## Where a wing operates from: its carrier's sea cell while embarked (gov2), otherwise its airbase.
+func wing_pos(w: Dictionary) -> int:
+	if w.has("carrier"):
+		for f in fleets:
+			if f["id"] == w["carrier"] and f["owner"] == w["owner"] and f["strength"] > 0:
+				return f["prov"]
+	return w["base"]
+
+
 func wings_at(p: int) -> Array:
 	return wings.filter(func(w): return w["base"] == p)
 
@@ -437,7 +503,7 @@ func _set_mission(cid: int, w: Dictionary, mission: String, target: int) -> Dict
 		return _fail("land target required")
 	if mission == "bomb" and (owner[target] < 0 or not at_war(cid, owner[target])):
 		return _fail("target not at war")
-	if not reach(w["base"], air_range(cid, w["type"])).has(target):
+	if not reach(wing_pos(w), air_range(cid, w["type"])).has(target):
 		return _fail("out of range")
 	w["mission"] = mission
 	w["target"] = target
@@ -447,7 +513,7 @@ func _set_mission(cid: int, w: Dictionary, mission: String, target: int) -> Dict
 func _can_fly(w: Dictionary) -> bool:
 	if countries[w["owner"]]["short"].has("oil"):
 		return false
-	if rule_weather and (storm_at(w["base"]) or winter_at(w["base"]) > 85):
+	if rule_weather and (storm_at(wing_pos(w)) or winter_at(wing_pos(w)) > 85):
 		return false
 	return true
 
@@ -526,8 +592,8 @@ func _air() -> void:
 		if w["mission"] == "air_superiority" and _can_fly(w):
 			_zone_add(zone, w["target"], cid, w, 1.0)
 		elif w["mission"] == "idle":
-			_zone_add(zone, w["base"], cid, w, 0.5)
-			for q in provs[w["base"]]["neighbors"]:
+			_zone_add(zone, wing_pos(w), cid, w, 0.5)
+			for q in provs[wing_pos(w)]["neighbors"]:
 				_zone_add(zone, q, cid, w, 0.5)
 	var zpow := {}
 	var tkeys: Array = zone.keys()
@@ -613,7 +679,7 @@ func _ai_air(cid: int) -> void:
 		if hot >= 0:
 			break
 	for w in wings_of(cid):
-		var r := reach(w["base"], air_range(cid, w["type"]))
+		var r := reach(wing_pos(w), air_range(cid, w["type"]))
 		match w["type"]:
 			"fighter":
 				if hot >= 0 and r.has(hot):
@@ -704,11 +770,17 @@ func setup_earth(scn: Dictionary) -> Array:
 		var nm: String = pc["name_ru"] if pc.get("name_ru") != null and str(pc["name_ru"]) != "" else pc["name_en"]
 		var c := _new_country(t, nm, _tag_color(t), cap)
 		c["treasury"] = clampi(int(pc["gdp_md"]) / 4000 + 80, 80, 6000)
+		gdp_of[cid] = int(pc["gdp_md"])
+		pop_of[cid] = int(pc["pop"])
 		c["manpower"] = clampi(100 + int(pc["pop"]) / 50000, 100, 2000)
 		c["ai"] = true
 		_init_politics(cid)
 		var inc: float = income_factor.get(pc.get("income", ""), 1.0)
 		var n_div := clampi(1 + int(sqrt(float(pc["pop"]) / 1000000.0) / 1.4 * inc), 1, 36)
+		if rule_fiscal_balance:
+			# start with armies the economy can pay for: GDP income per day / upkeep of one division (500 hp at the reduced rate)
+			var per_div := 500.0 / (200.0 * 100.0 / UPKEEP_PCT)
+			n_div = mini(n_div, maxi(1, int(float(gdp_of[cid]) / GDP_INCOME_DIV / per_div * 0.8) + 1))
 		var by_pop: Array = own.duplicate()
 		by_pop.sort_custom(func(a, b): return provs[a]["pop_real"] > provs[b]["pop_real"] or (provs[a]["pop_real"] == provs[b]["pop_real"] and a < b))
 		var stacks := mini(maxi(1, (n_div + 2) / 3), mini(by_pop.size(), 6))
@@ -886,8 +958,28 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_terrain = bool(scn.get("rules", {}).get("terrain", false))
 	rule_weather = bool(scn.get("rules", {}).get("weather", false))
 	rule_modern = bool(scn.get("rules", {}).get("modern", false))
+	rule_markets = bool(scn.get("rules", {}).get("markets", false))
+	rule_templates = bool(scn.get("rules", {}).get("templates", false))
+	rule_organization = bool(scn.get("rules", {}).get("organization", false))
+	rule_gov2 = bool(scn.get("rules", {}).get("gov2", false))
+	x = {}
+	rule_fiscal_balance = bool(scn.get("rules", {}).get("fiscal_balance", false))
+	rule_food_balance = bool(scn.get("rules", {}).get("food_balance", false))
+	templates = {}
+	next_tpl_id = 1
+	pop_bp = {}
+	market_pct = {}
+	_market_flow = {}
+	if rule_markets:
+		for r in MARKET_RES:
+			market_pct[r] = 100
+			_market_flow[r] = 0
 	if rule_modern:
 		_load_techs()
+		missile_stock = {}
+		strikes = []
+		sites = []
+		sites = []
 	_compute_start_doy()
 	scenario_id = str(scn.get("id", ""))
 	if is_earth:
@@ -1007,6 +1099,8 @@ func setup_scenario(scn: Dictionary) -> Array:
 		c["war_support"] = _war_support_target(c)
 		_recalc_mods(c["id"])
 	dirty_provinces.clear()
+	if rule_gov2:
+		SimExt.setup(self)
 	return problems
 
 
@@ -1322,7 +1416,7 @@ func _politics() -> void:
 				_shift_popularity(c, c["ideology"], 1)
 		# elections / coups
 		var ideo: Dictionary = ideo_defs[c["ideology"]]
-		if ideo["elections"] and day >= 100 and (day - 100 - 40 * cid) % 365 == 0:
+		if ideo["elections"] and not rule_gov2 and day >= 100 and (day - 100 - 40 * cid) % 365 == 0:
 			var winner: String = c["ideology"]
 			for i in ideo_order:
 				if c["party_pop"][i] > c["party_pop"][winner]:
@@ -1612,6 +1706,8 @@ func intel_visible(viewer: int, a: Dictionary) -> bool:
 	var o: int = a["owner"]
 	if o == viewer or allied(viewer, o) or net_of_agent(viewer, o) >= 25:
 		return true
+	if rule_gov2 and SimExt.sat_count(self, viewer, "recon") > 0 and at_war(viewer, o):
+		return true   # reconnaissance satellites see the armies of a country we fight
 	var provs := provinces()
 	var p: int = a["prov"]
 	if owner[p] == viewer:
@@ -2058,6 +2154,20 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			return _resolve_event(countries[cid], cmd.get("uid", -1), cmd.get("option", -1))
 		"build_wing":
 			return _build_wing(cid, cmd.get("type_air", ""), cmd.get("base", -1))
+		"create_template":
+			return _create_template(cid, str(cmd.get("name", "")), cmd.get("bn", []))
+		"delete_template":
+			return _delete_template(cid, str(cmd.get("key", "")))
+		"market_buy":
+			return _market_trade(cid, cmd.get("res", ""), int(cmd.get("amount", 1)), true)
+		"market_sell":
+			return _market_trade(cid, cmd.get("res", ""), int(cmd.get("amount", 1)), false)
+		"build_site":
+			return _build_site(cid, str(cmd.get("kind", "")), int(cmd.get("cell", -1)))
+		"build_missile":
+			return _build_missile(cid, cmd.get("mtype", ""), int(cmd.get("count", 1)))
+		"launch_missile":
+			return _launch_missile(cid, cmd.get("mtype", ""), int(cmd.get("target", -1)))
 		"air_mission":
 			var aw := wing_by_id(cmd.get("wing", -1))
 			if aw.is_empty() or aw["owner"] != cid:
@@ -2100,6 +2210,8 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			var ut: String = cmd.get("unit", "")
 			if not unit_defs.has(ut):
 				return _fail("invalid unit")
+			if unit_defs[ut].get("template", false) and not ut.begins_with("tpl_%d_" % cid):
+				return _fail("invalid unit")   # templates are private to their country
 			return _train(cid, ut, cmd.get("army", -1))
 		"merge_armies":
 			var ma := army_by_id(cmd.get("army", -1))
@@ -2264,6 +2376,15 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			if terms == "annex":
 				_settle_annex(cid, t4)
 			return {"ok": true}
+		"create_group":
+			return _create_group(cid, str(cmd.get("name", "")), cmd.get("armies", []))
+		"delete_group":
+			var gid_del: int = cmd.get("group", -1)
+			var n_g := groups.size()
+			groups = groups.filter(func(g): return not (g["id"] == gid_del and g["owner"] == cid))
+			return {"ok": true} if groups.size() < n_g else _fail("no such group")
+		"group_move":
+			return _group_move(cid, cmd.get("group", -1), cmd.get("target", -1))
 		"move_army":
 			var a := army_by_id(cmd.get("army", -1))
 			if a.is_empty() or a["owner"] != cid:
@@ -2284,7 +2405,7 @@ func _validate_and_run(cmd: Dictionary) -> Dictionary:
 			a["move"] = 0
 			return {"ok": true}
 		_:
-			return _fail("unknown command")
+			return SimExt.command(self, cid, type, cmd)
 
 
 func _army_is_wet(a: Dictionary) -> bool:
@@ -2309,7 +2430,13 @@ func tick_day() -> void:
 	_economy()
 	_trade()
 	_resources()
+	if rule_markets:
+		if not rule_gov2:
+			_population()   # with gov2 the society model owns the population
+		_market()
 	_politics()
+	if rule_gov2:
+		SimExt.daily(self)
 	_intel()
 	_research()
 	_move_armies()
@@ -2317,6 +2444,8 @@ func tick_day() -> void:
 	_supply()
 	_air()
 	_battles()
+	if rule_organization:
+		_organization()
 	_occupation()
 	if day % 5 == 0:
 		_ai()
@@ -2395,8 +2524,12 @@ func _economy() -> void:
 	for o in agg:
 		if countries[o]["alive"]:
 			countries[o]["income"] = agg[o]["income"]
+	if rule_fiscal_balance:
+		for c in countries:
+			if c["alive"]:
+				c["income"] += maxi(1, int(gdp_of.get(c["id"], 0)) / GDP_INCOME_DIV)
 	for a in armies:
-		countries[a["owner"]]["upkeep"] += a["strength"] / 200
+		countries[a["owner"]]["upkeep"] += a["strength"] / (200 * 100 / UPKEEP_PCT if rule_fiscal_balance else 200)
 	for f in fleets:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
@@ -2411,6 +2544,8 @@ func _economy() -> void:
 				hit = clampi(hit - mod(c["id"], "cyber_def_pct"), 0, 25)
 				if hit > 0:
 					c["income"] = c["income"] * (100 - hit) / 100
+	if rule_gov2:
+		SimExt.adjust_economy(self)
 	for c in countries:
 		if c["alive"]:
 			c["treasury"] += c["income"] - c["upkeep"]
@@ -2575,10 +2710,15 @@ func _lane_forces(route: Array, buyer: int, seller: int) -> Vector2:
 		if f["strength"] <= 0 or not route.has(f["prov"]):
 			continue
 		var o: int = f["owner"]
+		var cls_mult := 1.0
+		if f.get("cls", "") == "destroyer" and (o == buyer or o == seller or allied(o, buyer) or allied(o, seller)):
+			cls_mult = 2.0   # escorts count double
+		elif f.get("cls", "") == "submarine" and not (o == buyer or o == seller or allied(o, buyer) or allied(o, seller)):
+			cls_mult = 2.0   # raiders count double
 		if o == buyer or o == seller or allied(o, buyer) or allied(o, seller):
-			escorts += f["strength"]
+			escorts += f["strength"] * cls_mult
 		elif at_war(o, buyer) or at_war(o, seller):
-			raiders += f["strength"]
+			raiders += f["strength"] * cls_mult
 	return Vector2(raiders, escorts)
 
 
@@ -2694,13 +2834,15 @@ func _resources() -> void:
 		var st: Dictionary = c["stock"]
 		for rr in ["food", "coal", "iron", "oil"]:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
+		if rule_food_balance:
+			c["prod"]["food"] = c["prod"]["food"] * FOOD_BALANCE_PERMILLE * BASE_LAND_CELLS / (maxi(int(world.get("land_count", BASE_LAND_CELLS)), 1) * 1000)
 		c["industry"] = ind_sum[cid]
-		c["cons"]["food"] = pop_sum[cid] / 90
+		c["cons"]["food"] = pop_sum[cid] * pop_index(cid) / 10000 / 90
 		var astr: int = astr_of.get(cid, 0)
 		var fstr: int = fstr_of.get(cid, 0)
 		var armor_hp: int = armor_of.get(cid, 0)
 		c["cons"]["oil"] = (astr - armor_hp) / 4000 + armor_hp / 1000 + 2 * fstr / 2000 + air_oil(cid)
-		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
+		c["manpower"] = mini(c["manpower"] + pop_sum[cid] * pop_index(cid) / 10000 * (100 + mod(cid, "manpower_pct")) / 20000, 2000)
 		# smelting: iron + coal -> steel, limited by industry
 		var steel := mini(mini(st["iron"] + c["prod"]["iron"], st["coal"] + c["prod"]["coal"]), ind_sum[cid] * (100 + mod(cid, "steel_pct")) / 300)
 		c["prod"]["steel"] = steel
@@ -2754,6 +2896,12 @@ func winter_at(cell: int) -> int:
 	var w := north if lat >= 0 else 100 - north
 	var lat_f := clampi((absi(lat) - 25) * 100 / 40, 0, 100)
 	return w * lat_f / 100
+
+
+## Fog in the shoulder seasons (≈12% of cell-days, only where winter severity is 10..70), deterministic from calendar and cell.
+func fog_at(cell: int) -> bool:
+	var w := winter_at(cell)
+	return w >= 10 and w <= 70 and ((day / 4) * 31 + (cell / 53) * 17) % 100 < 12
 
 
 ## Local storm (≈7% of cell-days), deterministic from the calendar and the cell.
@@ -2828,8 +2976,8 @@ func _naval_battles() -> void:
 				var y: Dictionary = group[j]
 				if x["strength"] <= 0 or y["strength"] <= 0 or not at_war(x["owner"], y["owner"]):
 					continue
-				var px: float = x["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(x["owner"], "fleet_pct") / 100.0)
-				var py: float = y["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(y["owner"], "fleet_pct") / 100.0)
+				var px: float = x["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(x["owner"], "fleet_pct") / 100.0) * SimMore.ship_mult(self, x, y, p)
+				var py: float = y["strength"] * rng.randf_range(0.8, 1.2) * (1.0 + mod(y["owner"], "fleet_pct") / 100.0) * SimMore.ship_mult(self, y, x, p)
 				x["strength"] -= int(py * 0.15)
 				y["strength"] -= int(px * 0.15)
 	# transports without escort are sunk by enemy fleets
@@ -2875,10 +3023,13 @@ func _battles() -> void:
 					continue
 				var x_def: bool = owner[p] == x["owner"]
 				var y_def: bool = owner[p] == y["owner"]
-				var px: float = army_power(x, not x_def) * rng.randf_range(0.8, 1.2) * (def_bonus if x_def else 1.0)
-				var py: float = army_power(y, not y_def) * rng.randf_range(0.8, 1.2) * (def_bonus if y_def else 1.0)
+				var px: float = army_power(x, not x_def) * rng.randf_range(0.8, 1.2) * (def_bonus * SimMore.line_bonus(self, p, x["owner"]) if x_def else 1.0) * drone_factor(x, y, p)
+				var py: float = army_power(y, not y_def) * rng.randf_range(0.8, 1.2) * (def_bonus * SimMore.line_bonus(self, p, y["owner"]) if y_def else 1.0) * drone_factor(y, x, p)
 				_hurt(x, int(py * 0.12))
 				_hurt(y, int(px * 0.12))
+				if rule_organization:
+					_lose_org(x, ORG_DEFEND_LOSS if x_def else ORG_ATTACK_LOSS)
+					_lose_org(y, ORG_DEFEND_LOSS if y_def else ORG_ATTACK_LOSS)
 				_battle_xp(x)
 				_battle_xp(y)
 	var survivors: Array = []
@@ -2959,6 +3110,8 @@ func _eliminate() -> void:
 
 
 func _declare_war(a: int, b: int) -> void:
+	if SimExt.blocks_war(self, a, b):
+		return   # a non-aggression pact is still in force
 	wars.append({"a": a, "b": b, "start": day})
 	trades = trades.filter(func(t): return not ((t["buyer"] == a and t["seller"] == b) or (t["buyer"] == b and t["seller"] == a)))
 	_log("%s: %s объявляет войну %s" % [date_string(), countries[a]["name"], countries[b]["name"]])
@@ -3027,7 +3180,10 @@ func army_power(a: Dictionary, attacking: bool) -> float:
 		air_share = air_sup[tprov][a["owner"]]
 	var cas: float = air_cas.get(tprov, {}).get(a["owner"], 0.0)
 	var cas_m: float = 1.0 + minf(0.3, cas / (a["strength"] + 1.0) * 2.0)
-	return p * sup * gm * (1.0 + 0.2 * (air_share - 0.5)) * cas_m
+	var org_m := 1.0
+	if rule_organization:
+		org_m = 0.5 + 0.5 * float(army_org(a)) / 100.0   # a worn-out army fights at half strength
+	return p * sup * gm * (1.0 + 0.2 * (air_share - 0.5)) * cas_m * org_m
 
 
 func divisions_of(cid: int) -> int:
@@ -3148,23 +3304,32 @@ func eff_infra(p: int) -> int:
 ## Supply distance from hubs. Cost per step depends on infrastructure (own land ~5-9, hostile ~20-24).
 func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	var provs := provinces()
-	var dist := {}
+	# working distances live in a flat array (much cheaper than a Dictionary per step); the result dictionary lists only reached cells
+	if _sd_arr.size() != owner.size():
+		_sd_arr = PackedInt32Array()
+		_sd_arr.resize(owner.size())
+	_sd_arr.fill(9999)
+	var dv := _sd_arr
+	var touched: Array[int] = []
 	var buckets: Array = []
 	for _i in SUPPLY_RANGE + 1:
 		buckets.append([])
 	var cap: int = countries[cid]["capital"]
 	if owner[cap] == cid:
-		dist[cap] = 0
+		dv[cap] = 0
+		touched.append(cap)
 		buckets[0].append(cap)
 	else:
 		for p in cells_of(cid):
-			dist[p] = 60
+			dv[p] = 60
+			touched.append(p)
 			buckets[60].append(p)
 			break
 	if not fleets_of(cid).is_empty():
 		for p in cells_of(cid):
-			if _coastal[p] == 1 and not dist.has(p) and not port_blockaded(p, cid):
-				dist[p] = 80
+			if _coastal[p] == 1 and dv[p] == 9999 and not port_blockaded(p, cid):
+				dv[p] = 80
+				touched.append(p)
 				buckets[80].append(p)
 	var need := {}
 	for t in targets:
@@ -3176,31 +3341,43 @@ func _supply_dist(cid: int, targets: Array = []) -> Dictionary:
 	for al in allies_of(cid):
 		ally_set[al] = true
 	var terr_extra := _terrain_supply_extra() if rule_terrain else PackedInt32Array()
+	var finished := false
 	for d in SUPPLY_RANGE + 1:
+		if finished:
+			break
 		for p in buckets[d]:
-			if dist[p] != d:
+			if dv[p] != d:
 				continue
 			if not need.is_empty() and need.has(p):
 				need.erase(p)
 				if need.is_empty():
-					return dist  # every army's supply distance is final
+					finished = true   # every army's supply distance is final
+					break
 			for q in provs[p]["land_neighbors"]:
 				var o := owner[q]
 				var hostile := o >= 0 and o != cid and enemy_set.has(o)
 				var eff := maxi(1, infra[q] - damage[q] / 30)
 				var cost: int = (10 - eff) if (o == cid or ally_set.has(o)) else (25 - eff)
+				if rule_gov2 and _works_supply.size() == owner.size():
+					cost = maxi(1, cost - _works_supply[q])
 				if rule_terrain:
 					cost += terr_extra[q]
 				if rule_weather:
 					cost += _winter_cached(q) / 20
 				var nd := d + cost
-				if nd <= SUPPLY_RANGE and nd < dist.get(q, 9999):
-					dist[q] = nd
+				if nd <= SUPPLY_RANGE and nd < dv[q]:
+					if dv[q] == 9999:
+						touched.append(q)
+					dv[q] = nd
 					if not hostile:  # supply never flows THROUGH enemy-held cells => encirclement cuts it
 						buckets[nd].append(q)
+	var dist := {}
+	for p in touched:
+		dist[p] = dv[p]
 	return dist
 
 
+var _sd_arr := PackedInt32Array()
 var _terr_extra_cache := PackedInt32Array()
 var _winter_val := PackedInt32Array()
 var _winter_stamp := PackedInt32Array()
@@ -3379,6 +3556,665 @@ func _log(text: String) -> void:
 		log_lines.pop_front()
 
 
+# ---------------------------------------------------------------- army groups
+
+func group_by_id(gid: int) -> Dictionary:
+	for g in groups:
+		if g["id"] == gid:
+			return g
+	return {}
+
+
+## Members that still exist (armies merge, die or change hands); the group is dropped when fewer than two remain.
+func group_members(g: Dictionary) -> Array:
+	var out: Array = []
+	for aid in g["armies"]:
+		var a := army_by_id(aid)
+		if not a.is_empty() and a["owner"] == g["owner"]:
+			out.append(a)
+	return out
+
+
+func groups_of(cid: int) -> Array:
+	return groups.filter(func(g): return g["owner"] == cid and group_members(g).size() >= 1)
+
+
+func _create_group(cid: int, gname: String, ids: Array) -> Dictionary:
+	gname = gname.strip_edges()
+	if gname.is_empty() or gname.length() > 24:
+		return _fail("invalid name")
+	var seen := {}
+	for aid in ids:
+		var a := army_by_id(int(aid))
+		if a.is_empty() or a["owner"] != cid or seen.has(int(aid)):
+			return _fail("invalid army")
+		seen[int(aid)] = true
+	if seen.size() < 2:
+		return _fail("group needs two armies")
+	if groups.filter(func(g): return g["owner"] == cid).size() >= MAX_GROUPS:
+		return _fail("too many groups")
+	for g in groups:   # an army belongs to one group at a time
+		if g["owner"] == cid:
+			g["armies"] = g["armies"].filter(func(x): return not seen.has(int(x)))
+	groups = groups.filter(func(g): return g["owner"] != cid or g["armies"].size() >= 1)
+	var members: Array = []
+	for aid in ids:
+		members.append(int(aid))
+	groups.append({"id": next_group_id, "owner": cid, "name": gname, "armies": members})
+	next_group_id += 1
+	return {"ok": true, "id": next_group_id - 1}
+
+
+## One order for the whole group; members that cannot reach the target are left where they are.
+func _group_move(cid: int, gid: int, target: int) -> Dictionary:
+	var g := group_by_id(gid)
+	if g.is_empty() or g["owner"] != cid:
+		return _fail("no such group")
+	var moved := 0
+	var failed := 0
+	for a in group_members(g):
+		var r := _validate_and_run({"type": "move_army", "country": cid, "army": a["id"], "target": target})
+		if r["ok"]:
+			moved += 1
+		else:
+			failed += 1
+	if moved == 0:
+		return _fail("no route")
+	return {"ok": true, "moved": moved, "failed": failed}
+
+
+# ---------------------------------------------------------------- organisation (rules.organization)
+
+func army_org(a: Dictionary) -> int:
+	return int(a.get("org", 100))
+
+
+func _lose_org(a: Dictionary, n: int) -> void:
+	a["org"] = clampi(army_org(a) - n, 0, 100)
+
+
+## Daily: marching and starving armies lose organisation, armies that rest in supply regain it.
+func _organization() -> void:
+	# owners present per cell, so "is there an enemy army here" costs one dictionary lookup per army
+	var present := {}
+	for a in armies:
+		if not present.has(a["prov"]):
+			present[a["prov"]] = {}
+		present[a["prov"]][a["owner"]] = true
+	for a in armies:
+		var org := army_org(a)
+		var fighting := false
+		for o in present[a["prov"]]:
+			if o != a["owner"] and at_war(a["owner"], o):
+				fighting = true
+				break
+		if fighting:
+			if org <= 0:
+				_retreat(a)   # a broken army leaves the cell it cannot hold
+			continue   # battles already cost organisation
+		if not a["path"].is_empty():
+			org -= ORG_MOVE
+		elif a["supply"] >= 50:
+			org += ORG_REST
+		elif a["supply"] < 30:
+			org -= 1
+		a["org"] = clampi(org, 0, 100)
+
+
+## A broken army (organisation 0) falls back to a neighbouring own or allied cell free of enemy armies; with nowhere to go it stays.
+func _retreat(a: Dictionary) -> void:
+	var provs := provinces()
+	var best := -1
+	for q in provs[a["prov"]]["land_neighbors"]:
+		var o := owner[q]
+		if o != a["owner"] and not (o >= 0 and allied(a["owner"], o)):
+			continue
+		var occupied := false
+		for b in armies:
+			if b["prov"] == q and b["owner"] != a["owner"] and at_war(a["owner"], b["owner"]):
+				occupied = true
+				break
+		if not occupied and (best < 0 or q < best):
+			best = q
+	if best >= 0:
+		a["prov"] = best
+		a["path"] = []
+		a["move"] = 0
+		a["org"] = 15
+		_log("%s: армия %s отступила — организация исчерпана" % [date_string(), countries[a["owner"]]["name"]])
+
+
+## Drone and electronic-warfare battalions of an army: [drone battalions, EW battalions] (abstract counts from division templates).
+func army_drone_ew(a: Dictionary) -> Vector2i:
+	var dr := 0
+	var ew := 0
+	for d in a["div"]:
+		var u: Dictionary = unit_defs.get(d["t"], {})
+		dr += int(u.get("drones", 0))
+		ew += int(u.get("ew", 0))
+	return Vector2i(dr, ew)
+
+
+## Attack multiplier of `me` against `foe` from drones: +10 % per drone battalion (max +30 %), cut by enemy EW (-25 % of the bonus
+## per EW battalion) and halved in storms (weather rule). Exactly 1.0 for armies without drones.
+func army_stat_sum(a: Dictionary, key: String) -> int:
+	var n := 0
+	for d in a["div"]:
+		if key == "tanks" and d["t"] == "armor":
+			n += 1
+		n += int(unit_defs.get(d["t"], {}).get(key, 0))
+	return n
+
+
+func drone_factor(me: Dictionary, foe: Dictionary, cell: int) -> float:
+	var mine := army_drone_ew(me)
+	var fpv := army_stat_sum(me, "fpv")
+	var robots := army_stat_sum(me, "robots")
+	if mine.x == 0 and fpv == 0 and robots == 0:
+		return 1.0
+	var theirs := army_drone_ew(foe)
+	var jam := 1.0 - minf(1.0, 0.25 * theirs.y)
+	var bonus := minf(0.3, 0.1 * mine.x) * jam
+	if fpv > 0:   # FPV teams: cheap loitering strikers, twice as good against armour, jammed by EW
+		bonus += minf(0.24, 0.08 * fpv) * jam * (1.5 if army_stat_sum(foe, "tanks") > 0 else 1.0)
+	if robots > 0:   # ground robots: small steady bonus, jamming hits them hardest
+		bonus += minf(0.15, 0.05 * robots) * (1.0 - minf(1.0, 0.4 * theirs.y))
+	if rule_weather and storm_at(cell):
+		bonus *= 0.5
+	return 1.0 + bonus
+
+
+## Ship classes for the gov2 rule: cheap escorts, submarine raiders and expensive carriers.
+const SHIP_CLASSES := {
+	"destroyer": {"name": "Эсминцы", "cost": 70, "steel": 30, "strength": 900, "role": "escort"},
+	"submarine": {"name": "Подводные лодки", "cost": 90, "steel": 35, "strength": 700, "role": "raider"},
+	"carrier": {"name": "Авианосец", "cost": 220, "steel": 90, "strength": 2600, "role": "air"},
+	"usv": {"name": "Безэкипажные катера", "cost": 35, "steel": 12, "strength": 450, "role": "picket"},
+}
+
+
+func _build_ship(cid: int, cls: String) -> Dictionary:
+	if not SHIP_CLASSES.has(cls):
+		return _fail("invalid ship")
+	var c: Dictionary = countries[cid]
+	var d: Dictionary = SHIP_CLASSES[cls]
+	var port := port_of(cid)
+	if port < 0:
+		return _fail("no port")
+	if c["treasury"] < d["cost"]:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < d["steel"]:
+		return _fail("not enough steel")
+	var sea := sea_next_to(port)
+	if sea < 0:
+		return _fail("no port")
+	c["treasury"] -= d["cost"]
+	c["stock"]["steel"] -= d["steel"]
+	fleets.append({"id": next_fleet_id, "owner": cid, "prov": sea, "strength": d["strength"], "path": [], "move": 0, "cls": cls})
+	next_fleet_id += 1
+	return {"ok": true}
+
+
+## Transport aviation: moves an army instantly to another own cell inside the wing's range (the wing is busy for 3 days).
+func _airlift(cid: int, army_id: int, target: int) -> Dictionary:
+	var a := army_by_id(army_id)
+	if a.is_empty() or a["owner"] != cid:
+		return _fail("invalid army")
+	if target < 0 or target >= owner.size() or owner[target] != cid or not provinces()[target]["land"]:
+		return _fail("invalid destination")
+	if a["prov"] == target:
+		return _fail("invalid destination")
+	for b in armies:
+		if b["prov"] == target and b["owner"] != cid and at_war(cid, b["owner"]):
+			return _fail("invalid destination")
+	var c: Dictionary = countries[cid]
+	if c["treasury"] < 30 or c["stock"]["steel"] < 5:
+		return _fail("not enough funds")
+	for w in wings_of(cid):
+		if w["type"] != "transport" or w["strength"] < 20 or int(w.get("busy", 0)) > day:
+			continue
+		var r := reach(w["base"], air_range(cid, "transport"))
+		if r.has(a["prov"]) and r.has(target):
+			c["treasury"] -= 30
+			c["stock"]["steel"] -= 5
+			w["busy"] = day + 3
+			a["prov"] = target
+			a["path"] = []
+			a["move"] = 0
+			return {"ok": true}
+	return _fail("out of range")
+
+
+# ---------------------------------------------------------------- division templates (rules.templates)
+
+func template_key(cid: int, id: int) -> String:
+	return "tpl_%d_%d" % [cid, id]
+
+
+## Division stats of a battalion list as a unit definition (same fields as data/units.json), or {} when the list is invalid.
+func template_stats(bn: Array) -> Dictionary:
+	if bn.is_empty() or bn.size() > MAX_BATTALIONS:
+		return {}
+	var cost := 0
+	var steel := 0
+	var mp := 0
+	var hp := 0
+	var atk := 0.0
+	var def := 0.0
+	var oil := false
+	var counts := {}
+	var terr := {"plains": 0.0, "forest": 0.0, "hills": 0.0, "mountain": 0.0, "desert": 0.0}
+	for t in bn:
+		if not BATTALIONS.has(t):
+			return {}
+		var b: Dictionary = BATTALIONS[t]
+		cost += b["cost"]
+		steel += b["steel"]
+		mp += b["manpower"]
+		hp += b["hp"]
+		atk += b["atk"] * b["hp"]
+		def += b["def"] * b["hp"]
+		oil = oil or b["oil"]
+		counts[t] = int(counts.get(t, 0)) + 1
+		for k in terr:
+			terr[k] += float(unit_defs[b["terrain_of"]]["terrain"].get(k, 1.0)) * b["hp"]
+	atk /= hp
+	def /= hp
+	for k in terr:
+		terr[k] /= hp
+	# combined arms: infantry, artillery and tanks together fight better
+	if counts.has("inf") and counts.has("art") and counts.has("tank"):
+		atk *= 1.08
+	# reconnaissance softens every terrain penalty, engineers help in broken ground
+	if counts.has("recon"):
+		for k in terr:
+			if terr[k] < 1.0:
+				terr[k] += (1.0 - terr[k]) * 0.5
+	if counts.has("eng"):
+		for k in ["forest", "hills", "mountain"]:
+			terr[k] += 0.1
+	for k in terr:
+		terr[k] = snappedf(terr[k], 0.01)
+	return {"cost": cost, "steel": steel, "manpower": mp, "hp": hp, "atk": snappedf(atk, 0.01), "def": snappedf(def, 0.01), "oil": oil, "terrain": terr,
+		"drones": int(counts.get("drone", 0)), "ew": int(counts.get("ew", 0)), "fpv": int(counts.get("fpv", 0)), "robots": int(counts.get("ugv", 0)),
+		"tanks": int(counts.get("tank", 0))}
+
+
+func _register_template(cid: int, tpl: Dictionary) -> void:
+	var st := template_stats(tpl["bn"])
+	if st.is_empty():
+		return
+	st["id"] = template_key(cid, tpl["id"])
+	st["name"] = tpl["name"]
+	st["template"] = true
+	unit_defs[st["id"]] = st
+
+
+func _register_all_templates() -> void:
+	for cid in templates:
+		for tpl in templates[cid]:
+			_register_template(int(cid), tpl)
+
+
+func _create_template(cid: int, tname: String, bn: Array) -> Dictionary:
+	if not rule_templates:
+		return _fail("rule disabled")
+	tname = tname.strip_edges()
+	if tname.is_empty() or tname.length() > 24:
+		return _fail("invalid name")
+	if template_stats(bn).is_empty():
+		return _fail("invalid battalions")
+	for bt in bn:
+		if BATTALIONS[bt].has("tech") and not countries[cid]["techs"].has(BATTALIONS[bt]["tech"]):
+			return _fail("technology required")   # drone and electronic-warfare battalions need their technologies
+	var mine: Array = templates.get(cid, [])
+	if mine.size() >= MAX_TEMPLATES:
+		return _fail("too many templates")
+	var tpl := {"id": next_tpl_id, "name": tname, "bn": bn.duplicate()}
+	next_tpl_id += 1
+	mine.append(tpl)
+	templates[cid] = mine
+	_register_template(cid, tpl)
+	return {"ok": true, "key": template_key(cid, tpl["id"])}
+
+
+func _delete_template(cid: int, key: String) -> Dictionary:
+	if not rule_templates:
+		return _fail("rule disabled")
+	var mine: Array = templates.get(cid, [])
+	for i in mine.size():
+		if template_key(cid, mine[i]["id"]) == key:
+			for a in armies:
+				for d in a["div"]:
+					if d["t"] == key:
+						return _fail("template in use")
+			mine.remove_at(i)
+			unit_defs.erase(key)
+			return {"ok": true}
+	return _fail("no such template")
+
+
+## Default templates for AI countries (created on first use): a line infantry division and a tank division.
+func _ai_template_key(cid: int, kind: String) -> String:
+	if not templates.has(cid):
+		_create_template(cid, "Пехотная дивизия", ["inf", "inf", "inf", "art", "eng"])
+		_create_template(cid, "Танковая дивизия", ["tank", "tank", "tank", "inf", "inf", "art", "recon"])
+	var mine: Array = templates.get(cid, [])
+	if mine.size() < 2:
+		return ""
+	return template_key(cid, mine[0 if kind == "infantry" else 1]["id"])
+
+
+# ---------------------------------------------------------------- population and world market (rules.markets)
+
+## Population index (basis points, 10000 = scenario start). Scales food demand and manpower growth.
+func pop_index(cid: int) -> int:
+	if rule_gov2 and x.has("soc") and x["soc"].has(cid):
+		return int(x["soc"][cid]["pop"])
+	return int(pop_bp.get(cid, 10000)) if rule_markets else 10000
+
+
+## Daily population dynamics (integer maths): slow growth, famine and war devastation shrink a country.
+func _population() -> void:
+	var provs := provinces()
+	for c in countries:
+		if not c["alive"]:
+			continue
+		var cid: int = c["id"]
+		var bp: int = pop_bp.get(cid, 10000)
+		if day % 4 == 0:
+			bp += 1                                  # ~0.9 % per year
+		if c["short"].has("food"):
+			bp -= 4                                  # famine: -0.04 % per day
+		if day % 10 == 0 and not enemies_of(cid).is_empty():
+			var hurt := 0
+			for p in cells_of(cid):
+				if damage[p] > 40:
+					hurt += 1
+			bp -= mini(30, hurt / 4)                 # devastated cells lose people
+		pop_bp[cid] = clampi(bp, 5000, 15000)
+
+
+func market_price_x100(res: String) -> int:
+	return price_of(res) * int(market_pct.get(res, 100))
+
+
+## World prices follow global demand/supply every 5 days (smoothed, 50..300 % of base) and players' own trades push them.
+func _market() -> void:
+	if day % 5 != 0:
+		return
+	for r in MARKET_RES:
+		var prod := 1
+		var cons := 1
+		for c in countries:
+			if c["alive"]:
+				prod += c["prod"].get(r, 0)
+				cons += c["cons"].get(r, 0)
+		var target := clampi(cons * 100 / prod, 50, 300) + int(_market_flow.get(r, 0)) * 2
+		var cur: int = market_pct.get(r, 100)
+		market_pct[r] = clampi((cur * 9 + target) / 10, 50, 300)
+		_market_flow[r] = 0
+
+
+func _market_trade(cid: int, res: String, amount: int, buy: bool) -> Dictionary:
+	if not rule_markets:
+		return _fail("rule disabled")
+	if not MARKET_RES.has(res):
+		return _fail("invalid resource")
+	amount = clampi(amount, 1, 20)
+	var c: Dictionary = countries[cid]
+	var unit := market_price_x100(res)
+	if buy:
+		var cost := maxi(1, (unit * amount * (100 + MARKET_SPREAD) + 9999) / 10000)
+		if c["treasury"] < cost:
+			return _fail("not enough funds")
+		if c["stock"][res] + amount > STOCK_CAP:
+			return _fail("stock full")
+		c["treasury"] -= cost
+		c["stock"][res] += amount
+		_market_flow[res] = int(_market_flow.get(res, 0)) + amount
+	else:
+		if c["stock"][res] < amount:
+			return _fail("not enough stock")
+		var gain := unit * amount * (100 - MARKET_SPREAD) / 10000
+		c["treasury"] += gain
+		c["stock"][res] -= amount
+		_market_flow[res] = int(_market_flow.get(res, 0)) - amount
+	return {"ok": true}
+
+
+## AI keeps its stocks afloat: buys what it lacks, sells large surpluses.
+func _ai_market(cid: int) -> void:
+	if day % 5 != 0:
+		return
+	var c: Dictionary = countries[cid]
+	for r in MARKET_RES:
+		if c["short"].has(r) and c["treasury"] > 150:
+			_market_trade(cid, r, 5, true)
+		elif c["stock"][r] > STOCK_CAP * 8 / 10:
+			_market_trade(cid, r, 10, false)
+
+
+# ---------------------------------------------------------------- missiles and air defence (abstract, rules.modern)
+
+const MISSILE_START := {"tactical": 3, "strategic": 0}
+
+
+## Missiles in stock (read-only: never creates state).
+func missile_count(cid: int, mtype: String) -> int:
+	return int(missile_stock.get(cid, MISSILE_START).get(mtype, 0))
+
+
+func _set_missiles(cid: int, mtype: String, n: int) -> void:
+	if not missile_stock.has(cid):
+		missile_stock[cid] = MISSILE_START.duplicate()
+	missile_stock[cid][mtype] = n
+
+
+## Chance (percent) that a launch against this country is shot down.
+func air_defense(cid: int) -> int:
+	return clampi(8 + mod(cid, "ad_pct"), 0, 80)
+
+
+func _build_missile(cid: int, mtype: String, count: int) -> Dictionary:
+	if not rule_modern:
+		return _fail("rule disabled")
+	if not MISSILE_DEFS.has(mtype):
+		return _fail("invalid missile")
+	var d: Dictionary = MISSILE_DEFS[mtype]
+	var c: Dictionary = countries[cid]
+	if not c["techs"].has(d["tech"]):
+		return _fail("technology required")
+	count = clampi(count, 1, 10)
+	if missile_count(cid, mtype) + count > MISSILE_CAP:
+		return _fail("stock full")
+	if c["treasury"] < d["cost"] * count:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < d["steel"] * count:
+		return _fail("not enough steel")
+	c["treasury"] -= d["cost"] * count
+	c["stock"]["steel"] -= d["steel"] * count
+	_set_missiles(cid, mtype, missile_count(cid, mtype) + count)
+	return {"ok": true}
+
+
+## Nearest own land cell from which `target` is within `range_cells` hops (-1 if none).
+func missile_site(cid: int, target: int, range_cells: int) -> int:
+	var best := -1
+	var best_d := 9999
+	var bonus: int = SITE_DEFS["launch"]["range_bonus"]
+	var launch_cells := {}
+	for st in sites:
+		if st["owner"] == cid and st["kind"] == "launch" and damage[st["cell"]] < 80:
+			launch_cells[st["cell"]] = true
+	var r := reach(target, range_cells + (bonus if not launch_cells.is_empty() else 0))
+	var provs := provinces()
+	for p in r:
+		if owner[p] == cid and provs[p]["land"]:
+			var dd: int = r[p]
+			var ok: bool = dd <= range_cells or launch_cells.has(p)   # launch sites extend the range
+			if ok and (dd < best_d or (dd == best_d and p < best)):
+				best_d = dd
+				best = p
+	return best
+
+
+## Interception chance (percent) for a strike on `target`: the country's air defence plus batteries standing within their radius
+## (a damaged battery counts for less).
+func air_defense_at(def_owner: int, target: int) -> int:
+	var v := air_defense(def_owner)
+	var d: Dictionary = SITE_DEFS["ad"]
+	var near := reach(target, d["radius"])
+	for st in sites:
+		if st["owner"] == def_owner and st["kind"] == "ad" and near.has(st["cell"]):
+			v += d["ad_bonus"] * (100 - damage[st["cell"]]) / 100
+	return mini(v, 85)
+
+
+func _build_site(cid: int, kind: String, cell: int) -> Dictionary:
+	if not rule_modern:
+		return _fail("rule disabled")
+	if not SITE_DEFS.has(kind):
+		return _fail("invalid site")
+	var d: Dictionary = SITE_DEFS[kind]
+	var c: Dictionary = countries[cid]
+	if cell < 0 or cell >= owner.size() or owner[cell] != cid or not provinces()[cell]["land"]:
+		return _fail("invalid base")
+	if not c["techs"].has(d["tech"]):
+		return _fail("technology required")
+	for st in sites:
+		if st["owner"] == cid and st["cell"] == cell and st["kind"] == kind:
+			return _fail("already built")
+	if sites.filter(func(x): return x["owner"] == cid).size() >= 12:
+		return _fail("too many sites")
+	if c["treasury"] < d["cost"]:
+		return _fail("not enough funds")
+	if c["stock"]["steel"] < d["steel"]:
+		return _fail("not enough steel")
+	c["treasury"] -= d["cost"]
+	c["stock"]["steel"] -= d["steel"]
+	sites.append({"owner": cid, "cell": cell, "kind": kind})
+	return {"ok": true}
+
+
+## Does `viewer` know about this site? Own and allied sites, any site seen through a strong agent network, and sites on or next to
+## the viewer's territory or next to its armies (same rule as for armies).
+func site_visible(viewer: int, st: Dictionary) -> bool:
+	var o: int = st["owner"]
+	if o == viewer or allied(viewer, o) or net_of_agent(viewer, o) >= 25:
+		return true
+	var provs := provinces()
+	var p: int = st["cell"]
+	if owner[p] == viewer:
+		return true
+	for q in provs[p]["neighbors"]:
+		if owner[q] == viewer:
+			return true
+	for b in armies:
+		if b["owner"] == viewer and (b["prov"] == p or provs[p]["neighbors"].has(b["prov"])):
+			return true
+	return false
+
+
+func sites_at(cell: int) -> Array:
+	return sites.filter(func(x): return x["cell"] == cell)
+
+
+func _launch_missile(cid: int, mtype: String, target: int) -> Dictionary:
+	if not rule_modern:
+		return _fail("rule disabled")
+	if not MISSILE_DEFS.has(mtype):
+		return _fail("invalid missile")
+	if target < 0 or target >= owner.size() or not provinces()[target]["land"]:
+		return _fail("land target required")
+	var def_owner := owner[target]
+	if def_owner < 0 or not at_war(cid, def_owner):
+		return _fail("target not at war")
+	if missile_count(cid, mtype) <= 0:
+		return _fail("no missiles")
+	var d: Dictionary = MISSILE_DEFS[mtype]
+	var from := missile_site(cid, target, d["range"] + mod(cid, "air_range"))
+	if from < 0:
+		return _fail("out of range")
+	_set_missiles(cid, mtype, missile_count(cid, mtype) - 1)
+	var chance := clampi(air_defense_at(def_owner, target) - mod(cid, "missile_pen_pct"), 0, 85)
+	var hit := rng.randi_range(0, 99) >= chance
+	strikes.append({"day": day, "owner": cid, "from": from, "target": target, "type": mtype, "hit": hit})
+	if strikes.size() > 40:
+		strikes.pop_front()
+	var where := "ячейка #%d" % target
+	if is_earth_world():
+		var rn := EarthWorld.region_name(world, int(provinces()[target].get("region", 0)))
+		if rn != "":
+			where = rn
+	if hit:
+		damage[target] = mini(100, damage[target] + d["dmg"])
+		for a in armies:
+			if a["prov"] == target and a["owner"] != cid and at_war(cid, a["owner"]):
+				_hurt(a, a["strength"] * d["army_pct"] / 100)
+		_log("%s: %s наносит удар (%s) по территории %s — %s" % [date_string(), countries[cid]["name"], d["name"], countries[def_owner]["name"], where])
+	else:
+		_log("%s: ПВО страны %s перехватила ракету (%s) из %s" % [date_string(), countries[def_owner]["name"], d["name"], countries[cid]["name"]])
+	_aggregate_dirty()
+	return {"ok": true, "hit": hit}
+
+
+func _aggregate_dirty() -> void:
+	_agg_key = []   # damage changed: per-country sums must be recomputed
+
+
+func _ai_missiles(cid: int) -> void:
+	var c: Dictionary = countries[cid]
+	var enemies := enemies_of(cid)
+	if enemies.is_empty():
+		return
+	if day % 15 == 0 and c["treasury"] >= 300 and c["stock"]["steel"] >= 60:
+		# a battery at the capital, then a launch site on the most industrial own cell
+		for kind in ["ad", "launch"]:
+			if c["techs"].has(SITE_DEFS[kind]["tech"]):
+				var cell: int = c["capital"] if kind == "ad" else _ai_site_cell(cid)
+				if cell >= 0 and _build_site(cid, kind, cell).get("ok", false):
+					break
+	if day % 7 == 0 and c["treasury"] >= 260 and c["stock"]["steel"] >= 60:
+		for mt in ["strategic", "tactical"]:
+			if c["techs"].has(MISSILE_DEFS[mt]["tech"]) and missile_count(cid, mt) < 6:
+				_build_missile(cid, mt, 1)
+				break
+	if day % 6 != 0:
+		return
+	for mt in ["strategic", "tactical"]:
+		if missile_count(cid, mt) <= 0:
+			continue
+		var best := -1
+		var best_v := -1
+		for t in cells_of_enemies(enemies):
+			var v: int = provinces()[t]["industry"] * 10 + armies_in(t).size() * 4 - damage[t] / 10
+			if v > best_v and missile_site(cid, t, MISSILE_DEFS[mt]["range"] + mod(cid, "air_range")) >= 0:
+				best_v = v
+				best = t
+		if best >= 0:
+			_launch_missile(cid, mt, best)
+			return
+
+
+func _ai_site_cell(cid: int) -> int:
+	var best := -1
+	var best_v := -1
+	for p in cells_of(cid):
+		var v: int = provinces()[p]["industry"]
+		if v > best_v:
+			best_v = v
+			best = p
+	return best
+
+
+func cells_of_enemies(enemies: Array) -> Array:
+	var out: Array = []
+	for e in enemies:
+		out.append_array(cells_of(e))
+	return out
+
+
 # ---------------------------------------------------------------- pathing
 
 ## BFS over land. Passable: own, enemy-owned or unowned provinces.
@@ -3447,95 +4283,138 @@ func _bfs(from: int, cid: int, is_goal: Callable, allow_sea: bool) -> Array:
 
 # --------------------------------------------------------------------- AI
 
+## Legacy AI, split into named subsystems (same order and behaviour as the former single function).
+const AI_STAGES := ["strategy", "diplomacy", "navy_build", "army_build", "support", "ground_orders"]
+
+
 func _ai() -> void:
 	for c in countries:
 		if not c["alive"] or not c["ai"]:
 			continue
 		var cid: int = c["id"]
-		var my_str := army_strength(cid)
-		var enemies := enemies_of(cid)
-		# strategic: choose a victim
-		if enemies.is_empty() and day >= grace_days and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2 and (ai_war_chance >= 1.0 or rng.randf() < ai_war_chance):
-			var victim := -1
-			var weakest := 1 << 30
-			var targets := neighbor_countries(cid)
-			if fleets_of(cid).size() >= 2:
-				for o2 in countries:
-					if o2["alive"] and o2["id"] != cid and not targets.has(o2["id"]) and can_reach_overseas(cid, o2["id"]):
-						targets.append(o2["id"])
-			for n in targets:
-				if allied(cid, n):
-					continue
-				var s := army_strength(n)
-				if s < weakest:
-					weakest = s
-					victim = n
-			if victim >= 0 and my_str > weakest * 1.3:
-				_declare_war(cid, victim)
-				enemies = enemies_of(cid)
-		# diplomacy: seek an ally every 30 days
-		if day % 30 == 0 and allies_of(cid).is_empty() and enemies.is_empty():
-			for n in neighbor_countries(cid):
-				if not allied(cid, n) and not at_war(cid, n) and _ai_accepts_alliance(n, cid) and countries[n]["ai"]:
-					alliances.append({"a": cid, "b": n})
-					_log("%s: союз %s — %s" % [date_string(), c["name"], countries[n]["name"]])
-					break
-		# peace: tired of losing
-		for e in enemies.duplicate():
-			if day - _war_start(cid, e) >= 90 and my_str < army_strength(e) and countries[e]["ai"]:
-				_end_war(cid, e, "усталость от войны")
-				if not cells_held_from(e, cid).is_empty() and army_strength(e) >= my_str * 1.5:
-					_settle_annex(e, cid)   # the clearly stronger side keeps what it holds (same rule as the player's treaty)
-				enemies = enemies_of(cid)
-		# naval: build fleets
-		if day % 10 == 0:
-			_ai_trade(cid)
-		if c["treasury"] >= FLEET_COST * 3 and c["stock"]["steel"] >= FLEET_STEEL and port_of(cid) >= 0 and fleets_of(cid).size() < mini(4, 1 + cells_of(cid).size() / 10):
-			c["treasury"] -= FLEET_COST
-			c["stock"]["steel"] -= FLEET_STEEL
-			_spawn_fleet(cid, sea_next_to(port_of(cid)))
-		# economic: build armies
-		if c["treasury"] >= 120 and divisions_of(cid) < 6 + cells_of(cid).size():
-			var kinds := ["infantry", "infantry", "armor", "artillery"]
-			_train(cid, kinds[(day / 5 + cid) % kinds.size()])
-		_ai_generals(cid)
-		_ai_air(cid)
-		if day % 10 == 0:
-			_ai_politics(cid)
-		if day % 15 == 0:
-			_ai_intel(cid)
-		if day % 10 == 0:
-			_ai_navy(cid)
-		if day % 20 == 0:
-			_ai_infra(cid)
-		if day % 10 == 0:
-			_ai_research(cid)
-		if day % 10 == 0:
-			_ai_merge(cid)
-		# military: send idle armies at the nearest enemy target
-		if enemies.is_empty():
-			continue
-		_ai_retreat_starving(cid)
-		for a in armies_of(cid):
-			if not a["path"].is_empty():
+		var enemies := _ai_strategy(cid, c)
+		enemies = _ai_diplomacy(cid, c, enemies)
+		_ai_navy_build(cid, c)
+		_ai_army_build(cid, c)
+		_ai_support(cid, c)
+		_ai_ground_orders(cid, enemies)
+
+
+## Strategic: choose a victim and declare war. Returns the (possibly new) enemy list.
+func _ai_strategy(cid: int, c: Dictionary) -> Array:
+	var my_str := army_strength(cid)
+	var enemies := enemies_of(cid)
+	if enemies.is_empty() and day >= grace_days and day - c["last_peace"] > 30 and armies_of(cid).size() >= 2 and (ai_war_chance >= 1.0 or rng.randf() < ai_war_chance):
+		var victim := -1
+		var weakest := 1 << 30
+		var targets := neighbor_countries(cid)
+		if fleets_of(cid).size() >= 2:
+			for o2 in countries:
+				if o2["alive"] and o2["id"] != cid and not targets.has(o2["id"]) and can_reach_overseas(cid, o2["id"]):
+					targets.append(o2["id"])
+		for n in targets:
+			if allied(cid, n):
 				continue
-			var path := _route(a["prov"], cid, func(p):
-				var o := owner[p]
-				if enemies.has(o):
+			var s := army_strength(n)
+			if s < weakest:
+				weakest = s
+				victim = n
+		if victim >= 0 and my_str > weakest * 1.3:
+			_declare_war(cid, victim)
+			enemies = enemies_of(cid)
+	return enemies
+
+
+## Diplomacy: seek an ally every 30 days; make peace when tired of losing. Returns the enemy list.
+func _ai_diplomacy(cid: int, c: Dictionary, enemies: Array) -> Array:
+	var my_str := army_strength(cid)
+	if day % 30 == 0 and allies_of(cid).is_empty() and enemies.is_empty():
+		for n in neighbor_countries(cid):
+			if not allied(cid, n) and not at_war(cid, n) and _ai_accepts_alliance(n, cid) and countries[n]["ai"]:
+				alliances.append({"a": cid, "b": n})
+				_log("%s: союз %s — %s" % [date_string(), c["name"], countries[n]["name"]])
+				break
+	for e in enemies.duplicate():
+		if day - _war_start(cid, e) >= 90 and my_str < army_strength(e) and countries[e]["ai"]:
+			_end_war(cid, e, "усталость от войны")
+			if not cells_held_from(e, cid).is_empty() and army_strength(e) >= my_str * 1.5:
+				_settle_annex(e, cid)   # the clearly stronger side keeps what it holds (same rule as the player's treaty)
+			enemies = enemies_of(cid)
+	return enemies
+
+
+## Naval: trade deals and building fleets.
+func _ai_navy_build(cid: int, c: Dictionary) -> void:
+	if day % 10 == 0:
+		_ai_trade(cid)
+	if c["treasury"] >= FLEET_COST * 3 and c["stock"]["steel"] >= FLEET_STEEL and port_of(cid) >= 0 and fleets_of(cid).size() < mini(4, 1 + cells_of(cid).size() / 10):
+		c["treasury"] -= FLEET_COST
+		c["stock"]["steel"] -= FLEET_STEEL
+		_spawn_fleet(cid, sea_next_to(port_of(cid)))
+
+
+## Economic: build armies. With the fiscal rule the AI only raises armies it can keep paying for.
+func _ai_army_build(cid: int, c: Dictionary) -> void:
+	var can_afford: bool = not rule_fiscal_balance or c["income"] - c["upkeep"] >= 3
+	if c["treasury"] >= 120 and can_afford and divisions_of(cid) < 6 + cells_of(cid).size():
+		var kinds := ["infantry", "infantry", "armor", "artillery"]
+		var kind: String = kinds[(day / 5 + cid) % kinds.size()]
+		if rule_templates and kind != "artillery":
+			var tk := _ai_template_key(cid, kind)
+			if tk != "":
+				kind = tk
+		_train(cid, kind)
+
+
+## Generals, air, missiles, markets, politics, intelligence, navy orders, infrastructure, research, merging, plus the gov2 subsystems.
+func _ai_support(cid: int, _c: Dictionary) -> void:
+	_ai_generals(cid)
+	_ai_air(cid)
+	if rule_gov2:
+		SimExt.ai(self, cid)
+	if rule_modern:
+		_ai_missiles(cid)
+	if rule_markets:
+		_ai_market(cid)
+	if day % 10 == 0:
+		_ai_politics(cid)
+	if day % 15 == 0:
+		_ai_intel(cid)
+	if day % 10 == 0:
+		_ai_navy(cid)
+	if day % 20 == 0:
+		_ai_infra(cid)
+	if day % 10 == 0:
+		_ai_research(cid)
+	if day % 10 == 0:
+		_ai_merge(cid)
+
+
+## Military: send idle armies at the nearest enemy target.
+func _ai_ground_orders(cid: int, enemies: Array) -> void:
+	if enemies.is_empty():
+		return
+	_ai_retreat_starving(cid)
+	for a in armies_of(cid):
+		if not a["path"].is_empty():
+			continue
+		var path := _route(a["prov"], cid, func(p):
+			var o := owner[p]
+			if enemies.has(o):
+				return true
+			for b in armies:
+				if b["prov"] == p and enemies.has(b["owner"]):
 					return true
-				for b in armies:
-					if b["prov"] == p and enemies.has(b["owner"]):
-						return true
-				return false)
-			if not path.is_empty():
-				var wet := false
-				for q in path:
-					if not provinces()[q]["land"]:
-						wet = true
-				if wet and not transport_free(cid):
-					continue
-				a["path"] = path
-				a["move"] = 0
+			return false)
+		if not path.is_empty():
+			var wet := false
+			for q in path:
+				if not provinces()[q]["land"]:
+					wet = true
+			if wet and not transport_free(cid):
+				continue
+			a["path"] = path
+			a["move"] = 0
 
 
 ## Armies deep in enemy land lose supply (and 1%/day strength below 20%): the AI pulls them back to its own territory
@@ -3628,7 +4507,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "rule_organization": rule_organization, "rule_gov2": rule_gov2, "x": x, "pop_of": pop_of, "rule_fiscal_balance": rule_fiscal_balance, "gdp_of": gdp_of, "rule_food_balance": rule_food_balance, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "sites": sites, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -3666,6 +4545,26 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.unit_defs = load_unit_defs()
 	sim.name_pool = load_name_pool()
 	sim.rule_modern = bool(d.get("rule_modern", false))
+	sim.groups = d.get("groups", [])
+	sim.next_group_id = int(d.get("next_group_id", 1))
+	sim.rule_markets = bool(d.get("rule_markets", false))
+	sim.rule_templates = bool(d.get("rule_templates", false))
+	sim.rule_organization = bool(d.get("rule_organization", false))
+	sim.rule_gov2 = bool(d.get("rule_gov2", false))
+	sim.x = d.get("x", {})
+	sim.pop_of = d.get("pop_of", {})
+	sim.rule_fiscal_balance = bool(d.get("rule_fiscal_balance", false))
+	sim.gdp_of = d.get("gdp_of", {})
+	sim.rule_food_balance = bool(d.get("rule_food_balance", false))
+	sim.templates = d.get("templates", {})
+	sim.next_tpl_id = int(d.get("next_tpl_id", 1))
+	sim._register_all_templates()
+	sim.pop_bp = d.get("pop_bp", {})
+	sim.market_pct = d.get("market_pct", {})
+	sim._market_flow = d.get("market_flow", {})
+	sim.missile_stock = d.get("missile_stock", {})
+	sim.sites = d.get("sites", [])
+	sim.strikes = d.get("strikes", [])
 	sim._load_techs()
 	sim.next_general_id = d["next_general_id"]
 	sim.start_date = d["start_date"]
@@ -3701,4 +4600,14 @@ func checksum() -> int:
 	var parts := [day, owner, legal, countries, armies, fleets, wings, damage, infra, alliances, trades, embargoes, wars, rng.state]
 	if not sanctions.is_empty():
 		parts.append(sanctions)   # only when present: a game without sanctions keeps the checksum it always had
+	if rule_gov2:
+		parts.append(x)
+	if not groups.is_empty():
+		parts.append(groups)   # only when groups exist: games without them keep their checksum
+	if rule_templates:
+		parts.append([templates, next_tpl_id])
+	if rule_markets:
+		parts.append([pop_bp, market_pct, _market_flow])
+	if rule_modern:
+		parts.append([missile_stock, strikes, sites])   # only with the rule: other scenarios keep their reference checksums
 	return var_to_str(parts).hash()

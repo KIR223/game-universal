@@ -1,0 +1,37 @@
+; iOS export preset TEMPLATE for IRON DOMINION (Godot 4.7).
+; Copy to the project root as export_presets.cfg, then fill in the three values marked FILL_IN.
+; The XL map (data/world_xl) is excluded on purpose: it needs ~400 MB of RAM and is too heavy for phones; the HD map is used.
+[preset.0]
+
+name="iOS"
+platform="iOS"
+runnable=true
+advanced_options=false
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter="*.bin,*.z,*.json,*.webp"
+exclude_filter="data/world_xl/*,docs/*,tests/*,tools/*,platform/*"
+export_path="build/ios/IronDominion.ipa"
+patches=PackedStringArray()
+encryption_include_filters=""
+encryption_exclude_filters=""
+seed=0
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=2
+
+[preset.0.options]
+
+application/app_store_team_id="FILL_IN"
+application/bundle_identifier="FILL_IN"
+application/signature="FILL_IN"
+application/short_version="1.0.0"
+application/version="1"
+application/export_project_only=true
+application/targeted_device_family=2
+orientation/portrait=false
+orientation/landscape_left=true
+orientation/landscape_right=true
+orientation/portrait_upside_down=false
+user_data/accessible_from_files_app=false

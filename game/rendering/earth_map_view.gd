@@ -28,6 +28,7 @@ var _overview: MeshInstance2D
 var _tiles: Dictionary = {}          # col*100+row -> MeshInstance2D
 var _tile_lru: Array = []
 var _want_tiles: Array = []
+var _fx_t := 0.0                    # throttle of the animated shader uniforms
 var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
 var quality := "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
 var detail := GraphicsQuality.Level.HIGH   # same setting as `quality`, as a GraphicsQuality level (labels, city density, roads)
@@ -177,6 +178,8 @@ func world_pos_of(lon: float, lat: float) -> Vector2:
 
 
 func _set_all(name: String, value: Variant) -> void:
+	if _params.has(name) and _params[name] == value:
+		return   # unchanged uniforms must not touch the materials: any change forces a redraw of the whole map every frame
 	_params[name] = value
 	for m in _mats:
 		m.set_shader_parameter(name, value)
@@ -648,6 +651,13 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	if animate_armies(delta):
+		queue_redraw()
+	if _touch.long_press_due(Time.get_ticks_msec() / 1000.0) and sim != null:
+		var rid := province_at(get_global_mouse_position())
+		if rid >= 0:
+			_dragging = false
+			province_right_clicked.emit(rid, _touch.press_position())
 	_smooth_zoom(delta)
 	if not is_earth or sim == null:
 		return
@@ -663,7 +673,14 @@ func _process(delta: float) -> void:
 		_update_tiles()
 		queue_redraw()
 	_set_all("zoom", camera.zoom.x)
-	_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+	# animated uniforms change at 10 Hz (not every frame): with the low-processor mode of phones the map then only redraws when needed
+	_fx_t += delta
+	if _fx_t >= 0.1:
+		_fx_t = 0.0
+		if sim != null and (not _war_pairs.is_empty() or not _flash.is_empty()):   # the pulse only matters on contested cells
+			_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+		# the water shimmer is a TIME-based animation: only on the High profile, never on battery-saving phones' default (Medium)
+		_set_all("water_fx", 1.0 if (detail == GraphicsQuality.Level.HIGH and not GameSettings.reduce_motion()) else 0.0)
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
 		_set_all("sel_id", selected_province)
@@ -906,8 +923,10 @@ func _draw_settlements(z: float) -> void:
 	var font := UiFont.regular()
 	var r := 2.4 / z
 	var halo := 0.9 / z
-	var dots := PackedVector2Array()
-	var dots_halo := PackedVector2Array()
+	# three size classes by population so dense regions read as a hierarchy instead of a white smear
+	var dots: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var dots_halo: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var radii := [1.5 / z, 2.1 / z, 2.9 / z]
 	var caps: Array = []
 	var jobs: Array = []   # [position, settlement id, is capital]
 	for k in _visible_chunk_keys():
@@ -927,19 +946,25 @@ func _draw_settlements(z: float) -> void:
 			if cap:
 				caps.append(pos)
 			else:
-				dots_halo.append(pos - Vector2(r + halo, 0))
-				dots_halo.append(pos + Vector2(r + halo, 0))
-				dots.append(pos - Vector2(r, 0))
-				dots.append(pos + Vector2(r, 0))
+				var cls := 0 if pop < 60000 else (1 if pop < 600000 else 2)
+				var rr: float = radii[cls]
+				dots_halo[cls].append(pos - Vector2(rr + halo, 0))
+				dots_halo[cls].append(pos + Vector2(rr + halo, 0))
+				dots[cls].append(pos - Vector2(rr, 0))
+				dots[cls].append(pos + Vector2(rr, 0))
 			if z > 0.45 and (pop >= thr * 2 or z > 3.0 or cap):
 				jobs.append([pos, i, cap])
 	# one batched call per layer instead of thousands of circle draws
-	if not dots.is_empty():
-		draw_multiline(dots_halo, Color(0.03, 0.04, 0.06, 0.9), 2.0 * (r + halo))
-		draw_multiline(dots, Color(1, 1, 1, 0.95), 2.0 * r)
+	for cls in 3:
+		if not dots[cls].is_empty():
+			draw_multiline(dots_halo[cls], Color(0.03, 0.04, 0.06, 0.85), 2.0 * (radii[cls] + halo))
+			draw_multiline(dots[cls], Color(1, 1, 1, 0.95), 2.0 * radii[cls])
 	for pos in caps:
 		var d := r * 1.7
-		draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
+		if d < 0.5:   # at extreme zoom the diamond collapses and the triangulator rejects it
+			draw_circle(pos, maxf(d, 0.05), Color("f0c75e"))
+		else:
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
 	var labels := 0
 	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
 	for job in jobs:
@@ -965,7 +990,10 @@ func _draw_facilities(z: float) -> void:
 	for a in fac.get("airports", []):
 		var pos2 := world_pos_of(float(a["lon"]), float(a["lat"]))
 		if cull.has_point(pos2):
-			draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
+			if r < 0.5:
+				draw_circle(pos2, maxf(r, 0.05), Color("e8e8ee"))
+			else:
+				draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
 
 
 ## Region (admin-1) centroids in simulation-raster pixels, weighted by cell area; built once per dataset.
@@ -1003,7 +1031,7 @@ func _draw_region_labels(z: float, font: Font) -> void:
 	var taken := {}
 	var shown := 0
 	for ri in _region_info:
-		if shown >= 160:
+		if shown >= int(GraphicsQuality.params(detail)["labels"] * 0.75) or detail == GraphicsQuality.Level.LOW:
 			break
 		var pos := px_to_world(ri["pos"])
 		if not cull.has_point(pos):
@@ -1022,11 +1050,60 @@ func _draw_region_labels(z: float, font: Font) -> void:
 		shown += 1
 
 
+## Recent missile launches: a trail from the launch site to the target and an expanding ring (red = hit, blue = intercepted).
+func _draw_strikes(z: float) -> void:
+	for s in sim.strikes:
+		var age: int = sim.day - int(s["day"])
+		if age < 0 or age > 8:
+			continue
+		var fade := 1.0 - float(age) / 9.0
+		var a := cell_world(int(s["from"]))
+		var b := cell_world(int(s["target"]))
+		var col := Color(1.0, 0.45, 0.2, fade) if s["hit"] else Color(0.55, 0.78, 1.0, fade)
+		if not (cull.has_point(a) or cull.has_point(b) or cull.grow(200.0).intersects(Rect2(a, b - a).abs())):
+			continue
+		var head := a.lerp(b, minf(1.0, 0.35 + 0.2 * age))
+		draw_line(a, head, Color(col, fade * 0.8), 2.2 / z)
+		draw_circle(head, 3.0 / z, col)
+		var ring := (6.0 + 5.0 * age) / z
+		draw_arc(b, ring, 0.0, TAU, 28, col, 2.0 / z)
+		if s["hit"]:
+			draw_circle(b, 3.5 / z, Color(1.0, 0.85, 0.3, fade))
+
+
+## Air-defence batteries and launch sites as small round markers (visible from mid zoom): own ones, and foreign ones the player can see.
+func _draw_sites(z: float) -> void:
+	if z < 1.0 or sim.sites.is_empty():
+		return
+	var r := 7.0 / z
+	for st in sim.sites:
+		var mine: bool = st["owner"] == player_country
+		if not mine and (player_country < 0 or not sim.site_visible(player_country, st)):
+			continue   # foreign objects show only when the intelligence picture allows it
+		var pos := cell_world(int(st["cell"]))
+		if not cull.has_point(pos):
+			continue
+		var dmg: int = sim.damage[int(st["cell"])]
+		var col := Color(0.55, 0.85, 1.0) if st["kind"] == "ad" else Color(1.0, 0.75, 0.35)
+		if not mine:
+			col = Color(0.95, 0.4, 0.35)
+		if dmg >= 80:
+			col = Color(0.5, 0.5, 0.5)
+		pos += Vector2(r * 1.6, -r * 1.6)
+		draw_circle(pos, r * 1.25, Color(0.04, 0.06, 0.09, 0.9))
+		draw_arc(pos, r * 1.25, 0.0, TAU, 20, col, 1.4 / z)
+		Icons.draw(self, "satellite" if st["kind"] == "ad" else "missile", Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0), col, 1.3 / z)
+
+
 func _draw_labels() -> void:
 	if not is_earth:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
+	if sim.rule_modern:
+		_draw_sites(z)
+		if not sim.strikes.is_empty():
+			_draw_strikes(z)
 	_draw_region_labels(z, UiFont.regular())
 	var font := UiFont.bold()
 	for l in label_layout():

@@ -15,6 +15,12 @@
  "rules": {
   "terrain": true,
   "weather": true,
-  "modern": true
+  "modern": true,
+  "markets": true,
+  "templates": true,
+  "organization": true,
+  "food_balance": true,
+  "fiscal_balance": true,
+  "gov2": true
  }
 }

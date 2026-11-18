@@ -5,6 +5,8 @@ extends Node2D
 
 signal province_clicked(province_id: int)
 signal province_right_clicked(province_id: int, screen_pos: Vector2)
+## Shift + drag on the map: the rectangle (world coordinates) the player outlined.
+signal box_selected(rect: Rect2)
 
 const CELL := 4.0
 const MIN_ZOOM := 0.5
@@ -35,6 +37,11 @@ var _labels: Array = []
 var _drag_start := Vector2.ZERO
 var _rc_start := Vector2.ZERO
 var _dragging := false
+var _touch := TouchGestures.new()
+var _box_active := false
+var _box_start := Vector2.ZERO
+var _box_end := Vector2.ZERO
+var _army_vis := {}   # army id -> drawn world position (eases towards its cell so armies glide instead of jumping)
 var _drag_moved := false
 var _press_ms := 0
 
@@ -177,6 +184,10 @@ func _draw() -> void:
 	_draw_base()
 	_draw_units()
 	_draw_labels()
+	if _box_active:
+		var r := Rect2(_box_start, _box_end - _box_start).abs()
+		draw_rect(r, Color(1.0, 0.88, 0.54, 0.14))
+		draw_rect(r, Color(1.0, 0.88, 0.54, 0.9), false, maxf(1.5, 1.5 * ui_scale))
 
 
 func _draw_base() -> void:
@@ -191,6 +202,30 @@ func _draw_base() -> void:
 		draw_arc(cell_world(selected_province), 14.0, 0, TAU, 32, Color("ffe08a"), 2.0)
 
 
+## Eases every army's drawn position towards its cell; returns true while something still moves (the map keeps redrawing).
+func animate_armies(delta: float) -> bool:
+	if sim == null:
+		return false
+	var moving := false
+	var snap := GameSettings.reduce_motion() or lod_compact
+	var live := {}
+	for a in sim.armies:
+		var id: int = a["id"]
+		live[id] = true
+		var target := cell_world(a["prov"])
+		var cur: Vector2 = _army_vis.get(id, target)
+		if snap or cur.distance_squared_to(target) < 0.25:
+			cur = target
+		else:
+			cur = cur.lerp(target, 1.0 - exp(-delta * 7.0))
+			moving = true
+		_army_vis[id] = cur
+	for id in _army_vis.keys():
+		if not live.has(id):
+			_army_vis.erase(id)
+	return moving
+
+
 func _draw_units() -> void:
 	var provs := sim.provinces()
 	var us := ui_scale
@@ -202,7 +237,7 @@ func _draw_units() -> void:
 		var p: int = a["prov"]
 		var i: int = slot.get(p, 0)
 		slot[p] = i + 1
-		var base: Vector2 = cell_world(p)
+		var base: Vector2 = _army_vis.get(a["id"], cell_world(p))
 		if not cull.has_point(base):
 			continue
 		var col := Color(sim.countries[a["owner"]]["color"])
@@ -313,6 +348,17 @@ func province_at(world_pos: Vector2) -> int:
 func _unhandled_input(event: InputEvent) -> void:
 	if sim == null:
 		return
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		var g := _touch.feed(event, Time.get_ticks_msec() / 1000.0)
+		if not g.is_empty():
+			_dragging = false
+			_zoom_at(g["zoom"])
+			camera.position -= (g["pan"] as Vector2) / camera.zoom.x
+			_clamp_camera()
+		return
+	if _touch.multi and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		_dragging = false   # emulated mouse events of a multi-finger gesture
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -326,6 +372,18 @@ func _unhandled_input(event: InputEvent) -> void:
 				var rid := province_at(get_global_mouse_position())
 				if rid >= 0:
 					province_right_clicked.emit(rid, get_viewport().get_mouse_position())
+		elif mb.button_index == MOUSE_BUTTON_LEFT and (mb.shift_pressed or _box_active):
+			if mb.pressed:
+				_box_active = true
+				_box_start = get_global_mouse_position()
+				_box_end = _box_start
+				_dragging = false
+			elif _box_active:
+				_box_active = false
+				var rect := Rect2(_box_start, get_global_mouse_position() - _box_start).abs()
+				queue_redraw()
+				if rect.size.length() > 6.0 / maxf(camera.zoom.x, 0.01):
+					box_selected.emit(rect)
 		elif mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
 			if mb.pressed:
 				_dragging = true
@@ -333,7 +391,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_drag_start = mb.position
 				_press_ms = Time.get_ticks_msec()
 			else:
-				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT:
+				if _dragging and not _drag_moved and mb.button_index == MOUSE_BUTTON_LEFT and not _touch.long_fired:
 					var pid := province_at(get_global_mouse_position())
 					if pid >= 0:
 						if TouchSupport.is_long_press(Time.get_ticks_msec() - _press_ms, _drag_moved, OS.has_feature("mobile")):
@@ -341,6 +399,9 @@ func _unhandled_input(event: InputEvent) -> void:
 						else:
 							province_clicked.emit(pid)
 				_dragging = false
+	elif event is InputEventMouseMotion and _box_active:
+		_box_end = get_global_mouse_position()
+		queue_redraw()
 	elif event is InputEventMouseMotion and _dragging:
 		var mm := event as InputEventMouseMotion
 		if mm.position.distance_to(_drag_start) > 4.0:

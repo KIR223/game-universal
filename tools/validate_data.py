@@ -53,7 +53,7 @@ cats = {c["id"] for c in techs["categories"]}
 EFFECTS = {"income_pct", "upkeep_pct", "food_pct", "coal_pct", "iron_pct", "oil_pct", "steel_pct", "manpower_pct",
            "atk_pct", "def_pct", "atk_infantry_pct", "atk_armor_pct", "atk_artillery_pct", "def_infantry_pct",
            "def_armor_pct", "def_artillery_pct", "fleet_pct", "supply_pct", "supply_decay_pct", "attrition_pct",
-           "research_pct", "research_slots", "air_fighter_pct", "air_bomber_pct", "air_attacker_pct", "air_range", "supply_decay_pct", "cyber_pct", "cyber_def_pct"}
+           "research_pct", "research_slots", "air_fighter_pct", "air_bomber_pct", "air_attacker_pct", "air_range", "supply_decay_pct", "cyber_pct", "cyber_def_pct", "ad_pct", "missile_pen_pct"}
 tmap = {}
 for t in techs["techs"]:
     if t["id"] in tmap:
@@ -187,7 +187,7 @@ for fname in idx["scenarios"]:
     if is_earth and not (root / "data" / scn.get("world_dataset", "world") / "manifest.json").exists():
         errors.append(f"scenario {sid}: needs data/{scn.get('world_dataset', 'world')}")
     for rk in scn.get("rules", {}):
-        if rk not in ("terrain", "weather", "modern"):
+        if rk not in ("terrain", "weather", "modern", "markets", "templates", "organization", "food_balance", "fiscal_balance", "gov2"):
             errors.append(f"scenario {sid}: unknown rule {rk}")
     for c in scn["countries"]:
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):
