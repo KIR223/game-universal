@@ -2423,3 +2423,39 @@ func test_touch_target_size() -> void:
 	check(MobileLayout.touch_target(874.0, 2622.0, 3.0) == 44.0, "at one logical unit per point a target is 44 units")
 	check(MobileLayout.touch_target(0.0, 0.0, 0.0) == 44.0, "invalid inputs fall back to 44")
 	check(MobileLayout.touch_target(300.0, 2622.0, 3.0) >= 36.0, "never below the desktop control size")
+
+
+func test_food_balance() -> void:
+	var raw: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	var off := Simulation.new()
+	off.setup_scenario(raw)
+	off.tick_day()
+	var on_scn: Dictionary = raw.duplicate(true)
+	on_scn["rules"] = {"food_balance": true}
+	var on := Simulation.new()
+	on.setup_scenario(on_scn)
+	on.tick_day()
+	check(not off.rule_food_balance and on.rule_food_balance, "the food rule is opt-in")
+	var top := 0
+	for c in off.countries:
+		if c["alive"] and c["prod"]["food"] > off.countries[top]["prod"]["food"]:
+			top = c["id"]
+	var p_off: int = off.countries[top]["prod"]["food"]
+	var p_on: int = on.countries[top]["prod"]["food"]
+	check(p_on < p_off / 10 and p_on > 0, "the rule cuts raw food production to a few percent (%d -> %d)" % [p_off, p_on])
+	check(on.countries[top]["cons"]["food"] == off.countries[top]["cons"]["food"], "consumption is unchanged")
+	var short := 0
+	for c in on.countries:
+		if c["alive"] and c["prod"]["food"] < c["cons"]["food"]:
+			short += 1
+	check(short > 0, "some countries now have a food deficit (%d)" % short)
+	var a := Simulation.new()
+	a.setup_scenario(on_scn)
+	var b := Simulation.new()
+	b.setup_scenario(on_scn)
+	for i in 20:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "simulation with the food rule is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_food_balance and r.checksum() == a.checksum(), "the food rule survives save/load")

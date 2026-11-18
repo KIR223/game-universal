@@ -109,6 +109,9 @@ const BATTALIONS := {
 	"recon": {"name": "Разведка", "cost": 6, "steel": 3, "manpower": 1, "hp": 60, "atk": 0.6, "def": 0.8, "oil": false, "terrain_of": "infantry"},
 	"eng": {"name": "Инженеры", "cost": 9, "steel": 6, "manpower": 2, "hp": 90, "atk": 0.8, "def": 1.2, "oil": false, "terrain_of": "infantry"},
 }
+var rule_food_balance := false    # food production scaled so that food is a real constraint (without it every country is in huge surplus)
+const FOOD_BALANCE_PERMILLE := 40 # of the raw deposit sum on the base 14.3k-cell map; other maps are scaled by their land cell count
+const BASE_LAND_CELLS := 14299
 var rule_organization := false    # armies have organisation (0..100): fighting and marching wear it down, rest in supply restores it
 const ORG_MOVE := 1
 const ORG_REST := 3
@@ -929,6 +932,7 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_markets = bool(scn.get("rules", {}).get("markets", false))
 	rule_templates = bool(scn.get("rules", {}).get("templates", false))
 	rule_organization = bool(scn.get("rules", {}).get("organization", false))
+	rule_food_balance = bool(scn.get("rules", {}).get("food_balance", false))
 	templates = {}
 	next_tpl_id = 1
 	pop_bp = {}
@@ -2780,6 +2784,8 @@ func _resources() -> void:
 		var st: Dictionary = c["stock"]
 		for rr in ["food", "coal", "iron", "oil"]:
 			c["prod"][rr] = c["prod"][rr] * (100 + mod(cid, rr + "_pct")) / 100
+		if rule_food_balance:
+			c["prod"]["food"] = c["prod"]["food"] * FOOD_BALANCE_PERMILLE * BASE_LAND_CELLS / (maxi(int(world.get("land_count", BASE_LAND_CELLS)), 1) * 1000)
 		c["industry"] = ind_sum[cid]
 		c["cons"]["food"] = pop_sum[cid] * pop_index(cid) / 10000 / 90
 		var astr: int = astr_of.get(cid, 0)
@@ -4305,7 +4311,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "rule_organization": rule_organization, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "sites": sites, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "rule_organization": rule_organization, "rule_food_balance": rule_food_balance, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "sites": sites, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -4348,6 +4354,7 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.rule_markets = bool(d.get("rule_markets", false))
 	sim.rule_templates = bool(d.get("rule_templates", false))
 	sim.rule_organization = bool(d.get("rule_organization", false))
+	sim.rule_food_balance = bool(d.get("rule_food_balance", false))
 	sim.templates = d.get("templates", {})
 	sim.next_tpl_id = int(d.get("next_tpl_id", 1))
 	sim._register_all_templates()

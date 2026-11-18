@@ -18,6 +18,7 @@
   "modern": true,
   "markets": true,
   "templates": true,
-  "organization": true
+  "organization": true,
+  "food_balance": true
  }
 }
