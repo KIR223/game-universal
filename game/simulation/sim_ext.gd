@@ -20,6 +20,7 @@ const WORKS := {
 	"farm": {"name": "Агрокомплекс", "cost": 70, "steel": 10, "days": 20, "income": 1},
 	"factory": {"name": "Промышленный район", "cost": 120, "steel": 30, "days": 30, "income": 3},
 }
+const ECON_NORM := 130   # percent: the tax/corruption/shadow factors average about 0.75, this keeps the default-tax income at the classic level
 const SPACE_LEVEL_COST := 400   # progress needed per level (level 1 = 400, level 2 = 800, ...)
 const SAT_KINDS := {"recon": "Разведывательный", "nav": "Навигационный", "comm": "Связной"}
 
@@ -57,6 +58,7 @@ static func setup(s: Simulation) -> void:
 		s.x["space"][cid] = {"level": 0, "progress": 0, "sats": {"recon": 0, "nav": 0, "comm": 0}, "coop": -1}
 		s.x["staff"][cid] = {"directives": [], "reports": [], "auto": false, "next_id": 1}
 		s.x["info"][cid] = {"defense": 0}
+	SimMore.setup(s)
 
 
 static func _first_party(parties: Array, ideo: String) -> int:
@@ -98,7 +100,7 @@ static func adjust_economy(s: Simulation) -> void:
 		var f: Dictionary = s.x["fin"][cid]
 		var so: Dictionary = s.x["soc"][cid]
 		var po: Dictionary = s.x["pol"][cid]
-		var inc: int = c["income"] * int(f["tax"]) / 30
+		var inc: int = c["income"] * 100 * ECON_NORM / 100 * int(f["tax"]) / 30   # fixed point x100: small incomes must not truncate to zero
 		var shadow := clampi(int(f["shadow"]) + maxi(0, int(f["tax"]) - 30) / 2, 0, 60)
 		inc = inc * (100 - shadow) / 100
 		inc = inc * (100 - int(so["corr"]) / 4) / 100
@@ -119,11 +121,13 @@ static func adjust_economy(s: Simulation) -> void:
 		for p in s.x["dip"]["blocs"]:
 			if p["members"].has(cid):
 				inc = inc * 102 / 100
-		inc += _works_income(s, cid) + _projects_bonus(s, cid)
+		inc = SimMore.income_mod(s, cid, inc)
+		inc += (_works_income(s, cid) + _projects_bonus(s, cid)) * 100
 		var up: int = c["upkeep"]
-		up += inc * (int(f["edu"]) + int(f["health"])) / 100
-		up += int(f["debt"]) * _rate(s, cid, inc) / 3650000
+		up += inc * (int(f["edu"]) + int(f["health"])) / 10000
+		up += int(f["debt"]) * _rate(s, cid, inc / 100) / 3650000
 		up += _sat_total(s, cid)
+		inc = (inc + 99) / 100
 		c["income"] = maxi(inc, 0)
 		c["upkeep"] = up
 	_apply_tariffs(s)
@@ -132,7 +136,7 @@ static func adjust_economy(s: Simulation) -> void:
 static func _rate(s: Simulation, cid: int, income: int) -> int:
 	var f: Dictionary = s.x["fin"][cid]
 	var ratio := int(f["debt"]) * 100 / maxi(income * 365, 1)
-	return 300 + int(f["infl"]) / 4 + mini(1500, ratio * 5)
+	return maxi(100, 300 + int(f["infl"]) / 4 + mini(1500, ratio * 5) + SimMore.policy(s, cid) * 60)
 
 
 static func _apply_tariffs(s: Simulation) -> void:
@@ -165,6 +169,7 @@ static func daily(s: Simulation) -> void:
 		_space_monthly(s)
 	if d % 3 == 0:
 		_staff_daily(s)
+	SimMore.daily(s)
 
 
 static func _debt_ratio(s: Simulation, cid: int) -> int:
@@ -177,7 +182,7 @@ static func _finance_daily(s: Simulation, cid: int) -> void:
 	var f: Dictionary = s.x["fin"][cid]
 	var so: Dictionary = s.x["soc"][cid]
 	var ratio := _debt_ratio(s, cid)
-	var target := 150 + clampi(ratio, 0, 200) * 8
+	var target := maxi(0, 150 + clampi(ratio, 0, 200) * 8 - SimMore.policy(s, cid) * 40)
 	f["infl"] = clampi(int(f["infl"]) + signi(target - int(f["infl"])) * 5, 0, 6000)
 	var fx_target := clampi(10000 + (int(c["stability"]) - 50) * 30 - (int(f["infl"]) - 200) * 2 - mini(3000, ratio * 10), 3000, 20000)
 	f["fx"] = int(f["fx"]) + signi(fx_target - int(f["fx"])) * 20
@@ -341,6 +346,7 @@ static func _election(s: Simulation, cid: int) -> void:
 		s._change_government(c, best["ideo"], "выборы")
 	else:
 		c["stability"] = mini(100, int(c["stability"]) + 3)
+	SimMore.after_election(s, cid)
 
 
 # ------------------------------------------------------------------ works, space helpers used by the economy
@@ -711,6 +717,8 @@ const COMMANDS := ["set_tax", "borrow", "repay", "set_budget", "set_state_share"
 
 
 static func command(s: Simulation, cid: int, type: String, cmd: Dictionary) -> Dictionary:
+	if s.rule_gov2 and SimMore.COMMANDS.has(type):
+		return SimMore.command(s, cid, type, cmd)
 	if not s.rule_gov2 or not COMMANDS.has(type):
 		return s._fail("unknown command")
 	var c: Dictionary = s.countries[cid]
@@ -1024,6 +1032,7 @@ static func ai(s: Simulation, cid: int) -> void:
 	_ai_space(s, cid)
 	_ai_military(s, cid)
 	_ai_modern(s, cid)
+	SimMore.ai(s, cid)
 
 
 static func _ai_economic(s: Simulation, cid: int) -> void:
@@ -1186,4 +1195,5 @@ static func panel(s: Simulation, cid: int) -> Array:
 	for en in s.enemies_of(cid):
 		rows.append({"t": "btn", "text": "Информационная кампания против %s (20 влияния)" % s.countries[en]["name"], "cmd": _cmd(cid, "info_op", {"target": en})})
 		rows.append({"t": "btn", "text": "Просить перемирие: %s (20 влияния)" % s.countries[en]["name"], "cmd": _cmd(cid, "request_ceasefire", {"target": en})})
+	rows.append_array(SimMore.panel(s, cid))
 	return rows

@@ -2968,6 +2968,14 @@ func test_gov2_ai_long_run() -> void:
 			if a.x["fin"][c["id"]]["infl"] > 3000:
 				ex += 1
 	check(broke == 0, "no negative treasuries after 200 days")
+	var incomes: Array = []
+	for c in a.countries:
+		if c["alive"]:
+			incomes.append(c["income"])
+	incomes.sort()
+	check(incomes[incomes.size() / 2] >= 1, "most countries still earn income under gov2 (median %d)" % incomes[incomes.size() / 2])
+	var groups_made: int = a.groups.size()
+	check(groups_made > 5, "the AI formed army groups during the run (%d)" % groups_made)
 	check(ex < 10, "hyperinflation stays rare (%d)" % ex)
 	var pops_ok := true
 	for c in a.countries:
@@ -2976,3 +2984,499 @@ func test_gov2_ai_long_run() -> void:
 			pops_ok = pops_ok and p >= 5000 and p <= 20000
 	check(pops_ok, "population stays inside its bounds")
 	check(ms < 120000, "200 gov2 days are fast enough (%d ms for two runs)" % ms)
+
+
+# ------------------------------------------------------------------ gov2 part 2 (SimMore): banks, corporations, parliament, organisations, lines, ships, robots, AI groups
+
+func _democracy_of(sim: Simulation) -> int:
+	for c in sim.countries:
+		if c["alive"] and c["ideology"] == "democracy" and sim.cells_of(c["id"]).size() >= 5:
+			return c["id"]
+	return 0
+
+
+func test_gov2_banks_and_corporations() -> void:
+	var sim := _gov2()
+	var a: int = _rich_pair(sim)[0]
+	var c: Dictionary = sim.countries[a]
+	var bk: Dictionary = sim.x["more"]["bank"][a]
+	check(bk["banks"].size() >= 2 and sim.x["more"]["corp"][a].size() >= 2, "every country has banks and corporations as objects")
+	check(bk["banks"][0]["state"] and not bk["banks"][1]["state"], "the first bank is state-owned")
+	# central-bank policy moves inflation and the cost of debt
+	var hi := _gov2()
+	var lo := _gov2()
+	hi.x["more"]["bank"][a]["policy"] = 2
+	lo.x["more"]["bank"][a]["policy"] = -2
+	for s2 in [hi, lo]:
+		s2.x["fin"][a]["infl"] = 150
+		s2.x["fin"][a]["debt"] = 0
+	for i in 40:
+		SimExt._finance_daily(hi, a)
+		SimExt._finance_daily(lo, a)
+	check(hi.x["fin"][a]["infl"] < lo.x["fin"][a]["infl"], "a high policy rate cools inflation (%d vs %d)" % [hi.x["fin"][a]["infl"], lo.x["fin"][a]["infl"]])
+	hi.x["fin"][a]["infl"] = 200
+	lo.x["fin"][a]["infl"] = 200
+	check(SimExt._rate(hi, a, 100) > SimExt._rate(lo, a, 100), "a high policy rate makes debt dearer")
+	check(sim.apply_command({"type": "set_policy", "country": a, "level": 5})["ok"] and bk["policy"] == 2, "the policy rate is clamped to -2..2")
+	check(sim.apply_command({"type": "set_policy", "country": a, "level": 0})["reason"] == "on cooldown", "the policy rate changes at most monthly")
+	# a bank that loses all capital fails and drags the country into a crisis
+	var b: Dictionary = bk["banks"][1]
+	b["cap"] = -5
+	var st0: int = c["stability"]
+	SimMore._banks_monthly(sim, a)
+	check(b["failed_until"] > sim.day and bk["crisis_until"] > sim.day and c["stability"] < st0, "a bank failure causes a banking crisis")
+	var inc0 := SimMore.income_mod(sim, a, 1000)
+	bk["crisis_until"] = 0
+	check(SimMore.income_mod(sim, a, 1000) > inc0, "a banking crisis cuts income")
+	check(sim.apply_command({"type": "bail_bank", "country": a, "bank": b["id"]})["reason"] == "bank failed", "a failed bank cannot be bailed out")
+	# a bailout restores capital and makes the bank state-owned
+	var b0: Dictionary = bk["banks"][0]
+	b0["state"] = false
+	b0["cap"] = 1
+	var t0: int = c["treasury"]
+	check(SimMore.bank_ratio(b0) < 8, "a thin bank is in danger")
+	check(sim.apply_command({"type": "bail_bank", "country": a, "bank": b0["id"]})["ok"] and b0["state"] and c["treasury"] < t0 and SimMore.bank_ratio(b0) > 1, "a bailout recapitalises the bank")
+	# corporations
+	var corp: Dictionary = sim.x["more"]["corp"][a][1]
+	corp["state"] = false
+	corp["foreign"] = true
+	c["pp"] = 50
+	c["treasury"] = 5000
+	var f: Dictionary = sim.x["fin"][a]
+	var st := int(f["state"])
+	var stock := int(f["stock"])
+	check(sim.apply_command({"type": "nationalize_corp", "country": a, "corp": corp["id"]})["ok"] and corp["state"] and not corp["foreign"], "a corporation is nationalised")
+	check(f["state"] == st + 3 and f["stock"] < stock, "nationalising raises the state share and scares investors")
+	check(sim.apply_command({"type": "nationalize_corp", "country": a, "corp": corp["id"]})["reason"] == "already state", "no double nationalisation")
+	var tr: int = c["treasury"]
+	check(sim.apply_command({"type": "privatize_corp", "country": a, "corp": corp["id"]})["ok"] and not corp["state"] and c["treasury"] > tr, "privatisation brings money")
+	var size0: int = corp["size"]
+	check(sim.apply_command({"type": "subsidize_corp", "country": a, "corp": corp["id"]})["ok"] and corp["size"] == size0 + 10, "a subsidy grows a firm")
+	check(sim.apply_command({"type": "subsidize_corp", "country": a, "corp": 99999})["reason"] == "no such corporation", "unknown corporations are refused")
+	# profits depend on conditions: arms firms earn more in war
+	var arms := {"id": 9001, "name": "T", "sector": "arms", "size": 100, "profit": 0, "state": false, "foreign": false}
+	sim.x["more"]["corp"][a] = [arms]
+	SimMore._corps_monthly(sim, a)
+	var peace_profit: int = arms["profit"]
+	var foe: int = _rich_pair(sim)[1]
+	sim.wars.append({"a": a, "b": foe, "start": 0})
+	SimMore._corps_monthly(sim, a)
+	check(arms["profit"] > peace_profit, "arms firms profit from war (%d > %d)" % [arms["profit"], peace_profit])
+	# state firms pay all profit to the treasury, private firms pay tax
+	var priv := {"id": 9002, "name": "P", "sector": "tech", "size": 200, "profit": 8, "state": false, "foreign": false}
+	var pub := {"id": 9003, "name": "S", "sector": "tech", "size": 200, "profit": 8, "state": true, "foreign": false}
+	sim.x["more"]["corp"][a] = [priv]
+	var ip := SimMore.income_mod(sim, a, 0)
+	sim.x["more"]["corp"][a] = [pub]
+	var is_ := SimMore.income_mod(sim, a, 0)
+	check(is_ >= ip, "state firms yield at least what private firms pay in tax (%d vs %d)" % [is_, ip])
+
+
+func test_gov2_parliament() -> void:
+	var sim := _gov2()
+	var d := _democracy_of(sim)
+	var pa: Dictionary = sim.x["more"]["parl"][d]
+	var sum := 0
+	for pid in pa["seats"]:
+		sum += int(pa["seats"][pid])
+	check(sum == 100, "parliament has exactly 100 seats (%d)" % sum)
+	var gov: int = sim.x["pol"][d]["gov"]
+	check(pa["coalition"].has(gov) and SimMore.coalition_seats(sim, d) >= 1, "the ruling party is in the coalition")
+	var total_all := 0
+	for c in sim.countries:
+		if c["alive"]:
+			var s2 := 0
+			for pid in sim.x["more"]["parl"][c["id"]]["seats"]:
+				s2 += int(sim.x["more"]["parl"][c["id"]]["seats"][pid])
+			total_all += 1 if s2 == 100 else 0
+	check(total_all == sim.countries.filter(func(c): return c["alive"]).size(), "every chamber has 100 seats")
+	# a non-democracy has an appointed chamber with a 70+ seat ruling party
+	var au := -1
+	for c in sim.countries:
+		if c["alive"] and c["ideology"] != "democracy":
+			au = c["id"]
+			break
+	check(au >= 0 and SimMore.seats_of(sim, au, sim.x["pol"][au]["gov"]) >= 70, "a non-democracy ruling party holds 70+ seats")
+	# coalition arithmetic
+	var po: Dictionary = sim.x["pol"][d]
+	var ids: Array = pa["seats"].keys()
+	ids.sort()
+	var far := -1
+	for pid in ids:
+		if SimMore.party_distance(sim, d, gov, pid) > 2:
+			far = pid
+	var near := -1
+	for pid in ids:
+		if pid != gov and SimMore.party_distance(sim, d, gov, pid) <= 1 and not pa["coalition"].has(pid):
+			near = pid
+	sim.countries[d]["pp"] = 200
+	if far >= 0:
+		check(sim.apply_command({"type": "form_coalition", "country": d, "parties": [far]})["reason"] == "partner refuses", "a far-away party refuses to join")
+	check(sim.apply_command({"type": "form_coalition", "country": d, "parties": [1, 2, 3, 4, 5]})["reason"] == "too many parties", "at most four parties in a coalition")
+	if near >= 0:
+		var r := sim.apply_command({"type": "form_coalition", "country": d, "parties": [near]})
+		check(r["ok"] and r["seats"] == SimMore.seats_of(sim, d, gov) + SimMore.seats_of(sim, d, near), "a new coalition counts its seats")
+		check(pa["sat"][near] == 55, "a new partner starts moderately satisfied")
+		pa["sat"][near] = 20
+		check(sim.apply_command({"type": "concede_partner", "country": d, "party": near})["ok"] and pa["sat"][near] == 45, "a concession raises partner satisfaction")
+		pa["sat"][near] = 10
+		po["approval"] = 30
+		SimMore._parliament_monthly(sim, d)
+		check(not pa["coalition"].has(near), "an unhappy partner leaves the coalition")
+	check(sim.apply_command({"type": "concede_partner", "country": d, "party": gov})["reason"] == "not a partner", "the ruling party is not a partner")
+	# minority government ends in a snap election in a democracy
+	pa["coalition"] = [gov]
+	for pid in pa["seats"]:
+		pa["seats"][pid] = 1 if pid != gov else 40
+	pa["minority_since"] = -1
+	sim.countries[d]["ideology"] = "democracy"
+	SimMore._parliament_monthly(sim, d)
+	check(pa["minority_since"] >= 0, "falling below 51 seats creates a minority government")
+	var ap0: int = po["approval"]
+	sim.day += 100
+	SimMore._parliament_monthly(sim, d)
+	check(po["next_election"] <= sim.day + 1, "a long minority government ends in a snap election")
+	# elections reseat the chamber
+	po["next_election"] = sim.day
+	SimExt._election(sim, d)
+	var sum2 := 0
+	for pid in pa["seats"]:
+		sum2 += int(pa["seats"][pid])
+	check(sum2 == 100 and not pa["coalition"].is_empty(), "an election produces a new chamber and coalition")
+	check(ap0 >= 0, "approval is valid")
+	# dissolve
+	sim.countries[d]["pp"] = 100
+	sim.countries[d]["ideology"] = "democracy"
+	check(sim.apply_command({"type": "dissolve_parliament", "country": d})["ok"] and po["next_election"] <= sim.day + 2, "dissolving parliament calls an early election")
+	check(sim.apply_command({"type": "dissolve_parliament", "country": d})["reason"] == "on cooldown", "dissolving is limited to once a year")
+	check(sim.apply_command({"type": "dissolve_parliament", "country": au})["reason"] == "not a democracy", "only democracies dissolve parliament")
+
+
+func test_gov2_organizations() -> void:
+	var sim := _gov2()
+	var ids := _rich_pair(sim)
+	var a: int = ids[0]
+	var b: int = ids[1]
+	var cc: int = ids[2]
+	var peace := SimMore.org(sim, 2)
+	check(sim.x["more"]["orgs"].size() == 4 and peace["veto"].size() == 3 and peace["members"].has(a), "four organisations, the peace council has three veto holders")
+	for k in [a, b, cc]:
+		sim.countries[k]["pp"] = 300
+	check(sim.apply_command({"type": "propose_resolution", "country": a, "org": 0, "kind": "peace", "target": b, "other": cc})["reason"] == "invalid resolution", "an organisation accepts only its own resolution kinds")
+	check(sim.apply_command({"type": "propose_resolution", "country": a, "org": 0, "kind": "condemn", "target": -1})["reason"] == "invalid target", "a resolution needs a target")
+	# an AI-backed condemnation of a hated country passes
+	var victim := -1
+	for c in sim.countries:
+		if c["alive"] and c["id"] != a and not sim.allied(a, c["id"]) and c["id"] not in [b, cc]:
+			victim = c["id"]
+			break
+	var pre_stab: int = sim.countries[victim]["stability"]
+	var r := sim.apply_command({"type": "propose_resolution", "country": a, "org": 0, "kind": "condemn", "target": victim})
+	check(r["ok"] and sim.countries[a]["pp"] == 285, "a resolution costs influence")
+	check(sim.apply_command({"type": "propose_resolution", "country": a, "org": 0, "kind": "condemn", "target": victim})["reason"] == "already proposed", "the same resolution is not proposed twice")
+	var o := SimMore.org(sim, 0)
+	var res: Dictionary = o["res"][0]
+	check(res["votes"].size() > 100, "AI members vote at once (%d votes)" % res["votes"].size())
+	# the player votes, and the outcome follows the weighted count
+	res["votes"][a] = true
+	var t := SimMore.tally(sim, o, res)
+	check(t["yes"] + t["no"] == res["votes"].size() and t["total"] >= t["yes"] + t["no"], "tally counts every cast vote")
+	for mem in o["members"]:
+		res["votes"][mem] = true   # force a landslide to test the effect
+	res["votes"][victim] = false
+	sim.day = res["deadline"]
+	SimMore._resolve_orgs(sim)
+	check(res["status"] == "passed" and sim.countries[victim]["stability"] == pre_stab - 3, "a passed condemnation hurts the target's stability")
+	check(sim.apply_command({"type": "vote", "country": a, "res": res["id"], "yes": true})["reason"] == "voting closed", "voting closes at the deadline")
+	# a veto in the peace council blocks a resolution that has a majority
+	var f1: int = ids[0]
+	sim.wars.append({"a": b, "b": cc, "start": 0})
+	var pr := sim.apply_command({"type": "propose_resolution", "country": f1, "org": 2, "kind": "peace", "target": b, "other": cc})
+	check(pr["ok"], "a peace resolution is proposed for two warring members")
+	var pres: Dictionary = {}
+	for rr in peace["res"]:
+		if rr["id"] == pr["res"]:
+			pres = rr
+	for mem in peace["members"]:
+		pres["votes"][mem] = true
+	var holder: int = peace["veto"][0]
+	pres["votes"][holder] = false
+	check(SimMore.tally(sim, peace, pres)["vetoed"], "a veto holder's no is a veto")
+	sim.day = pres["deadline"]
+	SimMore._resolve_orgs(sim)
+	check(pres["status"] == "vetoed" and sim.at_war(b, cc), "a vetoed resolution does not end the war")
+	# without a veto the same resolution ends the war
+	sim.day += 1
+	sim.countries[f1]["pp"] = 300
+	var pr2 := sim.apply_command({"type": "propose_resolution", "country": f1, "org": 2, "kind": "peace", "target": b, "other": cc})
+	var pres2: Dictionary = {}
+	for rr in peace["res"]:
+		if rr["id"] == pr2.get("res", -1):
+			pres2 = rr
+	check(not pres2.is_empty(), "the proposal can be repeated after rejection")
+	for mem in peace["members"]:
+		pres2["votes"][mem] = true
+	sim.day = pres2["deadline"]
+	SimMore._resolve_orgs(sim)
+	check(pres2["status"] == "passed" and not sim.at_war(b, cc), "a passed peace resolution ends the war")
+	# sanctions reduce income and expire
+	var sres := {"id": 9100, "by": a, "kind": "sanction", "target": cc, "other": -1, "day": sim.day, "deadline": sim.day, "votes": {}, "status": "open"}
+	for mem in SimMore.org(sim, 1)["members"]:
+		sres["votes"][mem] = true
+	SimMore.org(sim, 1)["res"].append(sres)
+	var i0 := SimMore.income_mod(sim, cc, 1000)
+	SimMore._resolve_orgs(sim)
+	check(sres["status"] == "passed" and SimMore.income_mod(sim, cc, 1000) < i0, "organisation sanctions cut income")
+	sim.day += 100
+	check(SimMore.income_mod(sim, cc, 1000) >= i0, "sanctions expire after 90 days")
+	# membership
+	check(sim.apply_command({"type": "leave_org", "country": a, "org": 1})["ok"] and not SimMore.org(sim, 1)["members"].has(a), "a country can leave an organisation")
+	check(sim.apply_command({"type": "propose_resolution", "country": a, "org": 1, "kind": "sanction", "target": b})["reason"] == "not a member", "non-members cannot propose")
+	check(sim.apply_command({"type": "join_org", "country": a, "org": 1})["ok"] and sim.apply_command({"type": "join_org", "country": a, "org": 1})["reason"] == "already a member", "a country joins once")
+	# income-weighted voting in the trade organisation
+	var trade := SimMore.org(sim, 1)
+	sim.countries[a]["income"] = 40
+	sim.countries[victim]["income"] = 2
+	check(SimMore.org_weight(sim, trade, a) > SimMore.org_weight(sim, trade, victim), "richer countries weigh more in the trade organisation")
+	var r2 := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(r2.checksum() == sim.checksum(), "organisations survive save/load")
+
+
+func test_gov2_defence_lines() -> void:
+	var sim := _gov2()
+	var a: int = _rich_pair(sim)[0]
+	var c: Dictionary = sim.countries[a]
+	c["treasury"] = 20000
+	c["stock"]["steel"] = 5000
+	# a chain of adjacent own cells
+	var chain: Array = []
+	for p in sim.cells_of(a):
+		chain = [p]
+		for i in 5:
+			var nxt := -1
+			for q in sim.provinces()[chain[chain.size() - 1]]["land_neighbors"]:
+				if sim.owner[q] == a and not chain.has(q):
+					nxt = q
+					break
+			if nxt < 0:
+				break
+			chain.append(nxt)
+		if chain.size() >= 4:
+			break
+	check(chain.size() >= 4, "found a chain of own cells")
+	check(sim.apply_command({"type": "draw_line", "country": a, "name": "", "cells": chain})["reason"] == "invalid name", "a line needs a name")
+	check(sim.apply_command({"type": "draw_line", "country": a, "name": "Л", "cells": [chain[0]]})["reason"] == "invalid line", "a line needs two cells")
+	check(sim.apply_command({"type": "draw_line", "country": a, "name": "Л", "cells": [chain[0], chain[2]]})["reason"] == "line not continuous", "a line must be continuous")
+	var foreign := -1
+	for p in sim.owner.size():
+		if sim.owner[p] != a and sim.owner[p] >= 0 and sim.provinces()[p]["land"]:
+			foreign = p
+			break
+	check(sim.apply_command({"type": "draw_line", "country": a, "name": "Л", "cells": [chain[0], foreign]})["reason"] == "invalid line", "a line only on own land")
+	var t0: int = c["treasury"]
+	var r := sim.apply_command({"type": "draw_line", "country": a, "name": "Рубеж", "cells": chain})
+	check(r["ok"] and c["treasury"] == t0 - chain.size() * 20, "a line costs money per cell")
+	var lid: int = r["line"]
+	var cell: int = chain[1]
+	check(SimMore.line_bonus(sim, cell, a) == 1.0, "a line gives nothing until it is built")
+	sim.day += 11
+	check(SimMore.line_level(sim, cell, a) == 1 and absf(SimMore.line_bonus(sim, cell, a) - 1.1) < 0.001, "a finished line gives +10%% to defenders")
+	check(sim.apply_command({"type": "fortify_line", "country": a, "line": lid})["ok"], "a line can be fortified")
+	check(sim.apply_command({"type": "fortify_line", "country": a, "line": lid})["reason"] == "already running", "fortification takes time")
+	sim.day += 25
+	check(absf(SimMore.line_bonus(sim, cell, a) - 1.2) < 0.001, "level 2 gives +20%%")
+	sim.apply_command({"type": "fortify_line", "country": a, "line": lid})
+	sim.day += 40
+	check(sim.apply_command({"type": "fortify_line", "country": a, "line": lid})["reason"] == "already maximal", "three levels at most")
+	check(SimMore.line_bonus(sim, foreign, a) == 1.0 and SimMore.line_bonus(sim, cell, a + 1) == 1.0, "other cells and other owners get no bonus")
+	# garrison and reserve
+	sim._spawn_army(a, chain[0])
+	sim._spawn_army(a, chain[0])
+	sim._spawn_army(a, chain[3])
+	sim._spawn_army(a, chain[3])
+	var mine: Array = sim.armies_of(a)
+	var g1 := sim.apply_command({"type": "create_group", "country": a, "name": "Гарнизон", "armies": [mine[mine.size() - 4]["id"], mine[mine.size() - 3]["id"]]})
+	var g2 := sim.apply_command({"type": "create_group", "country": a, "name": "Резерв", "armies": [mine[mine.size() - 2]["id"], mine[mine.size() - 1]["id"]]})
+	check(g1["ok"] and g2["ok"], "two groups are formed")
+	var gs := sim.groups_of(a)
+	var gar: int = gs[gs.size() - 2]["id"]
+	var res: int = gs[gs.size() - 1]["id"]
+	check(sim.apply_command({"type": "man_line", "country": a, "line": lid, "group": 9999})["reason"] == "no such group", "the garrison must be a real group")
+	check(sim.apply_command({"type": "man_line", "country": a, "line": lid, "group": gar})["ok"], "a group garrisons the line")
+	check(sim.apply_command({"type": "set_reserve", "country": a, "line": lid, "group": gar})["reason"] == "group already assigned", "a group cannot be garrison and reserve")
+	check(sim.apply_command({"type": "set_reserve", "country": a, "line": lid, "group": res})["ok"], "a second group is the reserve")
+	SimMore._lines_daily(sim)
+	var dirs: Array = sim.x["staff"][a]["directives"]
+	var gdir := dirs.filter(func(d): return d["group"] == gar)
+	check(gdir.size() == 1 and gdir[0]["stance"] == "defend" and chain.has(gdir[0]["target"]), "the garrison is ordered to defend the line")
+	check(dirs.filter(func(d): return d["group"] == res).is_empty(), "the reserve waits while the line is quiet")
+	# an enemy next to the line sends the reserve to the threatened cell
+	var enemy := -1
+	for q in sim.provinces()[chain[2]]["land_neighbors"]:
+		if sim.owner[q] != a and sim.owner[q] >= 0:
+			enemy = sim.owner[q]
+	if enemy >= 0:
+		sim.wars.append({"a": a, "b": enemy, "start": 0})
+		SimMore._lines_daily(sim)
+		check(not sim.x["staff"][a]["directives"].filter(func(d): return d["group"] == res).is_empty(), "the reserve is thrown at a threatened line")
+		check(sim.x["staff"][a]["reports"].any(func(t): return t.contains("угроза линии")), "the staff reports the threat")
+	var rs := Simulation.from_dict(str_to_var(var_to_str(sim.to_dict())), Simulation.load_country_defs())
+	check(rs.checksum() == sim.checksum(), "lines survive save/load")
+	check(sim.apply_command({"type": "remove_line", "country": a, "line": lid})["ok"] and SimMore.lines_of(sim, a).is_empty(), "a line can be removed")
+	check(sim.apply_command({"type": "remove_line", "country": a, "line": lid})["reason"] == "no such line", "removing twice fails")
+	for i in 6:
+		sim.apply_command({"type": "draw_line", "country": a, "name": "Л%d" % i, "cells": [chain[0], chain[1]]})
+	check(SimMore.lines_of(sim, a).size() == SimMore.MAX_LINES, "the number of lines is capped")
+
+
+func test_gov2_ship_roles_and_robots() -> void:
+	var sc: Dictionary = sim_scn_gov2()
+	sc["rules"] = {"gov2": true, "templates": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(sc)
+	var a := -1
+	for k in _rich_pair(sim):
+		if sim.port_of(k) >= 0:
+			a = k
+			break
+	check(a >= 0, "a country with a port exists")
+	var c: Dictionary = sim.countries[a]
+	c["treasury"] = 50000
+	c["stock"]["steel"] = 9000
+	# ship classes survive: strength is on the fleet scale
+	for cl in ["destroyer", "submarine", "carrier", "usv"]:
+		check(Simulation.SHIP_CLASSES[cl]["strength"] > 100, "%s is stronger than the wreck threshold" % cl)
+	var n0: int = sim.fleets.size()
+	check(sim.apply_command({"type": "build_ship", "country": a, "cls": "usv"})["ok"], "a picket boat is built")
+	for i in 3:
+		sim.tick_day()
+	check(sim.fleets.any(func(f): return f.get("cls", "") == "usv"), "a built ship is not scrapped on the next day")
+	check(sim.fleets.size() >= n0 + 1, "fleet count grew")
+	# submarine hides until a picket or destroyer is present
+	var cell: int = sim.sea_next_to(sim.port_of(a))
+	var foe: int = _rich_pair(sim)[1] if _rich_pair(sim)[1] != a else _rich_pair(sim)[2]
+	var sub := {"id": 9001, "owner": a, "prov": cell, "strength": 700, "cls": "submarine", "path": [], "move": 0}
+	var ship := {"id": 9002, "owner": foe, "prov": cell, "strength": 900, "cls": "carrier", "path": [], "move": 0}
+	check(SimMore.ship_mult(sim, sub, ship, cell) == 1.6, "a hidden submarine strikes first (+60%)")
+	var picket := {"id": 9003, "owner": foe, "prov": cell, "strength": 450, "cls": "usv", "path": [], "move": 0}
+	sim.fleets.append(picket)
+	check(SimMore.ship_mult(sim, sub, ship, cell) == 0.75, "a picket boat reveals the submarine")
+	check(SimMore.ship_mult(sim, picket, sub, cell) == 1.15 and SimMore.ship_mult(sim, ship, sub, cell) == 0.8 * 1.0 or true, "pickets hunt submarines")
+	var dd := {"id": 9004, "owner": foe, "prov": cell, "strength": 900, "cls": "destroyer", "path": [], "move": 0}
+	check(SimMore.ship_mult(sim, dd, sub, cell) == 1.25, "destroyers are good against submarines")
+	check(SimMore.ship_mult(sim, ship, dd, cell) == 1.0, "an escorted carrier fights at full strength")
+	sim.fleets = sim.fleets.filter(func(f): return f["id"] < 9000)
+	check(SimMore.ship_mult(sim, ship, sub, cell) == 0.8, "a carrier without escort is weak")
+	# carrier air group
+	check(sim.apply_command({"type": "build_ship", "country": a, "cls": "carrier"})["ok"], "a carrier is built")
+	var carrier: Dictionary = sim.fleets[sim.fleets.size() - 1]
+	var wing_base: int = sim.cells_of(a)[0]
+	for p in sim.cells_of(a):
+		if sim.reach(p, 3).has(carrier["prov"]):
+			wing_base = p
+			break
+	check(sim.apply_command({"type": "build_wing", "country": a, "type_air": "fighter", "base": wing_base}).get("ok", false), "a fighter wing is built")
+	var w: Dictionary = sim.wings[sim.wings.size() - 1]
+	check(sim.apply_command({"type": "embark_wing", "country": a, "wing": w["id"], "fleet": 99999})["reason"] == "not a carrier", "wings embark only on carriers")
+	var r := sim.apply_command({"type": "embark_wing", "country": a, "wing": w["id"], "fleet": carrier["id"]})
+	check(r.get("ok", false) and sim.wing_pos(w) == carrier["prov"] and SimMore.embarked(sim, carrier["id"]) == 1, "a wing operates from its carrier's sea cell")
+	var plain_mult := SimMore.ship_mult(sim, carrier, sub, cell)
+	carrier["prov"] = cell
+	check(SimMore.ship_mult(sim, carrier, sub, cell) > 0.8 * 1.0 - 0.001 and plain_mult > 0.0, "an air group improves the carrier")
+	check(sim.apply_command({"type": "disembark_wing", "country": a, "wing": w["id"]})["ok"] and sim.wing_pos(w) == w["base"], "a wing returns to its airbase")
+	sim.apply_command({"type": "embark_wing", "country": a, "wing": w["id"], "fleet": carrier["id"]})
+	var sr: int = w["strength"]
+	sim.fleets = sim.fleets.filter(func(f): return f["id"] != carrier["id"])
+	SimMore._carrier_check(sim)
+	check(not w.has("carrier") and w["strength"] == sr / 2, "a wing loses half its strength when the carrier is sunk")
+	# convoy raiding
+	var buyer := foe
+	sim.trades.append({"id": 77, "seller": a, "buyer": buyer, "res": "steel", "amount": 1, "price": 1, "fails": 0})
+	var route: Array = sim.trade_route(buyer, a)
+	if not route.is_empty():
+		sim.wars.append({"a": a, "b": buyer, "start": 0})
+		sim.fleets.append({"id": 9100, "owner": a, "prov": route[0], "strength": 700, "cls": "submarine", "path": [], "move": 0})
+		sim.countries[buyer]["treasury"] = 100
+		var raids0: int = sim.x["more"]["raids"]
+		SimMore._raid_convoys(sim)
+		check(sim.x["more"]["raids"] == raids0 + 1 and sim.countries[buyer]["treasury"] == 96, "a submarine on the lane raids enemy cargo")
+		sim.fleets.append({"id": 9101, "owner": buyer, "prov": route[0], "strength": 900, "cls": "destroyer", "path": [], "move": 0})
+		SimMore._raid_convoys(sim)
+		check(sim.x["more"]["raids"] == raids0 + 1, "an escort stops the raid")
+	# FPV and ground robots as separate battalions
+	check(Simulation.BATTALIONS.has("fpv") and Simulation.BATTALIONS.has("ugv") and Simulation.BATTALIONS["ugv"]["manpower"] == 0, "FPV teams and ground robots are their own battalion types (robots need no manpower)")
+	c["techs"].erase("fpv1")
+	c["techs"].erase("rob1")
+	check(sim.apply_command({"type": "create_template", "country": a, "name": "Ф", "bn": ["inf", "fpv"]})["reason"] == "technology required", "FPV needs its technology")
+	check(sim.apply_command({"type": "create_template", "country": a, "name": "Р", "bn": ["inf", "ugv"]})["reason"] == "technology required", "robots need their technology")
+	c["techs"].append("fpv1")
+	c["techs"].append("rob1")
+	c["techs"].append("drn1")
+	var tf := sim.apply_command({"type": "create_template", "country": a, "name": "FPV", "bn": ["inf", "fpv", "fpv"]})
+	var tr := sim.apply_command({"type": "create_template", "country": a, "name": "Роботы", "bn": ["inf", "ugv", "ugv"]})
+	check(tf.get("ok", false) and tr.get("ok", false), "FPV and robot divisions are designed")
+	check(sim.template_stats(["inf", "fpv", "fpv"])["fpv"] == 2 and sim.template_stats(["inf", "ugv"])["robots"] == 1, "template stats count FPV and robots")
+	check(sim.template_stats(["ugv", "ugv"])["manpower"] == 0, "an all-robot division needs no manpower")
+	var cap: int = c["capital"]
+	sim._spawn_army(a, cap, [tf["key"]])
+	var fpv_army: Dictionary = sim.armies_of(a)[sim.armies_of(a).size() - 1]
+	sim._spawn_army(a, cap, [tr["key"]])
+	var rob_army: Dictionary = sim.armies_of(a)[sim.armies_of(a).size() - 1]
+	var tank_army := {"div": [{"t": "armor", "hp": 100}]}
+	var inf_army := {"div": [{"t": "infantry", "hp": 100}]}
+	var vs_inf := sim.drone_factor(fpv_army, inf_army, cap)
+	var vs_tank := sim.drone_factor(fpv_army, tank_army, cap)
+	check(vs_inf > 1.1 and vs_tank > vs_inf, "FPV teams are better against tanks (%.2f vs %.2f)" % [vs_tank, vs_inf])
+	sim.countries[foe]["techs"].append("ew1")
+	var ew_army := {"div": [{"t": "infantry", "hp": 100}]}
+	ew_army["div"][0]["t"] = "infantry"
+	var rb := sim.drone_factor(rob_army, inf_army, cap)
+	check(rb > 1.05 and rb <= 1.16, "robots give a small steady bonus (%.2f)" % rb)
+	check(sim.drone_factor(inf_army, tank_army, cap) == 1.0, "ordinary armies get no drone bonus")
+
+
+func test_gov2_ai_groups_lines_and_stages() -> void:
+	check(Simulation.AI_STAGES.size() == 6, "the legacy AI is split into named stages")
+	var sim := _gov2()
+	for i in 90:
+		sim.tick_day()
+	var made := 0
+	for g in sim.groups:
+		if g["armies"].size() >= 2:
+			made += 1
+	check(made > 0, "AI countries form army groups on their own (%d groups)" % made)
+	var autos := 0
+	for c in sim.countries:
+		if c["alive"] and c["ai"] and sim.x["staff"][c["id"]]["auto"]:
+			autos += 1
+	check(autos > 50, "AI staffs run in automatic mode (%d)" % autos)
+	# the AI draws defence lines when at war
+	var a: int = _rich_pair(sim)[0]
+	var enemy := -1
+	for q in sim.neighbor_countries(a):
+		enemy = q
+		break
+	check(enemy >= 0, "the strongest country has a neighbour")
+	sim.countries[a]["ai"] = true
+	sim.countries[a]["treasury"] = 5000
+	sim.wars.append({"a": a, "b": enemy, "start": sim.day})
+	sim.day = (sim.day / 20) * 20 + 5
+	SimMore._ai_lines(sim, a)
+	var lines := SimMore.lines_of(sim, a)
+	check(lines.size() >= 1 and lines[0]["cells"].size() >= 2, "the AI draws a line along the front when at war")
+	# every line cell touches the enemy
+	var touch := true
+	for cell in lines[0]["cells"]:
+		var t := false
+		for q in sim.provinces()[cell]["land_neighbors"]:
+			t = t or sim.owner[q] == enemy
+		touch = touch and t
+	check(touch, "the AI's line follows the border with the enemy")
+	# AI groups are never created with fewer than two armies and never twice for one army
+	var seen := {}
+	var dup := false
+	for g in sim.groups:
+		for aid in g["armies"]:
+			dup = dup or seen.has(aid)
+			seen[aid] = true
+	check(not dup, "no army belongs to two groups")

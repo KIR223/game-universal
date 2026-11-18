@@ -1500,6 +1500,14 @@ const REASONS_GOV := {
 	"no such group": "нет такой группы", "invalid stance": "неверный приказ", "invalid destination": "неверная цель назначения",
 	"invalid site": "неверный объект", "no port": "нет порта", "nothing to repair": "нечего восстанавливать", "invalid ship": "неверный тип корабля",
 	"unknown command": "правило «управление государством» выключено",
+	"no such organization": "нет такой организации", "not a member": "вы не участник", "invalid resolution": "организация не принимает такую резолюцию",
+	"already proposed": "уже предложено", "agenda full": "повестка заполнена", "voting closed": "голосование закрыто", "no such resolution": "нет такой резолюции",
+	"already a member": "вы уже участник", "bank failed": "банк обанкротился", "no such bank": "нет такого банка", "already state": "уже государственная",
+	"not state": "компания не государственная", "no such corporation": "нет такой корпорации", "no such party": "нет такой партии",
+	"too many parties": "не более четырёх партий", "partner refuses": "партнёр отказывается", "not a partner": "не партнёр по коалиции",
+	"invalid line": "неверный рубеж", "line not continuous": "клетки рубежа должны быть соседними", "too many lines": "слишком много рубежей",
+	"no such line": "нет такого рубежа", "group already assigned": "группа уже назначена на этот рубеж", "not a carrier": "это не авианосец",
+	"carrier full": "на авианосце нет места",
 }
 
 

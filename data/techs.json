@@ -656,6 +656,33 @@
    "effects": {
     "ad_pct": 25
    }
+  },
+  {
+   "id": "fpv1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "FPV-расчёты",
+   "cost": 500,
+   "requires": [
+    "drn1"
+   ],
+   "effects": {
+    "atk_pct": 1
+   }
+  },
+  {
+   "id": "rob1",
+   "category": "modern",
+   "rule": "modern",
+   "name": "Наземные роботизированные платформы",
+   "cost": 900,
+   "requires": [
+    "drn1",
+    "cp1"
+   ],
+   "effects": {
+    "supply_pct": 2
+   }
   }
  ]
 }
