@@ -19,6 +19,7 @@
   "markets": true,
   "templates": true,
   "organization": true,
-  "food_balance": true
+  "food_balance": true,
+  "fiscal_balance": true
  }
 }

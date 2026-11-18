@@ -2459,3 +2459,46 @@ func test_food_balance() -> void:
 	check(a.checksum() == b.checksum(), "simulation with the food rule is deterministic")
 	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
 	check(r.rule_food_balance and r.checksum() == a.checksum(), "the food rule survives save/load")
+
+
+func test_fiscal_balance() -> void:
+	var raw: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	var off := Simulation.new()
+	off.setup_scenario(raw)
+	var on_scn: Dictionary = raw.duplicate(true)
+	on_scn["rules"] = {"fiscal_balance": true}
+	var on := Simulation.new()
+	on.setup_scenario(on_scn)
+	for i in 3:
+		off.tick_day()
+		on.tick_day()
+	check(not off.rule_fiscal_balance and on.rule_fiscal_balance, "the fiscal rule is opt-in")
+	var us := -1
+	for c in on.countries:
+		if c["name"] == "США":
+			us = c["id"]
+	check(us >= 0 and on.gdp_of.get(us, 0) > 10000000, "GDP is recorded per country (USA %d M$)" % int(on.gdp_of.get(us, 0)))
+	check(on.countries[us]["income"] > off.countries[us]["income"], "income follows GDP with the rule (%d vs %d)" % [on.countries[us]["income"], off.countries[us]["income"]])
+	var affordable_on := 0
+	var affordable_off := 0
+	for c in on.countries:
+		if c["alive"] and c["income"] >= c["upkeep"]:
+			affordable_on += 1
+	for c in off.countries:
+		if c["alive"] and c["income"] >= c["upkeep"]:
+			affordable_off += 1
+	check(affordable_on > affordable_off * 3, "far more countries can afford their armies (%d vs %d)" % [affordable_on, affordable_off])
+	var a := Simulation.new()
+	a.setup_scenario(on_scn)
+	var b := Simulation.new()
+	b.setup_scenario(on_scn)
+	for i in 20:
+		a.tick_day()
+		b.tick_day()
+	check(a.checksum() == b.checksum(), "simulation with the fiscal rule is deterministic")
+	var r := Simulation.from_dict(str_to_var(var_to_str(a.to_dict())), Simulation.load_country_defs())
+	check(r.rule_fiscal_balance and r.gdp_of.size() == a.gdp_of.size() and r.checksum() == a.checksum(), "GDP data and the rule survive save/load")
+	for i in 3:
+		a.tick_day()
+		r.tick_day()
+	check(a.checksum() == r.checksum(), "a loaded game continues exactly like the original")

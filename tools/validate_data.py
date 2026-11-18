@@ -187,7 +187,7 @@ for fname in idx["scenarios"]:
     if is_earth and not (root / "data" / scn.get("world_dataset", "world") / "manifest.json").exists():
         errors.append(f"scenario {sid}: needs data/{scn.get('world_dataset', 'world')}")
     for rk in scn.get("rules", {}):
-        if rk not in ("terrain", "weather", "modern", "markets", "templates", "organization", "food_balance"):
+        if rk not in ("terrain", "weather", "modern", "markets", "templates", "organization", "food_balance", "fiscal_balance"):
             errors.append(f"scenario {sid}: unknown rule {rk}")
     for c in scn["countries"]:
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", c.get("color", "")):

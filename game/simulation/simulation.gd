@@ -112,6 +112,10 @@ const BATTALIONS := {
 var rule_food_balance := false    # food production scaled so that food is a real constraint (without it every country is in huge surplus)
 const FOOD_BALANCE_PERMILLE := 40 # of the raw deposit sum on the base 14.3k-cell map; other maps are scaled by their land cell count
 const BASE_LAND_CELLS := 14299
+var rule_fiscal_balance := false  # income also follows real GDP and army upkeep is lower, so most countries can afford their armies
+var gdp_of := {}                  # cid -> GDP in million USD (real-world scenarios); saved, not part of the state hash
+const GDP_INCOME_DIV := 150000    # income per day = GDP (M$) / this
+const UPKEEP_PCT := 50            # army upkeep as a percent of the classic value with the fiscal rule
 var rule_organization := false    # armies have organisation (0..100): fighting and marching wear it down, rest in supply restores it
 const ORG_MOVE := 1
 const ORG_REST := 3
@@ -747,6 +751,7 @@ func setup_earth(scn: Dictionary) -> Array:
 		var nm: String = pc["name_ru"] if pc.get("name_ru") != null and str(pc["name_ru"]) != "" else pc["name_en"]
 		var c := _new_country(t, nm, _tag_color(t), cap)
 		c["treasury"] = clampi(int(pc["gdp_md"]) / 4000 + 80, 80, 6000)
+		gdp_of[cid] = int(pc["gdp_md"])
 		c["manpower"] = clampi(100 + int(pc["pop"]) / 50000, 100, 2000)
 		c["ai"] = true
 		_init_politics(cid)
@@ -932,6 +937,7 @@ func setup_scenario(scn: Dictionary) -> Array:
 	rule_markets = bool(scn.get("rules", {}).get("markets", false))
 	rule_templates = bool(scn.get("rules", {}).get("templates", false))
 	rule_organization = bool(scn.get("rules", {}).get("organization", false))
+	rule_fiscal_balance = bool(scn.get("rules", {}).get("fiscal_balance", false))
 	rule_food_balance = bool(scn.get("rules", {}).get("food_balance", false))
 	templates = {}
 	next_tpl_id = 1
@@ -2485,8 +2491,12 @@ func _economy() -> void:
 	for o in agg:
 		if countries[o]["alive"]:
 			countries[o]["income"] = agg[o]["income"]
+	if rule_fiscal_balance:
+		for c in countries:
+			if c["alive"]:
+				c["income"] += maxi(1, int(gdp_of.get(c["id"], 0)) / GDP_INCOME_DIV)
 	for a in armies:
-		countries[a["owner"]]["upkeep"] += a["strength"] / 200
+		countries[a["owner"]]["upkeep"] += a["strength"] / (200 * 100 / UPKEEP_PCT if rule_fiscal_balance else 200)
 	for f in fleets:
 		countries[f["owner"]]["upkeep"] += f["strength"] / 150
 	for c in countries:
@@ -4311,7 +4321,7 @@ func to_dict() -> Dictionary:
 	return {
 		"version": SAVE_VERSION, "seed": seed_value, "day": day,
 		"owner": owner, "countries": countries, "armies": armies, "wars": wars,
-		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "rule_organization": rule_organization, "rule_food_balance": rule_food_balance, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "sites": sites, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
+		"next_army_id": next_army_id, "world_kind": str(world.get("kind", "procedural")), "world_dataset": str(world.get("dataset", "world")), "world_hash": str(world.get("world_hash", "")), "legal": legal, "next_general_id": next_general_id, "start_date": start_date, "disabled_events": disabled_events, "grace_days": grace_days, "scenario_id": scenario_id, "ai_war_chance": ai_war_chance, "rule_terrain": rule_terrain, "rule_weather": rule_weather, "rule_modern": rule_modern, "groups": groups, "next_group_id": next_group_id, "rule_markets": rule_markets, "rule_templates": rule_templates, "rule_organization": rule_organization, "rule_fiscal_balance": rule_fiscal_balance, "gdp_of": gdp_of, "rule_food_balance": rule_food_balance, "templates": templates, "next_tpl_id": next_tpl_id, "pop_bp": pop_bp, "market_pct": market_pct, "market_flow": _market_flow, "missile_stock": missile_stock, "strikes": strikes, "sites": sites, "scenario_deposits": scenario_deposits, "infra": infra, "ops": ops, "next_op_id": next_op_id, "next_event_uid": next_event_uid, "wings": wings, "next_wing_id": next_wing_id, "damage": damage, "fleets": fleets, "next_fleet_id": next_fleet_id, "alliances": alliances, "trades": trades, "next_trade_id": next_trade_id, "embargoes": embargoes, "sanctions": sanctions, "rng_state": rng.state, "command_log": command_log,
 	}
 
 
@@ -4354,6 +4364,8 @@ static func from_dict(d: Dictionary, country_defs: Array) -> Simulation:
 	sim.rule_markets = bool(d.get("rule_markets", false))
 	sim.rule_templates = bool(d.get("rule_templates", false))
 	sim.rule_organization = bool(d.get("rule_organization", false))
+	sim.rule_fiscal_balance = bool(d.get("rule_fiscal_balance", false))
+	sim.gdp_of = d.get("gdp_of", {})
 	sim.rule_food_balance = bool(d.get("rule_food_balance", false))
 	sim.templates = d.get("templates", {})
 	sim.next_tpl_id = int(d.get("next_tpl_id", 1))
