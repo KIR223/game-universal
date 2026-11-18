@@ -4179,7 +4179,9 @@ func _ai() -> void:
 			c["stock"]["steel"] -= FLEET_STEEL
 			_spawn_fleet(cid, sea_next_to(port_of(cid)))
 		# economic: build armies
-		if c["treasury"] >= 120 and divisions_of(cid) < 6 + cells_of(cid).size():
+		# with the fiscal rule the AI only raises armies it can keep paying for (net income after upkeep must stay positive)
+		var can_afford: bool = not rule_fiscal_balance or c["income"] - c["upkeep"] >= 3
+		if c["treasury"] >= 120 and can_afford and divisions_of(cid) < 6 + cells_of(cid).size():
 			var kinds := ["infantry", "infantry", "armor", "artillery"]
 			var kind: String = kinds[(day / 5 + cid) % kinds.size()]
 			if rule_templates and kind != "artillery":

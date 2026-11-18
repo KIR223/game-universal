@@ -2502,3 +2502,24 @@ func test_fiscal_balance() -> void:
 		a.tick_day()
 		r.tick_day()
 	check(a.checksum() == r.checksum(), "a loaded game continues exactly like the original")
+
+
+func test_ai_respects_upkeep() -> void:
+	var scn: Dictionary = ScenarioLoader.read_file("res://game/scenarios/modern_world.json").duplicate(true)
+	scn["rules"] = {"fiscal_balance": true}
+	var sim := Simulation.new()
+	sim.setup_scenario(scn)
+	for i in 150:
+		sim.tick_day()
+	var ok := 0
+	var alive := 0
+	var strength := 0
+	for c in sim.countries:
+		if c["alive"]:
+			alive += 1
+			if c["income"] >= c["upkeep"]:
+				ok += 1
+	for a in sim.armies:
+		strength += a["strength"]
+	check(ok * 100 / alive >= 70, "at least 70 %% of countries can pay their armies after 150 days (%d of %d)" % [ok, alive])
+	check(strength / maxi(sim.armies.size(), 1) > 800, "average army strength stays healthy (%d)" % (strength / maxi(sim.armies.size(), 1)))
