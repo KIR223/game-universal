@@ -44,9 +44,23 @@ func _input(event: InputEvent) -> void:
 			Engine.max_fps = ACTIVE_FPS
 
 
+func is_phone_ui() -> bool:
+	return MobileLayout.is_phone()
+
+
+## Size of a finger-sized control in logical UI units (44 pt on phones, the desktop size elsewhere).
+func touch_px() -> float:
+	if not MobileLayout.is_phone():
+		return 0.0
+	var win := DisplayServer.window_get_size()
+	return MobileLayout.touch_target(get_viewport().get_visible_rect().size.x, float(win.x), maxf(DisplayServer.screen_get_scale(), 1.0))
+
+
 var CARD_H: int = 156 if MobileLayout.is_phone() else 232
 ## Space kept free at the bottom: the phone navigation bar (nothing on desktop).
-var NAV_H: int = 58
+## Top edge of everything that sits under the top bar (panels, rail, journal): the bar is taller on phones with finger-sized buttons.
+var PANEL_Y: int = 56
+var NAV_H: int = 58   # grows with the touch size on phones (set in _build_hud)
 var RAIL_W: int = 8 if MobileLayout.is_phone() else 68   # left space taken by the navigation rail
 var BOTTOM_PAD: int = (58 + 8) if MobileLayout.is_phone() else 8
 const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
@@ -279,8 +293,9 @@ func _make_theme() -> Theme:
 		sb.content_margin_left = 12
 		sb.content_margin_right = 12
 		if MobileLayout.is_phone():
-			sb.content_margin_top = 12   # finger-sized targets (>= 44 pt with the 1.3 UI scale)
-			sb.content_margin_bottom = 12
+			var tp := maxf(touch_px(), 36.0)   # finger-sized targets: every Button is at least 44 pt tall
+			sb.content_margin_top = int(maxf(12.0, (tp - 20.0) * 0.5))
+			sb.content_margin_bottom = int(maxf(12.0, (tp - 20.0) * 0.5))
 		sb.border_color = Color(0.32, 0.38, 0.46, 0.8)
 		sb.set_border_width_all(1)
 		match state:
@@ -1310,7 +1325,7 @@ func _toggle_eco() -> void:
 	_eco = PanelContainer.new()
 	_eco.theme = _theme
 	_eco.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_eco.position = Vector2(RAIL_W, 56)
+	_eco.position = Vector2(RAIL_W, PANEL_Y)
 	_eco.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_eco)
 	var eco_scroll := ScrollContainer.new()
@@ -1510,7 +1525,7 @@ func _toggle_tech() -> void:
 	_tech = PanelContainer.new()
 	_tech.theme = _theme
 	_tech.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_tech.position = Vector2(RAIL_W, 56)
+	_tech.position = Vector2(RAIL_W, PANEL_Y)
 	_tech.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_tech)
 	var v := VBoxContainer.new()
@@ -1709,7 +1724,7 @@ func _toggle_pol() -> void:
 	_pol = PanelContainer.new()
 	_pol.theme = _theme
 	_pol.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_pol.position = Vector2(RAIL_W, 56)
+	_pol.position = Vector2(RAIL_W, PANEL_Y)
 	_pol.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_pol)
 	var v := VBoxContainer.new()
@@ -1848,7 +1863,7 @@ func _toggle_intel() -> void:
 	_intel = PanelContainer.new()
 	_intel.theme = _theme
 	_intel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	_intel.position = Vector2(RAIL_W, 56)
+	_intel.position = Vector2(RAIL_W, PANEL_Y)
 	_intel.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_intel)
 	var v := VBoxContainer.new()
@@ -1958,12 +1973,15 @@ func _intel_refresh() -> void:
 
 ## Width shared by all modal panels: the design width, never more than 80 % of the window.
 func _panel_w() -> float:
-	return minf(float(Design.PANEL_W), get_viewport().get_visible_rect().size.x * 0.8 - float(RAIL_W))
+	var avail := ui.size.x if ui != null and ui.size.x > 0.0 else get_viewport().get_visible_rect().size.x
+	return minf(float(Design.PANEL_W), avail * 0.8 - float(RAIL_W))
 
 
 ## Panel height: the design height, but always inside the window above the phone navigation bar.
 func _panel_h() -> float:
-	return clampf(get_viewport().get_visible_rect().size.y - 56.0 - float(BOTTOM_PAD) - 8.0, 240.0, 560.0)
+	# the ui control is already inset by the phone safe area (home indicator), the viewport is not
+	var avail := ui.size.y if ui != null and ui.size.y > 0.0 else get_viewport().get_visible_rect().size.y
+	return clampf(avail - float(PANEL_Y) - float(BOTTOM_PAD) - 8.0, 240.0, 560.0)
 
 
 ## One header for every modal panel: gold title on the left, icon close button on the right.
@@ -1976,7 +1994,7 @@ func _panel_header(title: String, on_close: Callable) -> HBoxContainer:
 	h.add_theme_color_override("font_color", Design.C_GOLD)
 	h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(h)
-	var x := IconButton.new("close", "Закрыть (Esc)", Vector2(Design.BTN_H, Design.BTN_H))
+	var x := IconButton.new("close", "Закрыть (Esc)", Vector2(maxf(float(Design.BTN_H), touch_px()), maxf(float(Design.BTN_H), touch_px())))
 	x.pad = 8.0
 	x.pressed.connect(on_close)
 	head.add_child(x)
@@ -2058,7 +2076,7 @@ func _build_tutorial_banner(root: Control) -> void:
 	_tut_banner = PanelContainer.new()
 	_tut_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	_tut_banner.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_tut_banner.offset_top = 62
+	_tut_banner.offset_top = PANEL_Y + 6
 	_tut_banner.custom_minimum_size = Vector2(minf(720.0, get_viewport().get_visible_rect().size.x * 0.7), 0)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(Design.C_PANEL, 0.97)
@@ -2120,6 +2138,10 @@ func _tutorial_tick() -> void:
 
 
 func _build_hud() -> void:
+	if MobileLayout.is_phone():
+		NAV_H = int(maxf(58.0, touch_px() + 16.0))   # the bottom bar grows with the finger-sized buttons
+		BOTTOM_PAD = NAV_H + 8
+		PANEL_Y = int(maxf(56.0, touch_px() + 28.0))
 	_clear_ui()
 	_nav.clear()
 	_speed_btns.clear()
@@ -2154,7 +2176,7 @@ func _build_hud() -> void:
 	hb.add_child(_date_label)
 	var speeds := [["pause", "Пауза (Пробел)"], ["play", "Скорость 1 (1)"], ["fast", "Скорость 2 (2)"], ["faster", "Скорость 3 (3)"], ["fastest", "Скорость 4 (4)"]]
 	for i in speeds.size():
-		var b := IconButton.new(speeds[i][0], speeds[i][1], Vector2(34, 34))
+		var b := IconButton.new(speeds[i][0], speeds[i][1], Vector2(maxf(34.0, touch_px()), maxf(34.0, touch_px())))
 		var idx := i
 		b.pressed.connect(func(): _set_speed(idx))
 		hb.add_child(b)
@@ -2181,10 +2203,10 @@ func _build_hud() -> void:
 	_search.text_changed.connect(_on_search_changed)
 	_search.tooltip_text = "Ctrl+F или /"
 	hb.add_child(_search)
-	_bell = IconButton.new("bell", "Уведомления", Vector2(38, 38))
+	_bell = IconButton.new("bell", "Уведомления", Vector2(maxf(38.0, touch_px()), maxf(38.0, touch_px())))
 	_bell.pressed.connect(_toggle_notifications)
 	hb.add_child(_bell)
-	var menu_btn := IconButton.new("menu", "Меню", Vector2(38, 38))
+	var menu_btn := IconButton.new("menu", "Меню", Vector2(maxf(38.0, touch_px()), maxf(38.0, touch_px())))
 	menu_btn.pressed.connect(func(): _main_menu.popup(Rect2i(Vector2i(menu_btn.get_screen_position()) + Vector2i(0, 40), Vector2i(1, 1))))
 	hb.add_child(menu_btn)
 
@@ -2202,12 +2224,12 @@ func _build_hud() -> void:
 		nv.alignment = BoxContainer.ALIGNMENT_CENTER
 		nv.add_theme_constant_override("separation", 6)
 	else:
-		nav.position = Vector2(8, 56)
+		nav.position = Vector2(8, PANEL_Y)
 		nv = VBoxContainer.new()
 		nv.add_theme_constant_override("separation", 2)
 	nav.add_child(nv)
 	for it in NAV_ITEMS:
-		var b2 := IconButton.new(it[0], it[1], Vector2(44, 44))
+		var b2 := IconButton.new(it[0], it[1], Vector2(maxf(44.0, touch_px()), maxf(44.0, touch_px())))
 		b2.pressed.connect(_nav_pressed.bind(it[0]))
 		nv.add_child(b2)
 		_nav[it[0]] = b2
@@ -2217,7 +2239,7 @@ func _build_hud() -> void:
 	_right.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
 	_right.offset_left = -352
 	_right.offset_right = -8
-	_right.offset_top = 56
+	_right.offset_top = PANEL_Y
 	_right.offset_bottom = -(CARD_H + BOTTOM_PAD)
 	root.add_child(_right)
 	if MobileLayout.is_phone():
@@ -2228,8 +2250,8 @@ func _build_hud() -> void:
 		jb.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 		jb.offset_left = -108
 		jb.offset_right = -8
-		jb.offset_top = 56
-		jb.offset_bottom = 92
+		jb.offset_top = PANEL_Y
+		jb.offset_bottom = PANEL_Y + 36
 		jb.pressed.connect(func(): _right.visible = not _right.visible)
 		root.add_child(jb)
 	var rv := VBoxContainer.new()
@@ -2344,6 +2366,7 @@ func _build_hud() -> void:
 	ui.add_child(_main_menu)
 	_toasts = ToastHost.new()
 	root.add_child(_toasts)
+	_toasts.offset_top = PANEL_Y + 8
 	_build_tutorial_banner(root)
 	_weather_fx = WeatherFx.new()
 	root.add_child(_weather_fx)
@@ -2800,7 +2823,7 @@ func _nav_pressed(name: String) -> void:
 func _open_generic(name: String) -> void:
 	_generic = PanelContainer.new()
 	_generic.theme = _theme
-	_generic.position = Vector2(RAIL_W, 56)
+	_generic.position = Vector2(RAIL_W, PANEL_Y)
 	_generic.custom_minimum_size = Vector2(_panel_w(), _panel_h())
 	ui.add_child(_generic)
 	var v := VBoxContainer.new()

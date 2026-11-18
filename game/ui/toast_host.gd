@@ -11,7 +11,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_CENTER_TOP)
 	grow_horizontal = Control.GROW_DIRECTION_BOTH
-	offset_top = 64
+	offset_top = 64   # main.gd moves it below the (taller) phone top bar
 	add_theme_constant_override("separation", Design.S1)
 
 

@@ -22,3 +22,12 @@ static func safe_area_insets(safe: Rect2i, window_px: Vector2i, ui_size: Vector2
 	var right := maxf(0.0, (window_px.x - safe.position.x - safe.size.x) * k.x)
 	var bottom := maxf(0.0, (window_px.y - safe.position.y - safe.size.y) * k.y)
 	return Rect2(left, top, right, bottom)
+
+
+## Logical UI units that equal Apple's 44 pt minimum touch target: the viewport (logical units) is stretched over the screen,
+## so one point is `viewport_w_logical / screen_w_points` logical units. Never smaller than the desktop control size (36).
+static func touch_target(viewport_w_logical: float, window_px_w: float, screen_scale: float) -> float:
+	if viewport_w_logical <= 0.0 or window_px_w <= 0.0 or screen_scale <= 0.0:
+		return 44.0
+	var units_per_pt := viewport_w_logical / (window_px_w / screen_scale)
+	return maxf(36.0, ceilf(44.0 * units_per_pt))

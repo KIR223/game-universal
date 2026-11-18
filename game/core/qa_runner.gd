@@ -43,6 +43,14 @@ func run(main_node: Node) -> void:
 	_check("game screen is shown", main.player == pid and main._top != null and is_instance_valid(main._top))
 	_shot("03_game")
 	_check_hud_bounds("hud")
+	# touch targets in points: logical units * (screen width in points / viewport width in logical units)
+	var pt_per_unit := (float(win.x) / maxf(DisplayServer.screen_get_scale(), 1.0)) / maxf(vp.x, 1.0)
+	var nav_btn: Control = main._nav["economy"]
+	var nav_pt := nav_btn.size.x * pt_per_unit
+	report["metrics"]["nav_button_pt"] = snappedf(nav_pt, 0.1)
+	report["metrics"]["speed_button_pt"] = snappedf((main._speed_btns[0] as Control).size.x * pt_per_unit, 0.1)
+	if main.is_phone_ui():
+		_check("nav buttons are at least 44 pt (%.1f)" % nav_pt, nav_pt >= 43.5)
 	report["metrics"]["fps_idle"] = await _fps(3.0, false)
 	_mem("after_start")
 	# panels

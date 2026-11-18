@@ -2415,3 +2415,11 @@ func test_fog() -> void:
 	check(WeatherFx.state_for(40, false, 2.0, true, false, true)["fog"] > 0.0, "fog shows with the Medium/High profile")
 	check(WeatherFx.state_for(40, true, 2.0, true, false, true)["fog"] == 0.0, "a storm replaces fog")
 	check(WeatherFx.state_for(40, false, 2.0, true, true, true)["fog"] == 0.0, "no fog with reduced motion")
+
+
+func test_touch_target_size() -> void:
+	# iPhone 17 simulator: 874 x 402 pt screen at scale 3 (2622 px), viewport 1304 logical units wide
+	check(MobileLayout.touch_target(1304.0, 2622.0, 3.0) == 66.0, "44 pt is 66 logical units at the measured iPhone scale")
+	check(MobileLayout.touch_target(874.0, 2622.0, 3.0) == 44.0, "at one logical unit per point a target is 44 units")
+	check(MobileLayout.touch_target(0.0, 0.0, 0.0) == 44.0, "invalid inputs fall back to 44")
+	check(MobileLayout.touch_target(300.0, 2622.0, 3.0) >= 36.0, "never below the desktop control size")
