@@ -61,7 +61,7 @@ var CARD_H: int = 156 if MobileLayout.is_phone() else 232
 ## Top edge of everything that sits under the top bar (panels, rail, journal): the bar is taller on phones with finger-sized buttons.
 var PANEL_Y: int = 56
 var NAV_H: int = 58   # grows with the touch size on phones (set in _build_hud)
-var RAIL_W: int = 8 if MobileLayout.is_phone() else 68   # left space taken by the navigation rail
+var RAIL_W: int = 8 if MobileLayout.is_phone() else 76   # left space taken by the navigation rail
 var BOTTOM_PAD: int = (58 + 8) if MobileLayout.is_phone() else 8
 const GOV_NAV := ["gov", "Управление"]
 const NAV_ITEMS := [["state", "Государство"], ["economy", "Экономика"], ["build", "Строительство"], ["diplomacy", "Дипломатия"], ["army", "Армия"], ["tech", "Технологии"], ["politics", "Политика"], ["intel", "Разведка"], ["stats", "Статистика"]]
@@ -1447,7 +1447,9 @@ func _eco_refresh() -> void:
 			var nl := Label.new()
 			var pct: int = sim.market_pct.get(res_id, 100)
 			nl.text = "%s  %.2f $  (%d%% от базовой)" % [_res_name(res_id), float(sim.market_price_x100(res_id)) / 100.0, pct]
-			nl.custom_minimum_size = Vector2(340, 0)
+			nl.custom_minimum_size = Vector2(120, 0)
+			nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			nl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			nl.add_theme_color_override("font_color", Color("d96a5a") if pct > 130 else (Color("8ac58a") if pct < 80 else Color("dde3ea")))
 			row.add_child(nl)
 			for q in [[5, true, "Купить 5"], [5, false, "Продать 5"]]:
@@ -1692,12 +1694,16 @@ func _tech_refresh() -> void:
 			active += 1
 		var l := Label.new()
 		l.text = ("▶ " if runs else "⏳ ") + t["name"]
-		l.custom_minimum_size = Vector2(280, 0)
+		l.custom_minimum_size = Vector2(100, 0)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		row.add_child(l)
 		var bar := ProgressBar.new()
 		bar.max_value = t["cost"]
 		bar.value = c["progress"].get(id, 0)
-		bar.custom_minimum_size = Vector2(300, 18)
+		bar.custom_minimum_size = Vector2(80, 18)
+		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		bar.show_percentage = false
 		row.add_child(bar)
 		_tech_queue_box.add_child(row)
@@ -1848,17 +1854,23 @@ func _bar(label: String, value: int, color: Color) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	var l := Label.new()
 	l.text = label
-	l.custom_minimum_size = Vector2(230, 0)
+	l.custom_minimum_size = Vector2(90, 0)
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l.size_flags_stretch_ratio = 1.1
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # long names wrap instead of pushing the bar out of the panel
 	row.add_child(l)
 	var b := ProgressBar.new()
 	b.max_value = 100
 	b.value = value
-	b.custom_minimum_size = Vector2(300, 18)
+	b.custom_minimum_size = Vector2(80, 18)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	b.show_percentage = false
 	b.add_theme_stylebox_override("fill", _flat(color))
 	row.add_child(b)
 	var n := Label.new()
 	n.text = " %d%%" % value
+	n.custom_minimum_size = Vector2(46, 0)
 	row.add_child(n)
 	return row
 
@@ -2016,13 +2028,17 @@ func _intel_refresh() -> void:
 		var l := Label.new()
 		var tname: String = sim.countries[op["target"]]["name"]
 		l.text = "%s → %s" % [sim.intel_defs[op["type"]]["name"], tname]
-		l.custom_minimum_size = Vector2(330, 0)
+		l.custom_minimum_size = Vector2(100, 0)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		row.add_child(l)
 		var pb := ProgressBar.new()
 		pb.max_value = op["total"]
 		pb.value = op["total"] - op["left"]
 		pb.show_percentage = false
-		pb.custom_minimum_size = Vector2(200, 18)
+		pb.custom_minimum_size = Vector2(70, 18)
+		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(pb)
 		var cb := Button.new()
 		cb.text = "Отменить"
@@ -3132,6 +3148,8 @@ func _g_dip() -> void:
 		var nl := Label.new()
 		nl.text = "%s" % c2["name"]
 		nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nl.clip_text = true
+		nl.custom_minimum_size = Vector2(60, 0)
 		head.add_child(nl)
 		var rl := Label.new()
 		rl.text = _relation_text(o)
@@ -3287,7 +3305,7 @@ func _g_stats() -> void:
 			"army": sim.divisions_of(id), "cells": sim.cells_of(id).size(), "techs": c["techs"].size()})
 	var sort_key := _stats_sort
 	rows.sort_custom(func(a, b): return a[sort_key] > b[sort_key] or (a[sort_key] == b[sort_key] and a["id"] < b["id"]))
-	var bar := HBoxContainer.new()
+	var bar := HFlowContainer.new()
 	for k in [["pop", "Население"], ["income", "Доход"], ["army", "Дивизии"], ["cells", "Территория"], ["techs", "Технологии"]]:
 		var b := Button.new()
 		b.text = k[1]
@@ -3301,7 +3319,7 @@ func _g_stats() -> void:
 	_gbody.add_child(bar)
 	var grid := GridContainer.new()
 	grid.columns = 6
-	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("h_separation", 8)
 	for head in ["#", "Страна", "Нас., млн", "Доход", "Див.", "Яч."]:
 		var hl := Label.new()
 		hl.text = head
@@ -3312,9 +3330,14 @@ func _g_stats() -> void:
 		place += 1
 		var mine: bool = r["id"] == player
 		var vals := [str(place), r["name"], "%.1f" % (float(r["pop"]) * EarthWorld.POP_UNIT / 1.0e6), "%+d" % r["income"], str(r["army"]), str(r["cells"])]
-		for v in vals:
+		for vi in vals.size():
+			var v: String = vals[vi]
 			var l := Label.new()
 			l.text = v
+			if vi == 1:
+				l.clip_text = true
+				l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				l.custom_minimum_size = Vector2(70, 0)
 			if mine:
 				l.add_theme_color_override("font_color", Color("e8c46a"))
 			grid.add_child(l)

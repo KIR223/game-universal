@@ -19,7 +19,32 @@ uniform float zoom = 0.3;
 uniform int sel_id = -1;
 uniform int hover_id = -1;
 uniform float pulse = 0.0;
+uniform float detail_fx = 1.0;         // 1: procedural close-up relief detail, shallow-water shading and surf (High graphics only)
 uniform float water_fx = 1.0;          // 1: gentle animated shimmer on open water (graphics profile, off with reduced motion)
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(123.34, 456.21));
+	p += dot(p, p + 45.32);
+	return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+float fbm(vec2 p) {
+	float a = 0.5;
+	float v = 0.0;
+	for (int k = 0; k < 4; k++) {
+		v += a * vnoise(p);
+		p = p * 2.03 + vec2(17.0, 9.0);
+		a *= 0.5;
+	}
+	return v;
+}
 
 int id16(vec4 v) {
 	return int(v.r * 255.0 + 0.5) + int(v.g * 255.0 + 0.5) * 256;
@@ -42,7 +67,52 @@ void fragment() {
 	vec4 img = texture(relief, UV);
 	vec3 col = img.rgb;
 	float land_w = mix(1.0, smoothstep(0.4, 0.6, img.a), use_mask);
-	int id = cell_at(uv);
+	float dmul = 1.0;
+	if (detail_fx > 0.5 && use_mask > 0.5) {
+		float zd = smoothstep(2.2, 9.0, zoom);
+		if (land_w > 0.02 && zd > 0.01) {
+			// procedural micro-relief anchored to the globe (stable while panning): light from the north-west, stronger in rough terrain
+			// base frequency follows the screen: the finest octave stays ~3 px, two neighbouring scales are cross-faded (no shimmering)
+			float px_uv = max(length(fwidth(uv)), 1e-7);
+			float lv = log2(1.0 / (px_uv * 24.0));
+			float l0 = floor(lv);
+			float mixf = smoothstep(0.0, 1.0, lv - l0);
+			vec2 pa = uv * vec2(2.0, 1.0) * exp2(l0);
+			vec2 pb = uv * vec2(2.0, 1.0) * exp2(l0 + 1.0);
+			float d_e = 0.45 / 24.0;
+			float h0 = mix(fbm(pa), fbm(pb), mixf);
+			float hx = mix(fbm(pa + vec2(d_e, 0.0)), fbm(pb + vec2(d_e, 0.0)), mixf);
+			float hy = mix(fbm(pa + vec2(0.0, d_e)), fbm(pb + vec2(0.0, d_e)), mixf);
+			float slope = ((h0 - hx) * 0.8 + (h0 - hy) * 0.6) * 5.5;
+			float rough = clamp(length(vec3(img.rgb) - vec3(dot(img.rgb, vec3(0.333)))) * 3.0 + 0.45, 0.45, 1.0);
+			dmul = 1.0 + slope * 0.9 * rough * zd + (h0 - 0.5) * 0.22 * zd;
+		}
+		if (land_w < 0.98) {
+			// shallow water: lighter and greener close to the coast (mask is sampled at growing distances)
+			vec2 px = 1.0 / vec2(textureSize(relief, 0));
+			float near = 0.0;
+			for (int k = 1; k <= 4; k++) {
+				float rr = float(k) * 1.6;
+				float m0 = texture(relief, UV + vec2(px.x * rr, 0.0)).a;
+				float m1 = texture(relief, UV + vec2(-px.x * rr, 0.0)).a;
+				float m2 = texture(relief, UV + vec2(0.0, px.y * rr)).a;
+				float m3 = texture(relief, UV + vec2(0.0, -px.y * rr)).a;
+				near += (m0 + m1 + m2 + m3) * 0.25 / float(k);
+			}
+			near = clamp(near * 0.9, 0.0, 1.0);
+			float wdeep = 1.0 - land_w;
+			col = mix(col, vec3(0.30, 0.62, 0.66), near * 0.34 * wdeep);
+			float surf = smoothstep(0.35, 0.5, img.a) * (1.0 - smoothstep(0.5, 0.62, img.a));
+			col = mix(col, vec3(0.92, 0.97, 1.0), surf * 0.42 * smoothstep(1.5, 5.0, zoom));
+		}
+	}
+	// organic borders: the id raster is stair-stepped, so lookups are domain-warped by low-frequency noise (<= 0.45 cell) when zoomed in
+	vec2 isz = vec2(textureSize(ids, 0));
+	float warp_amt = detail_fx * smoothstep(0.8, 2.2, zoom);
+	vec2 wq = uv * isz * 0.55;
+	vec2 warp = (vec2(vnoise(wq), vnoise(wq + vec2(31.7, 11.3))) - 0.5) * 0.9 / isz * warp_amt;
+	vec2 uvi = uv + warp;
+	int id = cell_at(uvi);
 	if (id != 65535 && land_w > 0.01) {
 		vec2 pu = pal_uv(id);
 		vec4 pc = mix(texture(pal_prev, pu), texture(pal_cur, pu), fade);
@@ -59,7 +129,7 @@ void fragment() {
 		float sel_e = 0.0;
 		vec2 offs[4] = vec2[4](vec2(d.x, 0.0), vec2(-d.x, 0.0), vec2(0.0, d.y), vec2(0.0, -d.y));
 		for (int k = 0; k < 4; k++) {
-			int nid = cell_at(uv + offs[k]);
+			int nid = cell_at(uvi + offs[k]);
 			if (nid != id) {
 				if (id == sel_id || nid == sel_id) {
 					sel_e = 1.0;
@@ -109,5 +179,6 @@ void fragment() {
 		float sh = sin(q.x * 1.7 + TIME * 0.6) * sin(q.y * 2.3 - TIME * 0.45) + 0.5 * sin((q.x + q.y) * 3.1 + TIME * 0.8);
 		col += vec3(0.010, 0.014, 0.018) * sh * w * clamp(zoom * 0.5, 0.0, 1.0);
 	}
+	col *= mix(1.0, dmul, land_w);   // micro-relief on top of the political colour
 	COLOR = vec4(col, 1.0);
 }

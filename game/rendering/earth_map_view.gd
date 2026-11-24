@@ -263,7 +263,8 @@ func _set_layers_visible(on: bool) -> void:
 	if _overview != null:
 		_overview.visible = on
 	for k in _tiles:
-		_tiles[k].visible = on
+		if _tiles[k] != null:   # a tile that failed to load is stored as null
+			_tiles[k].visible = on
 
 
 ## Imagery tiles in view are decoded a couple per frame; far tiles are released (LRU), the overview always stays resident.
@@ -275,8 +276,10 @@ func _update_tiles() -> void:
 	if camera.zoom.x < thr:
 		_want_tiles.clear()
 		return
-	var tl := unproject(cull.position)
-	var br := unproject(cull.end)
+	# prefetch: tiles just outside the screen are loaded too, so panning never reveals the blurry overview underneath
+	var wide := cull.grow(maxf(cull.size.x, cull.size.y) * 0.3)
+	var tl := unproject(wide.position)
+	var br := unproject(wide.end)
 	var lon_span := 360.0 / _tile_grid.x
 	var lat_span := (_top - (_top - float(sim.world["h"]) * _res)) / _tile_grid.y
 	var c0 := clampi(int((tl.x + 180.0) / lon_span), 0, _tile_grid.x - 1)
@@ -296,7 +299,7 @@ func _pump_tiles() -> void:
 			_tile_lru.erase(key)
 			_tile_lru.append(key)
 			continue
-		if loaded >= 2:
+		if loaded >= (3 if Engine.get_frames_per_second() >= 20 else 1):
 			break
 		var c: int = key / 100
 		var r: int = key % 100
@@ -321,7 +324,7 @@ func _pump_tiles() -> void:
 		add_child(node)
 		_tiles[key] = node
 		_tile_lru.append(key)
-	while _tile_lru.size() > 14:
+	while _tile_lru.size() > 20:
 		var old: int = _tile_lru[0]
 		if _want_tiles.has(old):
 			break
@@ -681,6 +684,7 @@ func _process(delta: float) -> void:
 			_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
 		# the water shimmer is a TIME-based animation: only on the High profile, never on battery-saving phones' default (Medium)
 		_set_all("water_fx", 1.0 if (detail == GraphicsQuality.Level.HIGH and not GameSettings.reduce_motion()) else 0.0)
+		_set_all("detail_fx", 1.0 if detail == GraphicsQuality.Level.HIGH else 0.0)
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
 		_set_all("sel_id", selected_province)
@@ -915,7 +919,14 @@ func _pop_threshold(z: float) -> int:
 	return 0
 
 
+var _lab_jobs: Array = []      # label candidates collected while drawing: {pos, text, px, col, prio, kind}
+var _lab_rects: Array[Rect2] = []   # screen-pixel rectangles already taken by labels, markers and units
+var _lab_texts: Array = []      # names already placed this frame (the data holds duplicate settlement names a few km apart)
+var _lab_widths := {}          # "px|text" -> width, text measuring is the slow part
+
+
 func _draw_settlements(z: float) -> void:
+	_lab_jobs.clear()
 	if not _data_ready:
 		return
 	var qp := GraphicsQuality.params(detail)
@@ -961,22 +972,16 @@ func _draw_settlements(z: float) -> void:
 			draw_multiline(dots[cls], Color(1, 1, 1, 0.95), 2.0 * radii[cls])
 	for pos in caps:
 		var d := r * 1.7
-		if d < 0.5:   # at extreme zoom the diamond collapses and the triangulator rejects it
+		if d < 1.5:   # tiny polygons (world coordinates are large) fail triangulation: use a disc instead
 			draw_circle(pos, maxf(d, 0.05), Color("f0c75e"))
 		else:
 			draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
-	var labels := 0
-	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
+	# label text is placed later by _place_labels(), together with region and country names, so nothing overlaps
 	for job in jobs:
-		if labels >= qp["labels"]:
-			break
-		var pos2: Vector2 = job[0]
-		var gk := Vector2i(int(pos2.x * z / 90.0), int(pos2.y * z / 16.0))
-		if taken.has(gk) or taken.has(gk + Vector2i(1, 0)):
-			continue
-		taken[gk] = true
-		_text(font, pos2 + Vector2(r * 1.8, r * 0.6), EarthWorld.display_name(job[1]), 13 if job[2] else 12, Color("ffe9a8") if job[2] else Color(1, 1, 1, 0.95), 0.0)
-		labels += 1
+		var spop: int = EarthWorld.S_POP[job[1]]
+		var prio := 0 if job[2] else (1 if spop >= 600000 else (3 if spop >= 60000 else 4))
+		_lab_jobs.append({"pos": job[0], "text": EarthWorld.display_name(job[1]), "px": 13 if job[2] else 12, "col": Color("ffe9a8") if job[2] else Color(1, 1, 1, 0.95),
+			"prio": prio, "pop": spop, "kind": "city", "dot": 4.0})
 
 
 func _draw_facilities(z: float) -> void:
@@ -990,7 +995,7 @@ func _draw_facilities(z: float) -> void:
 	for a in fac.get("airports", []):
 		var pos2 := world_pos_of(float(a["lon"]), float(a["lat"]))
 		if cull.has_point(pos2):
-			if r < 0.5:
+			if r < 1.5:
 				draw_circle(pos2, maxf(r, 0.05), Color("e8e8ee"))
 			else:
 				draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
@@ -1042,11 +1047,7 @@ func _draw_region_labels(z: float, font: Font) -> void:
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
 		if extent_px < tw * 0.9:
 			continue
-		var gk := Vector2i(int(pos.x * z / 110.0), int(pos.y * z / 18.0))
-		if taken.has(gk):
-			continue
-		taken[gk] = true
-		_text(font, pos, nm, px, Color(0.93, 0.95, 1.0, alpha), -tw * 0.5)
+		_lab_jobs.append({"pos": pos, "text": nm, "px": px, "col": Color(0.93, 0.95, 1.0, alpha), "prio": 2, "pop": int(ri["pixels"]), "kind": "region", "dot": 0.0})
 		shown += 1
 
 
@@ -1106,8 +1107,88 @@ func _draw_labels() -> void:
 			_draw_strikes(z)
 	_draw_region_labels(z, UiFont.regular())
 	var font := UiFont.bold()
+	_lab_rects.clear()
+	_reserve_unit_rects(z)
 	for l in label_layout():
+		_lab_rects.append(l["box"])
 		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
+	_place_labels(z)
+
+
+## Screen-space obstacles: army markers (and their strength text) must stay readable, so labels never cover them.
+func _reserve_unit_rects(z: float) -> void:
+	var us := ui_scale
+	var slot := {}
+	for a in sim.armies:
+		var p: int = a["prov"]
+		var i: int = slot.get(p, 0)
+		slot[p] = i + 1
+		var base: Vector2 = _army_vis.get(a["id"], cell_world(p))
+		if cull.has_point(base):
+			_lab_rects.append(Rect2(base * z + Vector2(-11.0 + i * 15.0, -6.0) * us, Vector2(18.0, 30.0) * us))
+	if selected_province >= 0:
+		_lab_rects.append(Rect2(cell_world(selected_province) * z - Vector2(16, 16), Vector2(32, 32)))
+
+
+func _label_width(font: Font, text: String, px: int) -> float:
+	var key := "%d|%s" % [px, text]
+	if not _lab_widths.has(key):
+		if _lab_widths.size() > 4000:
+			_lab_widths.clear()
+		_lab_widths[key] = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+	return _lab_widths[key]
+
+
+func _rect_free(r: Rect2) -> bool:
+	for q in _lab_rects:
+		if q.intersects(r):
+			return false
+	return true
+
+
+## Greedy declutter in priority order (capitals, big cities, regions, towns): a label is drawn only where its real text box is free;
+## cities try the right side first, then the left, then below the dot.
+func _place_labels(z: float) -> void:
+	if _lab_jobs.is_empty():
+		return
+	var budget := int(GraphicsQuality.params(detail)["labels"]) * 2
+	var order := _lab_jobs
+	order.sort_custom(func(a, b): return a["prio"] < b["prio"] or (a["prio"] == b["prio"] and (a["pop"] > b["pop"] or (a["pop"] == b["pop"] and a["text"] < b["text"]))))
+	var font_c := UiFont.regular()
+	var font_r := UiFont.regular()
+	var drawn := 0
+	_lab_texts.clear()
+	for j in order:
+		if drawn >= budget:
+			break
+		var px: int = j["px"]
+		var tw := _label_width(font_c, j["text"], px)
+		var sp: Vector2 = j["pos"] * z
+		var th := px * 1.2
+		var tried: Array = []
+		if j["kind"] == "city":
+			tried = [Rect2(sp + Vector2(5.0, -th * 0.55), Vector2(tw + 2.0, th)), Rect2(sp + Vector2(-5.0 - tw - 2.0, -th * 0.55), Vector2(tw + 2.0, th)),
+				Rect2(sp + Vector2(-tw * 0.5, 5.0), Vector2(tw + 2.0, th))]
+		else:
+			tried = [Rect2(sp + Vector2(-tw * 0.5, -th * 0.6), Vector2(tw + 2.0, th))]
+		var dup := false
+		for q in _lab_texts:
+			if q["text"] == j["text"] and (q["sp"] as Vector2).distance_to(sp) < 140.0:
+				dup = true
+				break
+		if dup:
+			continue
+		for k in tried.size():
+			var rc: Rect2 = tried[k]
+			if _rect_free(rc.grow(1.5)):
+				_lab_texts.append({"text": j["text"], "sp": sp})
+				_lab_rects.append(rc)
+				var off := Vector2(rc.position.x - sp.x, 0.0)
+				_text(font_c, j["pos"], j["text"], px, j["col"], off.x)
+				drawn += 1
+				break
+	if not _lab_jobs.is_empty():
+		_lab_jobs = []
 
 
 ## Country labels that fit the current zoom: biggest countries first, a label is skipped when it would overlap one already

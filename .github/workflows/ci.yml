@@ -46,6 +46,10 @@ jobs:
       - name: UI audit (every button wired, layout at 9 resolutions/aspects)
         if: hashFiles('tests/run_ui_audit.gd') != ''
         run: godot --headless --path . -s tests/run_ui_audit.gd
+      - name: Overlap and overflow audit (desktop shapes)
+        run: godot --headless --path . -s tests/run_ui_overlap.gd
+      - name: Overlap and overflow audit (phone and tablet shapes)
+        run: godot --headless --path . -s tests/run_ui_overlap.gd -- --phone
       - name: Multiplayer core (protocol, lockstep, desync repair, reconnect) on the in-memory network
         run: godot --headless --path . -s tests/run_net_tests.gd
       - name: Multiplayer through the game UI (host + client)
