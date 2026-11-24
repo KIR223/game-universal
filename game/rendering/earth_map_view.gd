@@ -28,6 +28,7 @@ var _overview: MeshInstance2D
 var _tiles: Dictionary = {}          # col*100+row -> MeshInstance2D
 var _tile_lru: Array = []
 var _want_tiles: Array = []
+var _fx_t := 0.0                    # throttle of the animated shader uniforms
 var _visual := false                 # data/world_visual present (imagery tiles + exact land mask)
 var quality := "high"                # low: overview only, medium: tiles when zoomed in, high: tiles from zoom 0.5
 var detail := GraphicsQuality.Level.HIGH   # same setting as `quality`, as a GraphicsQuality level (labels, city density, roads)
@@ -177,6 +178,8 @@ func world_pos_of(lon: float, lat: float) -> Vector2:
 
 
 func _set_all(name: String, value: Variant) -> void:
+	if _params.has(name) and _params[name] == value:
+		return   # unchanged uniforms must not touch the materials: any change forces a redraw of the whole map every frame
 	_params[name] = value
 	for m in _mats:
 		m.set_shader_parameter(name, value)
@@ -260,7 +263,8 @@ func _set_layers_visible(on: bool) -> void:
 	if _overview != null:
 		_overview.visible = on
 	for k in _tiles:
-		_tiles[k].visible = on
+		if _tiles[k] != null:   # a tile that failed to load is stored as null
+			_tiles[k].visible = on
 
 
 ## Imagery tiles in view are decoded a couple per frame; far tiles are released (LRU), the overview always stays resident.
@@ -272,8 +276,10 @@ func _update_tiles() -> void:
 	if camera.zoom.x < thr:
 		_want_tiles.clear()
 		return
-	var tl := unproject(cull.position)
-	var br := unproject(cull.end)
+	# prefetch: tiles just outside the screen are loaded too, so panning never reveals the blurry overview underneath
+	var wide := cull.grow(maxf(cull.size.x, cull.size.y) * 0.3)
+	var tl := unproject(wide.position)
+	var br := unproject(wide.end)
 	var lon_span := 360.0 / _tile_grid.x
 	var lat_span := (_top - (_top - float(sim.world["h"]) * _res)) / _tile_grid.y
 	var c0 := clampi(int((tl.x + 180.0) / lon_span), 0, _tile_grid.x - 1)
@@ -293,7 +299,7 @@ func _pump_tiles() -> void:
 			_tile_lru.erase(key)
 			_tile_lru.append(key)
 			continue
-		if loaded >= 2:
+		if loaded >= (3 if Engine.get_frames_per_second() >= 20 else 1):
 			break
 		var c: int = key / 100
 		var r: int = key % 100
@@ -318,7 +324,7 @@ func _pump_tiles() -> void:
 		add_child(node)
 		_tiles[key] = node
 		_tile_lru.append(key)
-	while _tile_lru.size() > 14:
+	while _tile_lru.size() > 20:
 		var old: int = _tile_lru[0]
 		if _want_tiles.has(old):
 			break
@@ -648,6 +654,13 @@ func _cell_color(c: int) -> Color:
 # ------------------------------------------------------------------ frame
 
 func _process(delta: float) -> void:
+	if animate_armies(delta):
+		queue_redraw()
+	if _touch.long_press_due(Time.get_ticks_msec() / 1000.0) and sim != null:
+		var rid := province_at(get_global_mouse_position())
+		if rid >= 0:
+			_dragging = false
+			province_right_clicked.emit(rid, _touch.press_position())
 	_smooth_zoom(delta)
 	if not is_earth or sim == null:
 		return
@@ -663,7 +676,15 @@ func _process(delta: float) -> void:
 		_update_tiles()
 		queue_redraw()
 	_set_all("zoom", camera.zoom.x)
-	_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+	# animated uniforms change at 10 Hz (not every frame): with the low-processor mode of phones the map then only redraws when needed
+	_fx_t += delta
+	if _fx_t >= 0.1:
+		_fx_t = 0.0
+		if sim != null and (not _war_pairs.is_empty() or not _flash.is_empty()):   # the pulse only matters on contested cells
+			_set_all("pulse", 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 220.0))
+		# the water shimmer is a TIME-based animation: only on the High profile, never on battery-saving phones' default (Medium)
+		_set_all("water_fx", 1.0 if (detail == GraphicsQuality.Level.HIGH and not GameSettings.reduce_motion()) else 0.0)
+		_set_all("detail_fx", 1.0 if detail == GraphicsQuality.Level.HIGH else 0.0)
 	if selected_province != _sel_cached:
 		_sel_cached = selected_province
 		_set_all("sel_id", selected_province)
@@ -898,7 +919,14 @@ func _pop_threshold(z: float) -> int:
 	return 0
 
 
+var _lab_jobs: Array = []      # label candidates collected while drawing: {pos, text, px, col, prio, kind}
+var _lab_rects: Array[Rect2] = []   # screen-pixel rectangles already taken by labels, markers and units
+var _lab_texts: Array = []      # names already placed this frame (the data holds duplicate settlement names a few km apart)
+var _lab_widths := {}          # "px|text" -> width, text measuring is the slow part
+
+
 func _draw_settlements(z: float) -> void:
+	_lab_jobs.clear()
 	if not _data_ready:
 		return
 	var qp := GraphicsQuality.params(detail)
@@ -906,8 +934,10 @@ func _draw_settlements(z: float) -> void:
 	var font := UiFont.regular()
 	var r := 2.4 / z
 	var halo := 0.9 / z
-	var dots := PackedVector2Array()
-	var dots_halo := PackedVector2Array()
+	# three size classes by population so dense regions read as a hierarchy instead of a white smear
+	var dots: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var dots_halo: Array = [PackedVector2Array(), PackedVector2Array(), PackedVector2Array()]
+	var radii := [1.5 / z, 2.1 / z, 2.9 / z]
 	var caps: Array = []
 	var jobs: Array = []   # [position, settlement id, is capital]
 	for k in _visible_chunk_keys():
@@ -927,31 +957,31 @@ func _draw_settlements(z: float) -> void:
 			if cap:
 				caps.append(pos)
 			else:
-				dots_halo.append(pos - Vector2(r + halo, 0))
-				dots_halo.append(pos + Vector2(r + halo, 0))
-				dots.append(pos - Vector2(r, 0))
-				dots.append(pos + Vector2(r, 0))
+				var cls := 0 if pop < 60000 else (1 if pop < 600000 else 2)
+				var rr: float = radii[cls]
+				dots_halo[cls].append(pos - Vector2(rr + halo, 0))
+				dots_halo[cls].append(pos + Vector2(rr + halo, 0))
+				dots[cls].append(pos - Vector2(rr, 0))
+				dots[cls].append(pos + Vector2(rr, 0))
 			if z > 0.45 and (pop >= thr * 2 or z > 3.0 or cap):
 				jobs.append([pos, i, cap])
 	# one batched call per layer instead of thousands of circle draws
-	if not dots.is_empty():
-		draw_multiline(dots_halo, Color(0.03, 0.04, 0.06, 0.9), 2.0 * (r + halo))
-		draw_multiline(dots, Color(1, 1, 1, 0.95), 2.0 * r)
+	for cls in 3:
+		if not dots[cls].is_empty():
+			draw_multiline(dots_halo[cls], Color(0.03, 0.04, 0.06, 0.85), 2.0 * (radii[cls] + halo))
+			draw_multiline(dots[cls], Color(1, 1, 1, 0.95), 2.0 * radii[cls])
 	for pos in caps:
 		var d := r * 1.7
-		draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
-	var labels := 0
-	var taken := {}   # coarse screen-space grid of used label slots (keeps text readable)
+		if d < 1.5:   # tiny polygons (world coordinates are large) fail triangulation: use a disc instead
+			draw_circle(pos, maxf(d, 0.05), Color("f0c75e"))
+		else:
+			draw_colored_polygon(PackedVector2Array([pos + Vector2(0, -d), pos + Vector2(d, 0), pos + Vector2(0, d), pos + Vector2(-d, 0)]), Color("f0c75e"))
+	# label text is placed later by _place_labels(), together with region and country names, so nothing overlaps
 	for job in jobs:
-		if labels >= qp["labels"]:
-			break
-		var pos2: Vector2 = job[0]
-		var gk := Vector2i(int(pos2.x * z / 90.0), int(pos2.y * z / 16.0))
-		if taken.has(gk) or taken.has(gk + Vector2i(1, 0)):
-			continue
-		taken[gk] = true
-		_text(font, pos2 + Vector2(r * 1.8, r * 0.6), EarthWorld.display_name(job[1]), 13 if job[2] else 12, Color("ffe9a8") if job[2] else Color(1, 1, 1, 0.95), 0.0)
-		labels += 1
+		var spop: int = EarthWorld.S_POP[job[1]]
+		var prio := 0 if job[2] else (1 if spop >= 600000 else (3 if spop >= 60000 else 4))
+		_lab_jobs.append({"pos": job[0], "text": EarthWorld.display_name(job[1]), "px": 13 if job[2] else 12, "col": Color("ffe9a8") if job[2] else Color(1, 1, 1, 0.95),
+			"prio": prio, "pop": spop, "kind": "city", "dot": 4.0})
 
 
 func _draw_facilities(z: float) -> void:
@@ -965,7 +995,10 @@ func _draw_facilities(z: float) -> void:
 	for a in fac.get("airports", []):
 		var pos2 := world_pos_of(float(a["lon"]), float(a["lat"]))
 		if cull.has_point(pos2):
-			draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
+			if r < 1.5:
+				draw_circle(pos2, maxf(r, 0.05), Color("e8e8ee"))
+			else:
+				draw_colored_polygon(PackedVector2Array([pos2 + Vector2(0, -r * 1.3), pos2 + Vector2(r * 1.2, r), pos2 + Vector2(-r * 1.2, r)]), Color("e8e8ee"))
 
 
 ## Region (admin-1) centroids in simulation-raster pixels, weighted by cell area; built once per dataset.
@@ -1003,7 +1036,7 @@ func _draw_region_labels(z: float, font: Font) -> void:
 	var taken := {}
 	var shown := 0
 	for ri in _region_info:
-		if shown >= 160:
+		if shown >= int(GraphicsQuality.params(detail)["labels"] * 0.75) or detail == GraphicsQuality.Level.LOW:
 			break
 		var pos := px_to_world(ri["pos"])
 		if not cull.has_point(pos):
@@ -1014,12 +1047,53 @@ func _draw_region_labels(z: float, font: Font) -> void:
 		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
 		if extent_px < tw * 0.9:
 			continue
-		var gk := Vector2i(int(pos.x * z / 110.0), int(pos.y * z / 18.0))
-		if taken.has(gk):
-			continue
-		taken[gk] = true
-		_text(font, pos, nm, px, Color(0.93, 0.95, 1.0, alpha), -tw * 0.5)
+		_lab_jobs.append({"pos": pos, "text": nm, "px": px, "col": Color(0.93, 0.95, 1.0, alpha), "prio": 2, "pop": int(ri["pixels"]), "kind": "region", "dot": 0.0})
 		shown += 1
+
+
+## Recent missile launches: a trail from the launch site to the target and an expanding ring (red = hit, blue = intercepted).
+func _draw_strikes(z: float) -> void:
+	for s in sim.strikes:
+		var age: int = sim.day - int(s["day"])
+		if age < 0 or age > 8:
+			continue
+		var fade := 1.0 - float(age) / 9.0
+		var a := cell_world(int(s["from"]))
+		var b := cell_world(int(s["target"]))
+		var col := Color(1.0, 0.45, 0.2, fade) if s["hit"] else Color(0.55, 0.78, 1.0, fade)
+		if not (cull.has_point(a) or cull.has_point(b) or cull.grow(200.0).intersects(Rect2(a, b - a).abs())):
+			continue
+		var head := a.lerp(b, minf(1.0, 0.35 + 0.2 * age))
+		draw_line(a, head, Color(col, fade * 0.8), 2.2 / z)
+		draw_circle(head, 3.0 / z, col)
+		var ring := (6.0 + 5.0 * age) / z
+		draw_arc(b, ring, 0.0, TAU, 28, col, 2.0 / z)
+		if s["hit"]:
+			draw_circle(b, 3.5 / z, Color(1.0, 0.85, 0.3, fade))
+
+
+## Air-defence batteries and launch sites as small round markers (visible from mid zoom): own ones, and foreign ones the player can see.
+func _draw_sites(z: float) -> void:
+	if z < 1.0 or sim.sites.is_empty():
+		return
+	var r := 7.0 / z
+	for st in sim.sites:
+		var mine: bool = st["owner"] == player_country
+		if not mine and (player_country < 0 or not sim.site_visible(player_country, st)):
+			continue   # foreign objects show only when the intelligence picture allows it
+		var pos := cell_world(int(st["cell"]))
+		if not cull.has_point(pos):
+			continue
+		var dmg: int = sim.damage[int(st["cell"])]
+		var col := Color(0.55, 0.85, 1.0) if st["kind"] == "ad" else Color(1.0, 0.75, 0.35)
+		if not mine:
+			col = Color(0.95, 0.4, 0.35)
+		if dmg >= 80:
+			col = Color(0.5, 0.5, 0.5)
+		pos += Vector2(r * 1.6, -r * 1.6)
+		draw_circle(pos, r * 1.25, Color(0.04, 0.06, 0.09, 0.9))
+		draw_arc(pos, r * 1.25, 0.0, TAU, 20, col, 1.4 / z)
+		Icons.draw(self, "satellite" if st["kind"] == "ad" else "missile", Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0), col, 1.3 / z)
 
 
 func _draw_labels() -> void:
@@ -1027,10 +1101,127 @@ func _draw_labels() -> void:
 		super._draw_labels()
 		return
 	var z := camera.zoom.x
+	if sim.rule_modern:
+		_draw_sites(z)
+		if not sim.strikes.is_empty():
+			_draw_strikes(z)
 	_draw_region_labels(z, UiFont.regular())
 	var font := UiFont.bold()
+	_lab_rects.clear()
+	_reserve_unit_rects(z)
+	_draw_works(z)
 	for l in label_layout():
+		_lab_rects.append(l["box"])
 		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
+	_place_labels(z)
+
+
+## Screen-space obstacles: army markers (and their strength text) must stay readable, so labels never cover them.
+func _reserve_unit_rects(z: float) -> void:
+	var us := ui_scale
+	var slot := {}
+	for a in sim.armies:
+		var p: int = a["prov"]
+		var i: int = slot.get(p, 0)
+		slot[p] = i + 1
+		var base: Vector2 = _army_vis.get(a["id"], cell_world(p))
+		if cull.has_point(base):
+			_lab_rects.append(Rect2(base * z + Vector2(-11.0 + i * 15.0, -6.0) * us, Vector2(18.0, 30.0) * us))
+	if selected_province >= 0:
+		_lab_rects.append(Rect2(cell_world(selected_province) * z - Vector2(16, 16), Vector2(32, 32)))
+
+
+const WORK_COLORS := {"rail": Color("b8bcc4"), "port": Color("4aa3df"), "airport": Color("e8e8ee"), "depot": Color("b08a5a"), "power": Color("f0d24a"), "farm": Color("7fcf6a"), "factory": Color("e8873a")}
+
+
+## Public works (gov2): one small coloured block per kind in the cell, one tick per level; from mid zoom. Own and allied works only.
+func _draw_works(z: float) -> void:
+	if not sim.rule_gov2 or z < 2.5 or not sim.x.has("works"):
+		return
+	var px := 1.0 / z
+	for cell in sim.x["works"]:
+		var own: int = sim.owner[cell]
+		if own != player_country and not (player_country >= 0 and sim.allied(player_country, own)) and player_country >= 0:
+			continue
+		var base := cell_world(int(cell))
+		if not cull.has_point(base):
+			continue
+		var kinds: Array = sim.x["works"][cell].keys()
+		kinds.sort()
+		var i := 0
+		for k in kinds:
+			var lv := int(sim.x["works"][cell][k])
+			if lv <= 0:
+				continue
+			var col: Color = WORK_COLORS.get(k, Color.WHITE)
+			var at := base + Vector2(-16.0 + i * 13.0, 12.0 * ui_scale) * px
+			draw_rect(Rect2(at - Vector2(2.0, 2.0) * px, Vector2(12.0, 8.0 + lv * 2.4) * px), Color(0, 0, 0, 0.88))
+			draw_rect(Rect2(at, Vector2(8.0, 5.0) * px), col)
+			for t in lv:
+				draw_rect(Rect2(at + Vector2(0.0, 5.8 + t * 2.4) * px, Vector2(8.0, 1.5) * px), col)
+			_lab_rects.append(Rect2(at * z - Vector2(3, 3), Vector2(14, 12.0 + lv * 2.4)))
+			i += 1
+
+
+func _label_width(font: Font, text: String, px: int) -> float:
+	var key := "%d|%s" % [px, text]
+	if not _lab_widths.has(key):
+		if _lab_widths.size() > 4000:
+			_lab_widths.clear()
+		_lab_widths[key] = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
+	return _lab_widths[key]
+
+
+func _rect_free(r: Rect2) -> bool:
+	for q in _lab_rects:
+		if q.intersects(r):
+			return false
+	return true
+
+
+## Greedy declutter in priority order (capitals, big cities, regions, towns): a label is drawn only where its real text box is free;
+## cities try the right side first, then the left, then below the dot.
+func _place_labels(z: float) -> void:
+	if _lab_jobs.is_empty():
+		return
+	var budget := int(GraphicsQuality.params(detail)["labels"]) * 2
+	var order := _lab_jobs
+	order.sort_custom(func(a, b): return a["prio"] < b["prio"] or (a["prio"] == b["prio"] and (a["pop"] > b["pop"] or (a["pop"] == b["pop"] and a["text"] < b["text"]))))
+	var font_c := UiFont.regular()
+	var font_r := UiFont.regular()
+	var drawn := 0
+	_lab_texts.clear()
+	for j in order:
+		if drawn >= budget:
+			break
+		var px: int = j["px"]
+		var tw := _label_width(font_c, j["text"], px)
+		var sp: Vector2 = j["pos"] * z
+		var th := px * 1.2
+		var tried: Array = []
+		if j["kind"] == "city":
+			tried = [Rect2(sp + Vector2(5.0, -th * 0.55), Vector2(tw + 2.0, th)), Rect2(sp + Vector2(-5.0 - tw - 2.0, -th * 0.55), Vector2(tw + 2.0, th)),
+				Rect2(sp + Vector2(-tw * 0.5, 5.0), Vector2(tw + 2.0, th))]
+		else:
+			tried = [Rect2(sp + Vector2(-tw * 0.5, -th * 0.6), Vector2(tw + 2.0, th))]
+		var dup := false
+		for q in _lab_texts:
+			if q["text"] == j["text"] and (q["sp"] as Vector2).distance_to(sp) < 140.0:
+				dup = true
+				break
+		if dup:
+			continue
+		for k in tried.size():
+			var rc: Rect2 = tried[k]
+			if _rect_free(rc.grow(1.5)):
+				_lab_texts.append({"text": j["text"], "sp": sp})
+				_lab_rects.append(rc)
+				var off := Vector2(rc.position.x - sp.x, 0.0)
+				_text(font_c, j["pos"], j["text"], px, j["col"], off.x)
+				drawn += 1
+				break
+	if not _lab_jobs.is_empty():
+		_lab_jobs = []
 
 
 ## Country labels that fit the current zoom: biggest countries first, a label is skipped when it would overlap one already

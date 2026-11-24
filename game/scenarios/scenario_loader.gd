@@ -15,6 +15,8 @@ static func list_all() -> Array:
 		if typeof(parsed) == TYPE_DICTIONARY:
 			for fname in parsed.get("scenarios", []):
 				var scn := read_file(BUILTIN_DIR + fname)
+				if str(scn.get("world", "")) == "earth" and not EarthWorld.available_dataset(str(scn.get("world_dataset", "world"))):
+					continue   # the build does not ship this map (e.g. the XL dataset is left out of phone builds)
 				if not scn.is_empty():
 					out.append({"path": BUILTIN_DIR + fname, "data": scn, "builtin": true})
 	var dir := DirAccess.open(USER_DIR)
