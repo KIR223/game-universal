@@ -963,8 +963,15 @@ static func _ai_orgs(s: Simulation, cid: int) -> void:
 			if r.get("ok", false):
 				return
 	# aid for a friend in trouble, free trade with pact partners, condemnation of a hostile country
-	for o in s.countries:
-		var oid: int = o["id"]
+	var circle: Array = s.neighbor_countries(cid).duplicate()   # only neighbours, allies and enemies matter (a full scan of 200 countries was the AI's top cost)
+	for al in s.allies_of(cid):
+		if not circle.has(al):
+			circle.append(al)
+	for en in s.enemies_of(cid):
+		if not circle.has(en):
+			circle.append(en)
+	for oid in circle:
+		var o: Dictionary = s.countries[oid]
 		if o["alive"] and oid != cid and int(o["stability"]) < 40 and (s.allied(cid, oid) or SimExt.relation(s, cid, oid) >= 15) and c["treasury"] >= 100:
 			if command(s, cid, "propose_resolution", {"org": 0, "kind": "aid", "target": oid}).get("ok", false):
 				return
@@ -974,11 +981,11 @@ static func _ai_orgs(s: Simulation, cid: int) -> void:
 				return
 	var worst := -1
 	var worst_rel := -15
-	for o in s.countries:
-		if o["alive"] and o["id"] != cid:
-			var rl := SimExt.relation(s, cid, o["id"])
+	for oid2 in circle:
+		if s.countries[oid2]["alive"] and oid2 != cid:
+			var rl := SimExt.relation(s, cid, oid2)
 			if rl < worst_rel:
-				worst = o["id"]
+				worst = oid2
 				worst_rel = rl
 	if worst >= 0:
 		command(s, cid, "propose_resolution", {"org": 0, "kind": "condemn", "target": worst})

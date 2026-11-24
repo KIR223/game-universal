@@ -143,6 +143,7 @@ var _pol_body: VBoxContainer
 var _event_panel: PanelContainer
 var _event_uid := -1
 var _pol_day := -1
+var _gov_open := {}   # management panel: section title -> expanded (phones: one screen of controls at a time)
 var _eco: PanelContainer
 var _eco_dyn: VBoxContainer
 var _t_res := 0
@@ -281,7 +282,7 @@ func _make_theme() -> Theme:
 	t.default_font = UiFont.regular()
 	t.set_font("bold_font", "RichTextLabel", UiFont.bold())
 	var panel := StyleBoxFlat.new()
-	panel.bg_color = Color(0.082, 0.092, 0.112, 0.95)
+	panel.bg_color = Color(0.082, 0.092, 0.112, 0.985)
 	panel.border_color = Color(0.34, 0.4, 0.48, 0.75)
 	panel.set_border_width_all(1)
 	panel.set_corner_radius_all(4)
@@ -1526,11 +1527,30 @@ func _nav_items() -> Array:
 func _g_gov() -> void:
 	var sc: ScrollContainer = _gbody.get_parent() as ScrollContainer
 	var keep := sc.scroll_vertical if sc != null else 0
+	var open_now := true
+	var first := true
 	for r in SimExt.panel(sim, player):
 		match str(r["t"]):
 			"h":
+				var title := str(r["text"])
+				open_now = bool(_gov_open.get(title, first))
+				first = false
+				var hb := Button.new()
+				hb.text = "%s  %s" % ["▾" if open_now else "▸", title]
+				hb.alignment = HORIZONTAL_ALIGNMENT_LEFT
+				hb.flat = true
+				hb.add_theme_color_override("font_color", Color("9fb0c4"))
+				hb.add_theme_font_size_override("font_size", 16)
+				hb.custom_minimum_size = Vector2(0, maxf(40.0, touch_px()))
+				hb.pressed.connect(func():
+					_gov_open[title] = not bool(_gov_open.get(title, false))
+					_fill_generic("gov"))
 				_gbody.add_child(HSeparator.new())
-				_gbody.add_child(_h2(str(r["text"])))
+				_gbody.add_child(hb)
+				continue
+		if not open_now:
+			continue
+		match str(r["t"]):
 			"kv":
 				var l := Label.new()
 				l.text = "%s: %s" % [r["k"], r["v"]]

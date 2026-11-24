@@ -54,7 +54,7 @@ func run(main_node: Node) -> void:
 	report["metrics"]["fps_idle"] = await _fps(3.0, false)
 	_mem("after_start")
 	# panels
-	for name in ["economy", "tech", "politics", "intel", "diplomacy", "army", "build", "stats"]:
+	for name in ["economy", "tech", "politics", "intel", "diplomacy", "army", "build", "stats", "gov"]:
 		main._nav_pressed(name)
 		await _frames(25)
 		var panel: Control = _panel_of(name)
@@ -65,7 +65,26 @@ func run(main_node: Node) -> void:
 			var vp2 := get_viewport().get_visible_rect().size
 			_check("panel %s stays inside the screen" % name, r.position.x >= -1.0 and r.position.y >= -1.0 and r.end.x <= vp2.x + 1.0 and r.end.y <= vp2.y + 1.0)
 			report["metrics"]["panel_%s_rect" % name] = str(r)
-		if name in ["economy", "tech", "diplomacy"]:
+		if name == "gov" and ok:
+			# every button of the management panel must be finger-sized in points, and a tap must change the game
+			var small := 0
+			var total := 0
+			var stack: Array = [main._gbody]
+			while not stack.is_empty():
+				var node: Node = stack.pop_back()
+				for ch in node.get_children():
+					stack.append(ch)
+					if ch is Button and (ch as Control).is_visible_in_tree():
+						total += 1
+						if (ch as Control).size.y * pt_per_unit < 43.5:
+							small += 1
+			report["metrics"]["gov_buttons"] = total
+			_check("management panel buttons are at least 44 pt tall (%d of %d too small)" % [small, total], total > 10 and small == 0)
+			var tax0: int = main.sim.x["fin"][pid]["tax"]
+			main._gov_cmd({"type": "set_tax", "country": pid, "rate": tax0 + 5})
+			await _frames(5)
+			_check("a tap on the management panel changes the game", main.sim.x["fin"][pid]["tax"] == tax0 + 5)
+		if name in ["economy", "tech", "diplomacy", "gov"]:
 			_shot("04_panel_" + name)
 		main._nav_pressed(name)
 		await _frames(10)

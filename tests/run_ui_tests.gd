@@ -403,19 +403,28 @@ func run_checks() -> void:
 	check(main._nav.has("gov") and main._nav.size() == 10, "gov2 adds the management item to the navigation")
 	main._nav_pressed("gov")
 	check(main._open_panel_name == "gov" and main._generic != null, "management panel opens")
-	var gbtns := 0
-	var glabels := 0
-	var gstack: Array = [main._gbody]
-	while not gstack.is_empty():
-		var gn: Node = gstack.pop_back()
-		for ch in gn.get_children():
-			gstack.append(ch)
-			if ch is Button:
-				gbtns += 1
-				check(ch.custom_minimum_size.y >= 40.0, "management buttons are finger-sized")
-			elif ch is Label:
-				glabels += 1
-	check(gbtns >= 20 and glabels >= 25, "management panel lists controls and figures (%d buttons, %d glabels)" % [gbtns, glabels])
+	var count_ctl := func() -> Vector2i:
+		var nb := 0
+		var nl := 0
+		var st: Array = [main._gbody]
+		while not st.is_empty():
+			var nd: Node = st.pop_back()
+			for ch in nd.get_children():
+				st.append(ch)
+				if ch is Button:
+					nb += 1
+					check(ch.custom_minimum_size.y >= 40.0, "management buttons are finger-sized")
+				elif ch is Label:
+					nl += 1
+		return Vector2i(nb, nl)
+	var folded: Vector2i = count_ctl.call()
+	for gr in SimExt.panel(main.sim, fr2):
+		if gr["t"] == "h":
+			main._gov_open[gr["text"]] = true
+	main._fill_generic("gov")
+	var gcounts: Vector2i = count_ctl.call()
+	check(folded.x < gcounts.x and folded.x >= 3, "sections start folded so a phone sees one screen of controls (%d buttons folded, %d open)" % [folded.x, gcounts.x])
+	check(gcounts.x >= 40 and gcounts.y >= 25, "management panel lists controls and figures (%d buttons, %d labels)" % [gcounts.x, gcounts.y])
 	var tax0: int = main.sim.x["fin"][fr2]["tax"]
 	main._gov_cmd({"type": "set_tax", "country": fr2, "rate": tax0 + 5})
 	check(main.sim.x["fin"][fr2]["tax"] == tax0 + 5, "a panel control changes the tax rate")
