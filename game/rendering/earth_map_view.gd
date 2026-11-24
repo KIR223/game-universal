@@ -1109,6 +1109,7 @@ func _draw_labels() -> void:
 	var font := UiFont.bold()
 	_lab_rects.clear()
 	_reserve_unit_rects(z)
+	_draw_works(z)
 	for l in label_layout():
 		_lab_rects.append(l["box"])
 		_text(font, l["pos"], l["name"], l["px"], Color(1, 1, 1, 0.92), -l["width"] * 0.5)
@@ -1128,6 +1129,38 @@ func _reserve_unit_rects(z: float) -> void:
 			_lab_rects.append(Rect2(base * z + Vector2(-11.0 + i * 15.0, -6.0) * us, Vector2(18.0, 30.0) * us))
 	if selected_province >= 0:
 		_lab_rects.append(Rect2(cell_world(selected_province) * z - Vector2(16, 16), Vector2(32, 32)))
+
+
+const WORK_COLORS := {"rail": Color("b8bcc4"), "port": Color("4aa3df"), "airport": Color("e8e8ee"), "depot": Color("b08a5a"), "power": Color("f0d24a"), "farm": Color("7fcf6a"), "factory": Color("e8873a")}
+
+
+## Public works (gov2): one small coloured block per kind in the cell, one tick per level; from mid zoom. Own and allied works only.
+func _draw_works(z: float) -> void:
+	if not sim.rule_gov2 or z < 2.5 or not sim.x.has("works"):
+		return
+	var px := 1.0 / z
+	for cell in sim.x["works"]:
+		var own: int = sim.owner[cell]
+		if own != player_country and not (player_country >= 0 and sim.allied(player_country, own)) and player_country >= 0:
+			continue
+		var base := cell_world(int(cell))
+		if not cull.has_point(base):
+			continue
+		var kinds: Array = sim.x["works"][cell].keys()
+		kinds.sort()
+		var i := 0
+		for k in kinds:
+			var lv := int(sim.x["works"][cell][k])
+			if lv <= 0:
+				continue
+			var col: Color = WORK_COLORS.get(k, Color.WHITE)
+			var at := base + Vector2(-16.0 + i * 13.0, 12.0 * ui_scale) * px
+			draw_rect(Rect2(at - Vector2(2.0, 2.0) * px, Vector2(12.0, 8.0 + lv * 2.4) * px), Color(0, 0, 0, 0.88))
+			draw_rect(Rect2(at, Vector2(8.0, 5.0) * px), col)
+			for t in lv:
+				draw_rect(Rect2(at + Vector2(0.0, 5.8 + t * 2.4) * px, Vector2(8.0, 1.5) * px), col)
+			_lab_rects.append(Rect2(at * z - Vector2(3, 3), Vector2(14, 12.0 + lv * 2.4)))
+			i += 1
 
 
 func _label_width(font: Font, text: String, px: int) -> float:
