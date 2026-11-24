@@ -432,3 +432,8 @@ func run_checks() -> void:
 	check(main._generic != null and is_instance_valid(main._generic), "a refused command keeps the panel open")
 	main._nav_pressed("gov")
 	check(main._open_panel_name == "", "management panel closes")
+	if MobileLayout.is_phone():
+		main._set_card_collapsed(true)
+		check(not main._bottom.visible and main._card_btn.text.begins_with("▴"), "phone: the territory card can be folded away")
+		main._on_province_clicked(main.sim.countries[fr2]["capital"])
+		check(main._bottom.visible and main._card_btn.text.begins_with("▾"), "phone: tapping the map brings the card back")

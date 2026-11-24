@@ -117,6 +117,14 @@ func run() -> void:
 				var r := c.get_global_rect()
 				if r.end.x > top.get_global_rect().end.x + 1.0 or r.position.x < top.get_global_rect().position.x - 1.0:
 					check(false, "%s: top bar item %s sticks out (%s of %s)" % [tag, c.get_class(), str(r), str(top.get_global_rect())])
+		if _phone:
+			main._set_card_collapsed(true)
+			await _wait()
+			var mr: Rect2 = hud["modes"].get_global_rect()
+			var nr: Rect2 = hud["nav"].get_global_rect()
+			check(not main._bottom.visible and vis.grow(1.0).encloses(mr) and not mr.grow(-1.0).intersects(nr.grow(-1.0)), "%s: with the card folded the mode picker sits clear of the navigation (%s / %s)" % [tag, str(mr), str(nr)])
+			main._set_card_collapsed(false)
+			await _wait()
 		for it in main._nav_items():
 			main._nav_pressed(it[0])
 			main._refresh_all()

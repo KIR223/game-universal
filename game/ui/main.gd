@@ -143,6 +143,9 @@ var _pol_body: VBoxContainer
 var _event_panel: PanelContainer
 var _event_uid := -1
 var _pol_day := -1
+var _card_collapsed := false      # phones: the territory card can fold away so the map gets the screen
+var _card_btn: Button
+var _modes_panel: PanelContainer
 var _gov_open := {}   # management panel: section title -> expanded (phones: one screen of controls at a time)
 var _eco: PanelContainer
 var _eco_dyn: VBoxContainer
@@ -721,6 +724,7 @@ func _show_country_select() -> void:
 
 func _start_playing(cid: int) -> void:
 	player = cid
+	_set_card_collapsed(false)
 	if net == null:   # in a network game the host decides who is AI (a client must not overwrite it: desync)
 		for c in sim.countries:
 			c["ai"] = c["id"] != cid
@@ -884,9 +888,25 @@ func _on_box_selected(rect: Rect2) -> void:
 		_fill_generic("army")
 
 
+## Phones: fold the territory card away (the map gets the whole strip) or bring it back.
+func _set_card_collapsed(c: bool) -> void:
+	if not MobileLayout.is_phone() or _bottom == null or _modes_panel == null:
+		return
+	_card_collapsed = c
+	_bottom.visible = not c
+	var h: int = BOTTOM_PAD if c else CARD_H + BOTTOM_PAD
+	_modes_panel.offset_bottom = -h
+	_modes_panel.offset_top = -(h + 46)
+	if _right != null:
+		_right.offset_bottom = -h
+	if _card_btn != null:
+		_card_btn.text = "▴ Карточка" if c else "▾ Скрыть"
+
+
 func _on_province_clicked(pid: int) -> void:
 	if sim == null or player < 0:
 		return
+	_set_card_collapsed(false)   # a tap on the map shows what was tapped
 	_play_ui("select")
 	_tut_selected = true
 	if _pending_group >= 0:
@@ -2436,9 +2456,15 @@ func _build_hud() -> void:
 	modes.offset_top = -(CARD_H + BOTTOM_PAD + 46)
 	modes.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	root.add_child(modes)
+	_modes_panel = modes
 	var mh := HBoxContainer.new()
 	mh.add_theme_constant_override("separation", 6)
 	modes.add_child(mh)
+	if MobileLayout.is_phone():
+		_card_btn = Button.new()
+		_card_btn.custom_minimum_size = Vector2(maxf(44.0, touch_px()) * 2.2, 0)
+		_card_btn.pressed.connect(func(): _set_card_collapsed(not _card_collapsed))
+		mh.add_child(_card_btn)
 	var lic := IconButton.new("layers", "Режим карты (M)", Vector2(30, 30))
 	lic.pad = 5.0
 	lic.pressed.connect(_cycle_map_mode)
